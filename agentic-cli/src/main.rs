@@ -40,13 +40,13 @@ async fn main() -> Result<()> {
 
     match &cli.command {
         Some(cli::Command::Run { task }) => {
-            commands.run(&task).await?;
+            commands.run(&task)?;
         }
         Some(cli::Command::Interactive) => {
-            interactive::run(commands).await?;
+            interactive::run(commands)?;
         }
         Some(cli::Command::Config { action }) => {
-            commands.config(&action).await?;
+            commands.config(&action)?;
         }
         Some(cli::Command::Version) => {
             println!("agentic {}", env!("CARGO_PKG_VERSION"));

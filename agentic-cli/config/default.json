@@ -5,7 +5,7 @@
     "api_key": "$OPENAI_API_KEY"
   },
   "model": {
-    "id": "gpt-4o",
+    "id": "glm-4.7",
     "temperature": 0.7,
     "max_tokens": 4096
   },

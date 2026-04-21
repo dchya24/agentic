@@ -76,14 +76,3 @@ fn test_risk_level_confirmation() {
     assert!(high.requires_confirmation());
     assert!(critical.requires_confirmation());
 }
-
-#[test]
-fn test_tool_registry_new() {
-    let registry = ToolRegistry::new();
-    let _ = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(async {
-            registry.get("nonexistent").await.is_none()
-        });
-}

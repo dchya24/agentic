@@ -22,6 +22,10 @@ impl ProviderError {
 pub struct ChatMessageRequest {
     pub role: String,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallResponse>,
 }
 
 impl ChatMessageRequest {
@@ -29,6 +33,8 @@ impl ChatMessageRequest {
         Self {
             role: "user".into(),
             content: content.into(),
+            tool_call_id: None,
+            tool_calls: vec![],
         }
     }
 
@@ -36,6 +42,8 @@ impl ChatMessageRequest {
         Self {
             role: "assistant".into(),
             content: content.into(),
+            tool_call_id: None,
+            tool_calls: vec![],
         }
     }
 
@@ -43,6 +51,8 @@ impl ChatMessageRequest {
         Self {
             role: "system".into(),
             content: content.into(),
+            tool_call_id: None,
+            tool_calls: vec![],
         }
     }
 }
@@ -57,6 +67,22 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub stream: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDefinition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ToolFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
 }
 
 impl ChatRequest {
@@ -67,7 +93,13 @@ impl ChatRequest {
             temperature: None,
             max_tokens: None,
             stream: false,
+            tools: vec![],
         }
+    }
+
+    pub fn with_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
+        self.tools = tools;
+        self
     }
 
     pub fn with_temperature(mut self, temp: f32) -> Self {
@@ -89,7 +121,23 @@ impl ChatRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessageResponse {
     pub role: String,
-    pub content: String,
+    pub content: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallResponse {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub function: ToolCallFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,16 +163,16 @@ pub struct ChatChunk {
     pub finish_reason: Option<String>,
 }
 
-pub type StreamResult<T, E> = std::result::Result<std::pin::Pin<Box<dyn futures::Stream<Item = std::result::Result<T, E>> + Send + Sync>>, E>;
+pub type StreamResult<T, E> = std::result::Result<
+    std::pin::Pin<Box<dyn futures::Stream<Item = std::result::Result<T, E>> + Send + Sync>>,
+    E,
+>;
 
 pub trait LLMProvider: Send + Sync {
     fn provider_type(&self) -> &str;
     fn provider_id(&self) -> &str;
-    
+
     fn chat(&self, request: ChatRequest) -> ProviderResult<ChatResponse>;
-    
-    fn chat_stream(
-        &self, 
-        request: ChatRequest,
-    ) -> StreamResult<ChatChunk, ProviderError>;
+
+    fn chat_stream(&self, request: ChatRequest) -> StreamResult<ChatChunk, ProviderError>;
 }

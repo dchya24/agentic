@@ -42,8 +42,9 @@ pub struct OutputConfig {
 
 impl Config {
     pub fn default_path() -> PathBuf {
-        dirs::config_dir()
+        dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
+            .join(".config")
             .join("agentic")
             .join("config.json")
     }
@@ -66,6 +67,12 @@ impl Config {
     }
 
     pub fn default() -> Result<Self> {
+        let default_path = Self::default_path();
+
+        if default_path.exists() {
+            return Self::load(default_path.to_str().unwrap_or_default());
+        }
+
         let provider = ProviderConfig {
             provider_type: "openai-compatible".into(),
             base_url: std::env::var("OPENAI_BASE_URL")
@@ -74,7 +81,7 @@ impl Config {
         };
 
         let model = ModelConfig {
-            id: "gpt-4o".into(),
+            id: "glm-4.7".into(),
             temperature: Some(0.7),
             max_tokens: Some(4096),
         };
