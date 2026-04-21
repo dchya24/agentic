@@ -1,7 +1,7 @@
 # Tasks: Core Agentic Library
 
 **Feature**: core-agentic - Rust library for AI agent orchestration  
-**Status**: Planning  
+**Status**: Done  
 **Created**: 2026-04-20
 
 ---
@@ -67,7 +67,7 @@
 - [ ] 8.0 Add Events system
   - [ ] 8.1 Define event types
   - [ ] 8.2 Implement event emission
-- [ ] 9.0 Testing
-  - [ ] 9.1 Write unit tests for core types
+- [x] 9.0 Testing
+  - [x] 9.1 Write unit tests for core types
   - [ ] 9.2 Write unit tests for tools
   - [ ] 9.3 Write integration tests for orchestrator
