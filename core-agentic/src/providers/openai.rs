@@ -54,7 +54,9 @@ impl OpenAIProviderConfig {
 #[derive(Debug, Deserialize)]
 struct OpenAIChatResponse {
     id: String,
+    #[allow(dead_code)]
     object: String,
+    #[allow(dead_code)]
     created: u64,
     model: String,
     choices: Vec<OpenAIChoice>,
@@ -63,6 +65,7 @@ struct OpenAIChatResponse {
 
 #[derive(Debug, Deserialize)]
 struct OpenAIChoice {
+    #[allow(dead_code)]
     index: u32,
     message: OpenAIMessage,
     finish_reason: Option<String>,
@@ -228,7 +231,7 @@ impl LLMProvider for OpenAIProvider {
 
     fn chat_stream(
         &self,
-        request: ChatRequest,
+        _request: ChatRequest,
     ) -> super::StreamResult<super::ChatChunk, ProviderError> {
         Err(ProviderError::new(
             "Streaming not implemented yet".to_string(),

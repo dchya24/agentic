@@ -6,10 +6,9 @@ use std::sync::{Arc, Mutex};
 use crate::events::EventEmitter;
 use crate::memory::{Memory, Message, MessageRole};
 use crate::providers::{
-    ChatMessageRequest, ChatRequest, ChatResponse, LLMProvider, ToolDefinition, ToolFunction,
+    ChatMessageRequest, ChatRequest, LLMProvider, ToolDefinition, ToolFunction,
 };
 use crate::safety::{ConfirmationRequest, Safety};
-use crate::tool::{ToolCall, ToolResultValue};
 use crate::tool_registry::ToolRegistry;
 use crate::AgenticError;
 
@@ -128,10 +127,12 @@ pub enum OrchestratorState {
 
 pub struct Orchestrator {
     provider: Arc<dyn LLMProvider>,
+    #[allow(dead_code)]
     tools: ToolRegistry,
     memory: Mutex<Memory>,
     safety: Safety,
     state: Mutex<OrchestratorState>,
+    #[allow(dead_code)]
     events: EventEmitter,
     confirmation_handler:
         Mutex<Option<Box<dyn Fn(crate::safety::ConfirmationRequest) -> bool + Send + Sync>>>,
@@ -188,6 +189,7 @@ impl Orchestrator {
             .add_message(Message::user(input));
 
         let tools = builtin_tool_definitions();
+        #[allow(unused_assignments)]
         let mut last_output = String::new();
 
         loop {
@@ -285,5 +287,78 @@ impl Orchestrator {
 
     pub fn clear_memory(&self) {
         self.memory.lock().unwrap().clear();
+    }
+
+    pub async fn run_stream<F>(&self, input: &str, mut on_chunk: F) -> Result<String, AgenticError>
+    where
+        F: FnMut(String),
+    {
+        use futures::stream::StreamExt;
+
+        {
+            let mut state = self.state.lock().unwrap();
+            *state = OrchestratorState::Planning;
+        }
+
+        self.memory
+            .lock()
+            .unwrap()
+            .add_message(Message::user(input));
+
+        let tools = builtin_tool_definitions();
+        let mut last_output = String::new();
+
+        loop {
+            let context = self.memory.lock().unwrap().get_context(20);
+            let messages: Vec<ChatMessageRequest> = context
+                .iter()
+                .map(|m| ChatMessageRequest {
+                    role: match &m.role {
+                        MessageRole::User => "user".to_string(),
+                        MessageRole::Assistant => "assistant".to_string(),
+                        MessageRole::System => "system".to_string(),
+                        MessageRole::Tool { .. } => "tool".to_string(),
+                    },
+                    content: m.content.clone(),
+                    tool_call_id: None,
+                    tool_calls: vec![],
+                })
+                .collect();
+
+            let request = ChatRequest::new("glm-4.7", messages)
+                .with_tools(tools.clone())
+                .stream();
+
+            match self.provider.chat_stream(request) {
+                Ok(mut stream) => {
+                    while let Some(chunk_result) = stream.next().await {
+                        match chunk_result {
+                            Ok(chunk) => {
+                                on_chunk(chunk.delta.clone());
+                                last_output.push_str(&chunk.delta);
+                            }
+                            Err(e) => {
+                                return Err(AgenticError::Provider(e.to_string()));
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(AgenticError::Provider(e.to_string()));
+                }
+            }
+
+            self.memory
+                .lock()
+                .unwrap()
+                .add_message(Message::assistant(&last_output));
+
+            {
+                let mut state = self.state.lock().unwrap();
+                *state = OrchestratorState::Completed;
+            }
+
+            return Ok(last_output);
+        }
     }
 }
