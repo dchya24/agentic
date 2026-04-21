@@ -69,5 +69,5 @@
   - [ ] 8.2 Implement event emission
 - [x] 9.0 Testing
   - [x] 9.1 Write unit tests for core types
-  - [ ] 9.2 Write unit tests for tools
+  - [x] 9.2 Write unit tests for tools
   - [ ] 9.3 Write integration tests for orchestrator
