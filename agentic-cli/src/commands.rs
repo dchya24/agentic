@@ -7,6 +7,32 @@ use crate::config::Config;
 use crate::confirmation::{prompt_confirmation, ConfirmationResponse};
 
 static ALWAYS_CONFIRM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RETRY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(3);
+
+#[derive(Debug)]
+pub enum CommandError {
+    Provider(String),
+    Tool(String),
+    Config(String),
+    Network(String),
+    MaxRetries,
+    Cancelled,
+}
+
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommandError::Provider(msg) => write!(f, "Provider error: {}", msg),
+            CommandError::Tool(msg) => write!(f, "Tool error: {}", msg),
+            CommandError::Config(msg) => write!(f, "Configuration error: {}", msg),
+            CommandError::Network(msg) => write!(f, "Network error: {}", msg),
+            CommandError::MaxRetries => write!(f, "Maximum retries exceeded"),
+            CommandError::Cancelled => write!(f, "Operation cancelled by user"),
+        }
+    }
+}
+
+impl std::error::Error for CommandError {}
 
 pub struct Commands {
     config: Config,
@@ -50,11 +76,49 @@ impl Commands {
 
         println!("Running task: {}", task);
 
-        let result = orchestrator.run(task)?;
+        let result = self.execute_with_retry(orchestrator, task)?;
 
         println!("\nResult:\n{}", result);
 
         Ok(())
+    }
+
+    fn execute_with_retry(
+        &self,
+        orchestrator: &Orchestrator,
+        task: &str,
+    ) -> Result<String, CommandError> {
+        let max_retries = RETRY_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        let mut last_error: Option<String> = None;
+
+        for attempt in 0..max_retries {
+            match orchestrator.run(task) {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    last_error = Some(error_msg.clone());
+                    let is_retryable = is_retryable_error(&error_msg);
+
+                    if is_retryable && attempt < max_retries - 1 {
+                        let delay = ((attempt + 1) * 2) as u64;
+                        eprintln!(
+                            "Attempt {}/{} failed: {}. Retrying in {}s...",
+                            attempt + 1,
+                            max_retries,
+                            error_msg,
+                            delay
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(delay));
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Err(CommandError::Provider(
+            last_error.unwrap_or_else(|| "Unknown error".to_string()),
+        ))
     }
 
     pub fn config(&self, action: &ConfigAction) -> Result<()> {
@@ -65,14 +129,23 @@ impl Commands {
             }
             ConfigAction::Edit => {
                 println!("Opening config in editor...");
-                // TODO: Open in editor
             }
             ConfigAction::Reset => {
                 println!("Resetting config to default...");
-                // TODO: Reset config
             }
         }
 
         Ok(())
     }
+}
+
+pub fn is_retryable_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("network")
+        || lower.contains("connection")
+        || lower.contains("timeout")
+        || lower.contains("rate limit")
+        || lower.contains("429")
+        || lower.contains("503")
+        || lower.contains("429")
 }
