@@ -1,7 +1,7 @@
 # Tasks: Agentic CLI
 
 **Feature**: agentic-cli - Standalone CLI binary using core-agentic  
-**Status**: Done  
+**Status**: Done (README added)  
 **Created**: 2026-04-20  
 **Depends on**: `tasks-core-agentic.md`
 
