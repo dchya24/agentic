@@ -130,7 +130,7 @@ fn test_tool_registry_register() {
 
 #[test]
 fn test_tool_registry_list() {
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
     let tool = RunCommandTool::new();
 
     registry.register(Box::new(tool));
