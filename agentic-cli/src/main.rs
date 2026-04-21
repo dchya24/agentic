@@ -4,6 +4,7 @@ mod tests;
 mod cli;
 mod commands;
 mod config;
+mod confirmation;
 mod interactive;
 mod output;
 

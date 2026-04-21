@@ -53,10 +53,10 @@
   - [x] 6.1 Create output formatter
   - [x] 6.2 Add color support (ansi colors)
   - [x] 6.3 Handle output categories (thought, tool, tool_output, system, error)
-- [ ] 7.0 Implement confirmation UI
-  - [ ] 7.1 Add confirmation prompt
-  - [ ] 7.2 Handle user input (y/n/s/a/q)
-  - [ ] 7.3 Integrate with core-agentic safety
+- [x] 7.0 Implement confirmation UI
+  - [x] 7.1 Add confirmation prompt
+  - [x] 7.2 Handle user input (y/n/s/a/q)
+  - [x] 7.3 Integrate with core-agentic safety
 - [ ] 8.0 Add error handling
   - [ ] 8.1 Handle provider errors
   - [ ] 8.2 Handle tool errors

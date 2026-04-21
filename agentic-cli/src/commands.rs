@@ -1,9 +1,12 @@
 use anyhow::Result;
-use core_agentic::{Orchestrator, ToolRegistry};
+use core_agentic::{ConfirmationRequest, Orchestrator, ToolRegistry};
 use std::sync::Arc;
 
 use crate::cli::ConfigAction;
 use crate::config::Config;
+use crate::confirmation::{prompt_confirmation, ConfirmationResponse};
+
+static ALWAYS_CONFIRM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub struct Commands {
     config: Config,
@@ -17,7 +20,21 @@ impl Commands {
 
         let tools = ToolRegistry::new();
 
-        let orchestrator = Orchestrator::new(provider, tools);
+        let mut orchestrator = Orchestrator::new(provider, tools);
+
+        orchestrator.set_confirmation_handler(|request| {
+            if ALWAYS_CONFIRM.load(std::sync::atomic::Ordering::Relaxed) {
+                return true;
+            }
+            match prompt_confirmation(&request) {
+                Some(ConfirmationResponse::Yes) => true,
+                Some(ConfirmationResponse::Always) => {
+                    ALWAYS_CONFIRM.store(true, std::sync::atomic::Ordering::Relaxed);
+                    true
+                }
+                Some(ConfirmationResponse::No) | Some(ConfirmationResponse::Quit) | None => false,
+            }
+        });
 
         Self {
             config,

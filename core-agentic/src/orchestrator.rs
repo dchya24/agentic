@@ -3,11 +3,12 @@
 use std::process::Command as ProcessCommand;
 use std::sync::{Arc, Mutex};
 
+use crate::events::EventEmitter;
 use crate::memory::{Memory, Message, MessageRole};
 use crate::providers::{
     ChatMessageRequest, ChatRequest, ChatResponse, LLMProvider, ToolDefinition, ToolFunction,
 };
-use crate::safety::Safety;
+use crate::safety::{ConfirmationRequest, Safety};
 use crate::tool::{ToolCall, ToolResultValue};
 use crate::tool_registry::ToolRegistry;
 use crate::AgenticError;
@@ -131,6 +132,9 @@ pub struct Orchestrator {
     memory: Mutex<Memory>,
     safety: Safety,
     state: Mutex<OrchestratorState>,
+    events: EventEmitter,
+    confirmation_handler:
+        Mutex<Option<Box<dyn Fn(crate::safety::ConfirmationRequest) -> bool + Send + Sync>>>,
 }
 
 impl Orchestrator {
@@ -141,6 +145,34 @@ impl Orchestrator {
             memory: Mutex::new(Memory::new(128000)),
             safety: Safety::new(),
             state: Mutex::new(OrchestratorState::Idle),
+            events: EventEmitter::new(),
+            confirmation_handler: Mutex::new(None),
+        }
+    }
+
+    pub fn set_confirmation_handler<F>(&mut self, handler: F)
+    where
+        F: Fn(ConfirmationRequest) -> bool + Send + Sync + 'static,
+    {
+        let mut h = self.confirmation_handler.lock().unwrap();
+        *h = Some(Box::new(handler));
+    }
+
+    fn should_confirm(&self, tool_name: &str, args: &serde_json::Value) -> bool {
+        let action = tool_name;
+        let target = args
+            .get("command")
+            .or(args.get("path"))
+            .and_then(|v| v.as_str());
+        self.safety.needs_confirmation(action, target)
+    }
+
+    fn require_confirmation(&self, request: ConfirmationRequest) -> bool {
+        let handler = self.confirmation_handler.lock().unwrap();
+        if let Some(ref h) = *handler {
+            h(request)
+        } else {
+            false
         }
     }
 
@@ -198,6 +230,21 @@ impl Orchestrator {
                         .unwrap_or(serde_json::json!({}));
 
                     println!("  [{}] {}", tc.function.name, args);
+
+                    if self.should_confirm(&tc.function.name, &args) {
+                        let request = self
+                            .safety
+                            .create_request(&tc.function.name, &format!("{:?}", args));
+                        if !self.require_confirmation(request) {
+                            println!("  -> [SKIPPED - Confirmation denied]");
+                            self.memory.lock().unwrap().add_message(Message::tool(
+                                tc.id.clone(),
+                                tc.function.name.clone(),
+                                "Skipped: Confirmation denied".to_string(),
+                            ));
+                            continue;
+                        }
+                    }
 
                     let result = execute_builtin(&tc.function.name, &args);
 
