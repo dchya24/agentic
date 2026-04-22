@@ -33,6 +33,15 @@ This file defines available AI providers, their models, and enabled tools.
     "stream": true,
     "show_thoughts": true,
     "show_tool_calls": true
+  },
+  "mcp_servers": {
+    "<server_name>": {
+      "command": "string",
+      "args": ["string"],
+      "env": { "KEY": "VALUE" },
+      "url": "string (URL)",
+      "headers": { "Header-Name": "value" }
+    }
   }
 }
 ```
@@ -79,6 +88,49 @@ CLI output preferences:
 * `stream` → Enable streaming responses (default: `true`)
 * `show_thoughts` → Show model reasoning/thoughts (default: `true`)
 * `show_tool_calls` → Show tool call details (default: `true`)
+
+---
+
+#### `mcp_servers`
+
+Map of external MCP (Model Context Protocol) servers whose tools are discovered and registered at startup. Each entry key is an arbitrary name you choose.
+
+Two transport modes:
+
+**stdio** (spawn a child process):
+* `command` → Executable to run (e.g., `"npx"`, `"python"`)
+* `args` → Arguments passed to the command
+* `env` → Optional environment variables for the child process
+
+**HTTP** (POST JSON-RPC to an endpoint):
+* `url` → MCP server URL (e.g., `"http://localhost:3001/mcp"`)
+* `headers` → Optional HTTP headers (e.g., `{"Authorization": "Bearer <token>"}`)
+
+Use **either** stdio (`command` + `args`) **or** HTTP (`url`), not both.
+
+**Example — stdio server:**
+
+```json
+"mcp_servers": {
+  "filesystem": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+  }
+}
+```
+
+**Example — HTTP server:**
+
+```json
+"mcp_servers": {
+  "my-api": {
+    "url": "http://localhost:3001/mcp",
+    "headers": {
+      "Authorization": "Bearer my-secret-token"
+    }
+  }
+}
+```
 
 ---
 
