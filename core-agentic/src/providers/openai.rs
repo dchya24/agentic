@@ -219,15 +219,6 @@ impl OpenAIProvider {
             body["tools"] = serde_json::json!(request.tools);
         }
 
-        log::info!(
-            "Api Key set: {}",
-            if self.config.api_key.is_empty() {
-                "NO"
-            } else {
-                "YES"
-            }
-        );
-
         let response = self
             .client
             .post(&url)
