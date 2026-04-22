@@ -1,12 +1,16 @@
 use anyhow::Result;
 use core_agentic::{Config, Orchestrator, ToolRegistry};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::io::Write;
+use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
 use crate::cli::ConfigAction;
 use crate::confirmation::{prompt_confirmation, ConfirmationResponse};
+use crate::markdown::render_markdown;
 
-static ALWAYS_CONFIRM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static RETRY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(3);
+static ALWAYS_CONFIRM: AtomicBool = AtomicBool::new(false);
+static RETRY_COUNT: AtomicU32 = AtomicU32::new(3);
 
 #[derive(Debug)]
 pub enum CommandError {
@@ -54,13 +58,13 @@ impl Commands {
         let mut orchestrator = Orchestrator::new(provider, tools);
 
         orchestrator.set_confirmation_handler(|request| {
-            if ALWAYS_CONFIRM.load(std::sync::atomic::Ordering::Relaxed) {
+            if ALWAYS_CONFIRM.load(Ordering::Relaxed) {
                 return true;
             }
             match prompt_confirmation(&request) {
                 Some(ConfirmationResponse::Yes) => true,
                 Some(ConfirmationResponse::Always) => {
-                    ALWAYS_CONFIRM.store(true, std::sync::atomic::Ordering::Relaxed);
+                    ALWAYS_CONFIRM.store(true, Ordering::Relaxed);
                     true
                 }
                 Some(ConfirmationResponse::No) | Some(ConfirmationResponse::Quit) | None => false,
@@ -79,11 +83,26 @@ impl Commands {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Orchestrator not initialized"))?;
 
-        println!("Running task: {}", task);
+        println!("\n🤖 Running task: {}\n", task);
 
-        let result = self.execute_with_retry(orchestrator, task)?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        
+        runtime.block_on(async {
+            let result = orchestrator.run_stream(task, |chunk| {
+                print_chunk(&chunk);
+            }).await;
 
-        println!("\nResult:\n{}", result);
+            match result {
+                Ok(final_result) => {
+                    println!("\n");
+                    print_markdown_header("Final Result");
+                    render_markdown(&final_result).ok();
+                }
+                Err(e) => {
+                    print_error(&format!("Error: {}", e));
+                }
+            }
+        });
 
         Ok(())
     }
@@ -93,7 +112,7 @@ impl Commands {
         orchestrator: &Orchestrator,
         task: &str,
     ) -> Result<String, CommandError> {
-        let max_retries = RETRY_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        let max_retries = RETRY_COUNT.load(Ordering::Relaxed);
         let mut last_error: Option<String> = None;
 
         for attempt in 0..max_retries {
@@ -153,4 +172,41 @@ pub fn is_retryable_error(error: &str) -> bool {
         || lower.contains("429")
         || lower.contains("503")
         || lower.contains("429")
+}
+
+fn print_chunk(chunk: &str) {
+    let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
+    
+    // Check if chunk looks like markdown
+    if chunk.starts_with('#') || chunk.starts_with("```") || chunk.starts_with('-') || chunk.starts_with('*') {
+        // Render as markdown
+        let _ = render_markdown(chunk);
+    } else {
+        // Print as plain text with subtle styling
+        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(200, 200, 200))));
+        print!("{}", chunk);
+        let _ = stdout.reset();
+    }
+    
+    stdout.flush().ok();
+}
+
+fn print_markdown_header(text: &str) {
+    let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
+    let _ = stdout.set_color(
+        ColorSpec::new()
+            .set_bold(true)
+            .set_fg(Some(Color::Rgb(255, 165, 0)))
+    );
+    println!("\n╔═══════════════════════════════════════╗");
+    println!("║ {} ", text);
+    println!("╚═══════════════════════════════════════╝");
+    let _ = stdout.reset();
+}
+
+fn print_error(text: &str) {
+    let mut stdout = StandardStream::stderr(termcolor::ColorChoice::Always);
+    let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
+    eprintln!("{}", text);
+    let _ = stdout.reset();
 }

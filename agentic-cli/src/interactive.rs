@@ -2,8 +2,12 @@ use crate::commands::Commands;
 use anyhow::Result;
 
 pub fn run(commands: Commands) -> Result<()> {
-    println!("=== Agentic Interactive Mode ===");
-    println!("Type 'help' for commands, 'exit' to quit\n");
+    println!("\n╔══════════════════════════════════════════╗");
+    println!("║      🤖 Agentic Interactive Mode         ║");
+    println!("╠══════════════════════════════════════════╣");
+    println!("║  Type 'help' for commands                ║");
+    println!("║  'exit' to quit                          ║");
+    println!("╚══════════════════════════════════════════╝\n");
 
     loop {
         print!("> ");
@@ -20,7 +24,7 @@ pub fn run(commands: Commands) -> Result<()> {
 
         match input.to_lowercase().as_str() {
             "exit" | "quit" | "q" => {
-                println!("Goodbye!");
+                println!("\n👋 Goodbye!");
                 break;
             }
             "help" | "h" => {
@@ -42,8 +46,11 @@ pub fn run(commands: Commands) -> Result<()> {
 }
 
 fn print_help() {
-    println!("Commands:");
-    println!("  help, h     - Show this help");
-    println!("  clear      - Clear screen");
-    println!("  exit, q    - Exit interactive mode");
+    println!("\n╔══════════════════════════════════════════╗");
+    println!("║              Commands                     ║");
+    println!("╠══════════════════════════════════════════╣");
+    println!("║  help, h      - Show this help            ║");
+    println!("║  clear        - Clear screen              ║");
+    println!("║  exit, q      - Exit interactive mode     ║");
+    println!("╚══════════════════════════════════════════╝\n");
 }

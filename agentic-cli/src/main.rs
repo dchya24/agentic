@@ -5,6 +5,7 @@ mod cli;
 mod commands;
 mod confirmation;
 mod interactive;
+mod markdown;
 mod output;
 
 use anyhow::Result;
