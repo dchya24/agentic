@@ -161,3 +161,115 @@ fn test_memory_context_limit() {
     let context = memory.get_context(3);
     assert_eq!(context.len(), 3);
 }
+
+#[test]
+fn test_mcp_server_config_stdio() {
+    use crate::mcp::types::McpServerConfig;
+    let config = McpServerConfig::stdio(
+        "npx",
+        vec![
+            "-y".into(),
+            "@modelcontextprotocol/server-filesystem".into(),
+            "/tmp".into(),
+        ],
+    );
+    assert!(config.is_stdio());
+    assert!(!config.is_http());
+    assert_eq!(config.command.as_deref(), Some("npx"));
+    assert_eq!(config.args.as_ref().unwrap().len(), 3);
+}
+
+#[test]
+fn test_mcp_server_config_http() {
+    use crate::mcp::types::McpServerConfig;
+    let config = McpServerConfig::http("http://localhost:3001/mcp");
+    assert!(config.is_http());
+    assert!(!config.is_stdio());
+    assert_eq!(config.url.as_deref(), Some("http://localhost:3001/mcp"));
+}
+
+#[test]
+fn test_json_rpc_request_serialization() {
+    use crate::mcp::types::JsonRpcRequest;
+    let req = JsonRpcRequest::new(1, "initialize", Some(serde_json::json!({"test": true})));
+    let json = serde_json::to_string(&req).unwrap();
+    assert!(json.contains("\"jsonrpc\":\"2.0\""));
+    assert!(json.contains("\"id\":1"));
+    assert!(json.contains("\"method\":\"initialize\""));
+}
+
+#[test]
+fn test_json_rpc_response_deserialization() {
+    use crate::mcp::types::JsonRpcResponse;
+    let json =
+        r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{}}}"#;
+    let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(resp.id, 1);
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none());
+}
+
+#[test]
+fn test_json_rpc_error_response() {
+    use crate::mcp::types::JsonRpcResponse;
+    let json = r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"Invalid Request"}}"#;
+    let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(resp.id, 2);
+    assert!(resp.error.is_some());
+    let err = resp.error.unwrap();
+    assert_eq!(err.code, -32600);
+    assert_eq!(err.message, "Invalid Request");
+}
+
+#[test]
+fn test_mcp_tool_schema_parsing() {
+    use crate::mcp::types::ToolsListResult;
+    let json = r#"{"tools":[{"name":"read_file","description":"Read a file","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path"}},"required":["path"]}}]}"#;
+    let result: ToolsListResult = serde_json::from_str(json).unwrap();
+    assert_eq!(result.tools.len(), 1);
+    assert_eq!(result.tools[0].name, "read_file");
+    assert_eq!(result.tools[0].description.as_deref(), Some("Read a file"));
+    assert!(result.tools[0].input_schema.is_some());
+}
+
+#[test]
+fn test_mcp_server_config_serialization_roundtrip() {
+    use crate::mcp::types::McpServerConfig;
+    let config = McpServerConfig::stdio("my-server", vec!["--arg1".into()]);
+    let json = serde_json::to_string(&config).unwrap();
+    let parsed: McpServerConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.command, config.command);
+    assert_eq!(parsed.args, config.args);
+}
+
+#[test]
+fn test_mcp_http_config_roundtrip() {
+    use crate::mcp::types::McpServerConfig;
+    let mut config = McpServerConfig::http("http://localhost:8080/mcp");
+    let mut headers = std::collections::HashMap::new();
+    headers.insert("Authorization".into(), "Bearer test-token".into());
+    config.headers = Some(headers);
+
+    let json = serde_json::to_string(&config).unwrap();
+    let parsed: McpServerConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.url, config.url);
+    assert!(parsed.headers.is_some());
+    assert_eq!(
+        parsed.headers.unwrap().get("Authorization").unwrap(),
+        "Bearer test-token"
+    );
+}
+
+#[test]
+fn test_tool_call_result_parsing() {
+    use crate::mcp::types::ToolCallResult;
+    let json = r#"{"content":[{"type":"text","text":"file contents here"}],"is_error":false}"#;
+    let result: ToolCallResult = serde_json::from_str(json).unwrap();
+    assert_eq!(result.content.len(), 1);
+    assert_eq!(result.content[0].content_type, "text");
+    assert_eq!(
+        result.content[0].text.as_deref(),
+        Some("file contents here")
+    );
+    assert_eq!(result.is_error, Some(false));
+}

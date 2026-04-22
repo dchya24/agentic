@@ -98,6 +98,17 @@ impl ToolRegistry {
             .collect()
     }
 
+    pub fn register_mcp_server(
+        &self,
+        config: &crate::mcp::types::McpServerConfig,
+    ) -> Result<(), String> {
+        let tools = crate::mcp::tool_adapter::mcp_tools_from_config(config)?;
+        for tool in tools {
+            self.register(tool);
+        }
+        Ok(())
+    }
+
     pub fn execute_by_name(
         &self,
         name: &str,

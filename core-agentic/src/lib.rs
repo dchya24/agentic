@@ -15,6 +15,7 @@ pub mod providers;
 pub mod safety;
 pub mod tool;
 pub mod tool_registry;
+pub mod mcp;
 pub mod tools;
 
 // Re-export main types for public API
@@ -26,6 +27,7 @@ pub use orchestrator::Orchestrator;
 pub use providers::LLMProvider;
 pub use safety::{ConfirmationRequest, RiskLevel};
 pub use tool::{Tool, ToolError, ToolResult, ToolSchema, ToolCall, ToolResultValue};
+pub use mcp::{McpClient, McpServerConfig, McpToolAdapter};
 pub use tool_registry::ToolRegistry;
 
 // Re-export tool implementations
