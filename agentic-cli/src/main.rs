@@ -6,7 +6,6 @@ mod commands;
 mod confirmation;
 mod interactive;
 mod markdown;
-mod output;
 
 use anyhow::Result;
 use clap::Parser;
@@ -40,10 +39,10 @@ async fn main() -> Result<()> {
 
     match &cli.command {
         Some(cli::Command::Run { task }) => {
-            commands.run(&task)?;
+            commands.run(&task).await?;
         }
         Some(cli::Command::Interactive) => {
-            interactive::run(commands)?;
+            interactive::run(commands).await?;
         }
         Some(cli::Command::Config { action }) => {
             commands.config(&action)?;

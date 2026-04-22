@@ -1,7 +1,7 @@
 use crate::commands::Commands;
 use anyhow::Result;
 
-pub fn run(commands: Commands) -> Result<()> {
+pub async fn run(commands: Commands) -> Result<()> {
     println!("\n╔══════════════════════════════════════════╗");
     println!("║      🤖 Agentic Interactive Mode         ║");
     println!("╠══════════════════════════════════════════╣");
@@ -35,7 +35,7 @@ pub fn run(commands: Commands) -> Result<()> {
                 std::io::Write::flush(&mut std::io::stdout())?;
             }
             _ => {
-                if let Err(e) = commands.run(input) {
+                if let Err(e) = commands.run(input).await {
                     eprintln!("Error: {}", e);
                 }
             }

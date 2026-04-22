@@ -1,7 +1,7 @@
 use anyhow::Result;
 use core_agentic::{Config, Orchestrator, ToolRegistry};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::io::Write;
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
@@ -10,27 +10,16 @@ use crate::confirmation::{prompt_confirmation, ConfirmationResponse};
 use crate::markdown::render_markdown;
 
 static ALWAYS_CONFIRM: AtomicBool = AtomicBool::new(false);
-static RETRY_COUNT: AtomicU32 = AtomicU32::new(3);
 
 #[derive(Debug)]
 pub enum CommandError {
-    Provider(String),
-    Tool(String),
     Config(String),
-    Network(String),
-    MaxRetries,
-    Cancelled,
 }
 
 impl std::fmt::Display for CommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CommandError::Provider(msg) => write!(f, "Provider error: {}", msg),
-            CommandError::Tool(msg) => write!(f, "Tool error: {}", msg),
             CommandError::Config(msg) => write!(f, "Configuration error: {}", msg),
-            CommandError::Network(msg) => write!(f, "Network error: {}", msg),
-            CommandError::MaxRetries => write!(f, "Maximum retries exceeded"),
-            CommandError::Cancelled => write!(f, "Operation cancelled by user"),
         }
     }
 }
@@ -77,7 +66,7 @@ impl Commands {
         }
     }
 
-    pub fn run(&self, task: &str) -> Result<()> {
+    pub async fn run(&self, task: &str) -> Result<()> {
         let orchestrator = self
             .orchestrator
             .as_ref()
@@ -85,64 +74,22 @@ impl Commands {
 
         println!("\n🤖 Running task: {}\n", task);
 
-        let runtime = tokio::runtime::Runtime::new()?;
-        
-        runtime.block_on(async {
-            let result = orchestrator.run_stream(task, |chunk| {
-                print_chunk(&chunk);
-            }).await;
+        let result = orchestrator.run_stream(task, |chunk| {
+            print_chunk(&chunk);
+        }).await;
 
-            match result {
-                Ok(final_result) => {
-                    println!("\n");
-                    print_markdown_header("Final Result");
-                    render_markdown(&final_result).ok();
-                }
-                Err(e) => {
-                    print_error(&format!("Error: {}", e));
-                }
+        match result {
+            Ok(final_result) => {
+                println!("\n");
+                print_markdown_header("Final Result");
+                render_markdown(&final_result).ok();
             }
-        });
-
-        Ok(())
-    }
-
-    fn execute_with_retry(
-        &self,
-        orchestrator: &Orchestrator,
-        task: &str,
-    ) -> Result<String, CommandError> {
-        let max_retries = RETRY_COUNT.load(Ordering::Relaxed);
-        let mut last_error: Option<String> = None;
-
-        for attempt in 0..max_retries {
-            match orchestrator.run(task) {
-                Ok(result) => return Ok(result),
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    last_error = Some(error_msg.clone());
-                    let is_retryable = is_retryable_error(&error_msg);
-
-                    if is_retryable && attempt < max_retries - 1 {
-                        let delay = ((attempt + 1) * 2) as u64;
-                        eprintln!(
-                            "Attempt {}/{} failed: {}. Retrying in {}s...",
-                            attempt + 1,
-                            max_retries,
-                            error_msg,
-                            delay
-                        );
-                        std::thread::sleep(std::time::Duration::from_secs(delay));
-                    } else {
-                        break;
-                    }
-                }
+            Err(e) => {
+                print_error(&format!("Error: {}", e));
             }
         }
 
-        Err(CommandError::Provider(
-            last_error.unwrap_or_else(|| "Unknown error".to_string()),
-        ))
+        Ok(())
     }
 
     pub fn config(&self, action: &ConfigAction) -> Result<()> {
@@ -161,17 +108,6 @@ impl Commands {
 
         Ok(())
     }
-}
-
-pub fn is_retryable_error(error: &str) -> bool {
-    let lower = error.to_lowercase();
-    lower.contains("network")
-        || lower.contains("connection")
-        || lower.contains("timeout")
-        || lower.contains("rate limit")
-        || lower.contains("429")
-        || lower.contains("503")
-        || lower.contains("429")
 }
 
 fn print_chunk(chunk: &str) {
