@@ -1,7 +1,7 @@
 # Tasks: Termul Integration
 
 **Feature**: termul-integration - Integrate core-agentic into Termul terminal manager  
-**Status**: In Progress (Phase 6: Sidebar status complete)  
+**Status**: In Progress (Phase 7: Config file persistence complete)  
 **Created**: 2026-04-20  
 **Depends on**: `tasks-core-agentic.md`
 
@@ -55,7 +55,13 @@
   - [x] 6.1 Implement status display
   - [x] 6.2 Show provider info
   - [x] 6.3 Show token usage
-- [ ] 7.0 Testing
-  - [ ] 7.1 Test backend commands
-  - [ ] 7.2 Test frontend components
-  - [ ] 7.3 Test end-to-end flow
+- [x] 7.0 Config file persistence (shared with agentic-cli)
+  - [x] 7.1 Load config from ~/.config/agentic/config.json on startup
+  - [x] 7.2 Parse both native (flat) and CLI (nested) config formats
+  - [x] 7.3 Save config to file when load_config is called from frontend
+  - [x] 7.4 Add agentic_read_file_config Tauri command for frontend
+  - [x] 7.5 Init config from file on AgenticSidebar mount
+- [ ] 8.0 Testing
+  - [ ] 8.1 Test backend commands
+  - [ ] 8.2 Test frontend components
+  - [ ] 8.3 Test end-to-end flow

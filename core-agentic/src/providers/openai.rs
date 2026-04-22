@@ -1,14 +1,15 @@
 //! OpenAI-compatible provider implementation
 
 use reqwest::blocking::Client;
+use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
-use tracing::info;
 
 use super::{ChatRequest, ChatResponse, ChatUsage, LLMProvider, ProviderError, ProviderResult};
 
 pub struct OpenAIProvider {
     config: OpenAIProviderConfig,
     client: Client,
+    async_client: reqwest::Client,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,7 +108,51 @@ impl OpenAIProvider {
             .build()
             .expect("Failed to build HTTP client");
 
-        Self { config, client }
+        let async_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .expect("Failed to build async HTTP client");
+
+        Self { config, client, async_client }
+    }
+
+    fn extract_sse_line(buffer: &mut String) -> Option<String> {
+        while let Some(pos) = buffer.find('\n') {
+            let line = buffer[..pos].trim().to_string();
+            buffer.drain(..=pos);
+            if let Some(data) = line.strip_prefix("data: ") {
+                let trimmed = data.trim().to_string();
+                if !trimmed.is_empty() {
+                    return Some(trimmed);
+                }
+            }
+        }
+        None
+    }
+
+    fn parse_sse_chunk(data: &str) -> Option<super::ChatChunk> {
+        #[derive(Deserialize)]
+        struct StreamDelta {
+            content: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct StreamChoice {
+            delta: StreamDelta,
+            finish_reason: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct StreamResponse {
+            id: String,
+            choices: Vec<StreamChoice>,
+        }
+
+        let resp: StreamResponse = serde_json::from_str(data).ok()?;
+        let choice = resp.choices.first()?;
+        Some(super::ChatChunk {
+            id: resp.id,
+            delta: choice.delta.content.clone().unwrap_or_default(),
+            finish_reason: choice.finish_reason.clone(),
+        })
     }
 
     pub fn chat(&self, request: ChatRequest) -> ProviderResult<ChatResponse> {
@@ -119,7 +164,7 @@ impl OpenAIProvider {
         // first message is always system prompt
         let mut messages: Vec<super::ChatMessageRequest> = vec![super::ChatMessageRequest {
             role: "system".into(),
-            content: "You are a helpful assistant that can execute commands, read files, and list directories to help users. Use the provided tools when needed.".into(),
+            content: "You are a helpful coding assistant".into(),
             tool_call_id: None,
             tool_calls: vec![],
         }];
@@ -142,7 +187,7 @@ impl OpenAIProvider {
             body["tools"] = serde_json::json!(request.tools);
         }
 
-        info!(
+        log::info!(
             "Api Key set: {}",
             if self.config.api_key.is_empty() {
                 "NO"
@@ -231,10 +276,81 @@ impl LLMProvider for OpenAIProvider {
 
     fn chat_stream(
         &self,
-        _request: ChatRequest,
+        request: ChatRequest,
     ) -> super::StreamResult<super::ChatChunk, ProviderError> {
-        Err(ProviderError::new(
-            "Streaming not implemented yet".to_string(),
-        ))
+        let url = format!(
+            "{}/chat/completions",
+            self.config.base_url.trim_end_matches('/')
+        );
+
+        let mut messages: Vec<super::ChatMessageRequest> = vec![super::ChatMessageRequest {
+            role: "system".into(),
+            content: "You are a helpful coding assistant".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+        }];
+
+        messages.extend(request.messages.iter().cloned());
+
+        let mut body = serde_json::json!({
+            "model": request.model,
+            "messages": messages,
+            "stream": true,
+        });
+
+        if let Some(temp) = request.temperature {
+            body["temperature"] = serde_json::json!(temp);
+        }
+        if let Some(max) = request.max_tokens {
+            body["max_tokens"] = serde_json::json!(max);
+        }
+        if !request.tools.is_empty() {
+            body["tools"] = serde_json::json!(request.tools);
+        }
+
+        let api_key = self.config.api_key.clone();
+        let async_client = self.async_client.clone();
+
+        let response = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                async_client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| ProviderError::new(format!("Stream request failed: {}", e)))?
+                    .error_for_status()
+                    .map_err(|e| ProviderError::new(format!("Stream API error: {}", e)))
+            })
+        })?;
+
+        let stream = async_stream::stream! {
+            let mut buffer = String::new();
+            let mut stream = response.bytes_stream();
+
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(bytes) => {
+                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+                        while let Some(line) = Self::extract_sse_line(&mut buffer) {
+                            if line == "[DONE]" {
+                                return;
+                            }
+                            if let Some(chat_chunk) = Self::parse_sse_chunk(&line) {
+                                yield Ok(chat_chunk);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        yield Err(ProviderError::new(format!("Stream read error: {}", e)));
+                        return;
+                    }
+                }
+            }
+        };
+
+        Ok(Box::pin(stream))
     }
 }

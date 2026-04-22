@@ -112,6 +112,7 @@ dependencies = [
  "async-stream",
  "chrono",
  "futures",
+ "log",
  "reqwest",
  "serde",
  "serde_json",
