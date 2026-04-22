@@ -157,10 +157,20 @@ pub struct ChatResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallDelta {
+    pub index: u32,
+    pub id: Option<String>,
+    pub function_name: Option<String>,
+    pub function_arguments: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatChunk {
     pub id: String,
     pub delta: String,
     pub finish_reason: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallDelta>,
 }
 
 pub type StreamResult<T, E> = std::result::Result<

@@ -132,8 +132,21 @@ impl OpenAIProvider {
 
     fn parse_sse_chunk(data: &str) -> Option<super::ChatChunk> {
         #[derive(Deserialize)]
+        struct StreamFunctionDelta {
+            name: Option<String>,
+            arguments: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct StreamToolCallDelta {
+            index: u32,
+            id: Option<String>,
+            function: Option<StreamFunctionDelta>,
+        }
+        #[derive(Deserialize)]
         struct StreamDelta {
             content: Option<String>,
+            #[serde(default)]
+            tool_calls: Option<Vec<StreamToolCallDelta>>,
         }
         #[derive(Deserialize)]
         struct StreamChoice {
@@ -148,10 +161,29 @@ impl OpenAIProvider {
 
         let resp: StreamResponse = serde_json::from_str(data).ok()?;
         let choice = resp.choices.first()?;
+        let tool_calls: Vec<super::ToolCallDelta> = choice
+            .delta
+            .tool_calls
+            .as_ref()
+            .map(|tcs| {
+                tcs.iter()
+                    .map(|tc| super::ToolCallDelta {
+                        index: tc.index,
+                        id: tc.id.clone(),
+                        function_name: tc.function.as_ref().and_then(|f| f.name.clone()),
+                        function_arguments: tc
+                            .function
+                            .as_ref()
+                            .and_then(|f| f.arguments.clone()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Some(super::ChatChunk {
             id: resp.id,
             delta: choice.delta.content.clone().unwrap_or_default(),
             finish_reason: choice.finish_reason.clone(),
+            tool_calls,
         })
     }
 
@@ -186,15 +218,6 @@ impl OpenAIProvider {
         if !request.tools.is_empty() {
             body["tools"] = serde_json::json!(request.tools);
         }
-
-        log::info!(
-            "Api Key set: {}",
-            if self.config.api_key.is_empty() {
-                "NO"
-            } else {
-                "YES"
-            }
-        );
 
         let response = self
             .client

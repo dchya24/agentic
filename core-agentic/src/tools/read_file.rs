@@ -32,10 +32,26 @@ impl Tool for ReadFileTool {
                 default: None,
             },
         );
+        params.insert(
+            "offset".to_string(),
+            ToolParam {
+                param_type: "number".to_string(),
+                description: Some("The line number to start reading from (1-indexed)".to_string()),
+                default: None,
+            },
+        );
+        params.insert(
+            "limit".to_string(),
+            ToolParam {
+                param_type: "number".to_string(),
+                description: Some("The maximum number of lines to read".to_string()),
+                default: None,
+            },
+        );
 
         ToolSchema {
             name: "read_file".to_string(),
-            description: "Read the contents of a file".to_string(),
+            description: "Read the contents of a file. Supports reading a range of lines with offset and limit.".to_string(),
             parameters: params,
             required: vec!["path".to_string()],
         }
@@ -51,6 +67,16 @@ impl Tool for ReadFileTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("Missing required parameter: path"))?;
 
+        let offset = args_obj
+            .get("offset")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        let limit = args_obj
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
         let path = Path::new(path);
 
         if !path.exists() {
@@ -60,13 +86,55 @@ impl Tool for ReadFileTool {
             )));
         }
 
+        if path.is_dir() {
+            let mut entries = Vec::new();
+            for entry in std::fs::read_dir(path)
+                .map_err(|e| ToolError::new(format!("Failed to read directory: {}", e)))?
+            {
+                let entry =
+                    entry.map_err(|e| ToolError::new(format!("Failed to read entry: {}", e)))?;
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                let file_type = entry
+                    .file_type()
+                    .map_err(|e| ToolError::new(format!("Failed to get file type: {}", e)))?;
+                let entry_type = if file_type.is_dir() {
+                    "directory"
+                } else {
+                    "file"
+                };
+                entries.push(format!("{} ({})", file_name, entry_type));
+            }
+            return Ok(serde_json::json!({
+                "path": path.to_string_lossy(),
+                "type": "directory",
+                "entries": entries,
+            }));
+        }
+
         let content = std::fs::read_to_string(path)
             .map_err(|e| ToolError::new(format!("Failed to read file: {}", e)))?;
 
+        let total_lines = content.lines().count();
+
+        let lines: Vec<String> = content
+            .lines()
+            .enumerate()
+            .filter(|(i, _)| {
+                if let Some(off) = offset {
+                    *i >= off.saturating_sub(1)
+                } else {
+                    true
+                }
+            })
+            .take(limit.unwrap_or(2000))
+            .map(|(i, line)| format!("{}: {}", i + 1, line))
+            .collect();
+
         Ok(serde_json::json!({
             "path": path.to_string_lossy(),
-            "content": content,
-            "size": content.len(),
+            "content": lines.join("\n"),
+            "total_lines": total_lines,
+            "lines_shown": lines.len(),
         }))
     }
 }
