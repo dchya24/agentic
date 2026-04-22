@@ -111,8 +111,6 @@ impl Orchestrator {
             let args: serde_json::Value =
                 serde_json::from_str(tc_args_str).unwrap_or(serde_json::json!({}));
 
-            println!("  [{}] {}", tc_name, args);
-
             if self.should_confirm(tc_name, &args) {
                 let request = self
                     .safety
@@ -129,15 +127,6 @@ impl Orchestrator {
             }
 
             let result = self.execute_tool(tc_name, &args);
-
-            println!(
-                "  -> {}",
-                if result.len() > 200 {
-                    format!("{}...", &result[..200])
-                } else {
-                    result.clone()
-                }
-            );
 
             self.memory.lock().unwrap().add_message(Message::tool(
                 tc_id.clone(),
