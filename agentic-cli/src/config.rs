@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use core_agentic::providers::OpenAIProviderConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use log::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -51,6 +52,8 @@ impl Config {
 
     pub fn load(path: &str) -> Result<Self> {
         let path = PathBuf::from(path);
+
+        info!("Loading config from {}", path.display());
 
         if !path.exists() {
             return Err(anyhow::anyhow!("Config file not found: {}", path.display()));
