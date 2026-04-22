@@ -1,9 +1,8 @@
 use anyhow::Result;
-use core_agentic::{ConfirmationRequest, Orchestrator, ToolRegistry};
+use core_agentic::{Config, Orchestrator, ToolRegistry};
 use std::sync::Arc;
 
 use crate::cli::ConfigAction;
-use crate::config::Config;
 use crate::confirmation::{prompt_confirmation, ConfirmationResponse};
 
 static ALWAYS_CONFIRM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -41,8 +40,11 @@ pub struct Commands {
 
 impl Commands {
     pub fn new(config: Config) -> Self {
-        let provider = config.to_provider_config();
-        let provider = Arc::new(core_agentic::OpenAIProvider::new(provider));
+        let provider_config = config
+            .to_provider_config()
+            .ok_or_else(|| CommandError::Config("No provider configured".to_string()))
+            .unwrap();
+        let provider = Arc::new(core_agentic::OpenAIProvider::new(provider_config));
 
         let tools = ToolRegistry::new();
         for tool in core_agentic::tools::builtin_tools() {

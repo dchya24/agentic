@@ -6,6 +6,7 @@
 #[cfg(test)]
 mod tests;
 
+pub mod config;
 pub mod agent;
 pub mod events;
 pub mod memory;
@@ -18,6 +19,7 @@ pub mod tools;
 
 // Re-export main types for public API
 pub use agent::{Agent, AgentConfig};
+pub use config::{Config, ModelConfig, ModelOutput, OutputConfig, ProviderConfig, SafetyConfig};
 pub use events::{Event, EventType};
 pub use memory::{Memory, Message, MessageRole};
 pub use orchestrator::Orchestrator;

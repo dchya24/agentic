@@ -3,7 +3,6 @@ mod tests;
 
 mod cli;
 mod commands;
-mod config;
 mod confirmation;
 mod interactive;
 mod output;
@@ -12,7 +11,6 @@ use anyhow::Result;
 use clap::Parser;
 use cli::Cli;
 use commands::Commands;
-use config::Config;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
@@ -32,9 +30,9 @@ async fn main() -> Result<()> {
     }
 
     let config = if let Some(config_path) = &cli.config {
-        Config::load(config_path)?
+        core_agentic::Config::load_from_path(config_path).ok_or_else(|| anyhow::anyhow!("Failed to load config"))?
     } else {
-        Config::default()?
+        core_agentic::Config::default()
     };
 
     let commands = Commands::new(config);
