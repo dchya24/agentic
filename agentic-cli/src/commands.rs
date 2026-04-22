@@ -45,6 +45,9 @@ impl Commands {
         let provider = Arc::new(core_agentic::OpenAIProvider::new(provider));
 
         let tools = ToolRegistry::new();
+        for tool in core_agentic::tools::builtin_tools() {
+            tools.register(tool);
+        }
 
         let mut orchestrator = Orchestrator::new(provider, tools);
 

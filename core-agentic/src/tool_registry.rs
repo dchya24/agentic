@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::providers::{ToolDefinition, ToolFunction};
 use crate::tool::{Tool, ToolCall, ToolError, ToolResultValue};
 
 pub struct ToolRegistry {
@@ -63,6 +64,50 @@ impl ToolRegistry {
     pub fn tool_names(&self) -> Vec<String> {
         let tools = self.tools.lock().unwrap();
         tools.keys().cloned().collect()
+    }
+
+    pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
+        let tools = self.tools.lock().unwrap();
+        tools
+            .values()
+            .map(|t| {
+                let schema = t.schema();
+                let mut properties = serde_json::Map::new();
+                for (name, param) in &schema.parameters {
+                    let mut prop = serde_json::json!({
+                        "type": param.param_type,
+                    });
+                    if let Some(desc) = &param.description {
+                        prop["description"] = serde_json::json!(desc);
+                    }
+                    properties.insert(name.clone(), prop);
+                }
+                ToolDefinition {
+                    tool_type: "function".into(),
+                    function: ToolFunction {
+                        name: schema.name.clone(),
+                        description: schema.description.clone(),
+                        parameters: serde_json::json!({
+                            "type": "object",
+                            "properties": properties,
+                            "required": schema.required,
+                        }),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    pub fn execute_by_name(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, ToolError> {
+        let tools = self.tools.lock().unwrap();
+        let tool = tools
+            .get(name)
+            .ok_or_else(|| ToolError::new(format!("Tool not found: {}", name)))?;
+        tool.execute(args.clone())
     }
 }
 

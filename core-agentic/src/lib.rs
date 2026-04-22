@@ -28,7 +28,7 @@ pub use tool_registry::ToolRegistry;
 
 // Re-export tool implementations
 pub use tools::{
-    RunCommandTool, ReadFileTool, WriteFileTool, ListFilesTool,
+    EditFileTool, GlobTool, GrepTool, ListFilesTool, ReadFileTool, RunCommandTool, WriteFileTool,
 };
 
 // Re-export provider implementations
