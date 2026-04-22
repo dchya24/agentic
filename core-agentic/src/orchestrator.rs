@@ -293,6 +293,8 @@ impl Orchestrator {
     where
         F: FnMut(String),
     {
+        use std::collections::HashMap;
+
         use futures::stream::StreamExt;
 
         {
@@ -306,7 +308,6 @@ impl Orchestrator {
             .add_message(Message::user(input));
 
         let tools = builtin_tool_definitions();
-        let mut last_output = String::new();
 
         loop {
             let context = self.memory.lock().unwrap().get_context(20);
@@ -329,13 +330,32 @@ impl Orchestrator {
                 .with_tools(tools.clone())
                 .stream();
 
+            let mut content_buf = String::new();
+            let mut tool_calls_map: HashMap<u32, (String, String, String)> = HashMap::new();
+
             match self.provider.chat_stream(request) {
                 Ok(mut stream) => {
                     while let Some(chunk_result) = stream.next().await {
                         match chunk_result {
                             Ok(chunk) => {
-                                on_chunk(chunk.delta.clone());
-                                last_output.push_str(&chunk.delta);
+                                if !chunk.delta.is_empty() {
+                                    on_chunk(chunk.delta.clone());
+                                    content_buf.push_str(&chunk.delta);
+                                }
+                                for tc in chunk.tool_calls {
+                                    let entry = tool_calls_map
+                                        .entry(tc.index)
+                                        .or_insert_with(|| (String::new(), String::new(), String::new()));
+                                    if let Some(id) = tc.id {
+                                        entry.0 = id;
+                                    }
+                                    if let Some(name) = tc.function_name {
+                                        entry.1 = name;
+                                    }
+                                    if let Some(args) = tc.function_arguments {
+                                        entry.2.push_str(&args);
+                                    }
+                                }
                             }
                             Err(e) => {
                                 return Err(AgenticError::Provider(e.to_string()));
@@ -348,17 +368,77 @@ impl Orchestrator {
                 }
             }
 
+            let accumulated_tool_calls: Vec<(String, String, String)> = {
+                let mut indices: Vec<u32> = tool_calls_map.keys().copied().collect();
+                indices.sort();
+                indices
+                    .into_iter()
+                    .map(|i| {
+                        let (id, name, args) = tool_calls_map.remove(&i).unwrap();
+                        (id, name, args)
+                    })
+                    .collect()
+            };
+
+            if !accumulated_tool_calls.is_empty() {
+                self.memory
+                    .lock()
+                    .unwrap()
+                    .add_message(Message::assistant(&content_buf));
+
+                for (tc_id, tc_name, tc_args_str) in &accumulated_tool_calls {
+                    let args: serde_json::Value =
+                        serde_json::from_str(tc_args_str).unwrap_or(serde_json::json!({}));
+
+                    println!("  [{}] {}", tc_name, args);
+
+                    if self.should_confirm(tc_name, &args) {
+                        let request = self
+                            .safety
+                            .create_request(tc_name, &format!("{:?}", args));
+                        if !self.require_confirmation(request) {
+                            println!("  -> [SKIPPED - Confirmation denied]");
+                            self.memory.lock().unwrap().add_message(Message::tool(
+                                tc_id.clone(),
+                                tc_name.clone(),
+                                "Skipped: Confirmation denied".to_string(),
+                            ));
+                            continue;
+                        }
+                    }
+
+                    let result = execute_builtin(tc_name, &args);
+
+                    println!(
+                        "  -> {}",
+                        if result.len() > 200 {
+                            format!("{}...", &result[..200])
+                        } else {
+                            result.clone()
+                        }
+                    );
+
+                    self.memory.lock().unwrap().add_message(Message::tool(
+                        tc_id.clone(),
+                        tc_name.clone(),
+                        result,
+                    ));
+                }
+
+                continue;
+            }
+
             self.memory
                 .lock()
                 .unwrap()
-                .add_message(Message::assistant(&last_output));
+                .add_message(Message::assistant(&content_buf));
 
             {
                 let mut state = self.state.lock().unwrap();
                 *state = OrchestratorState::Completed;
             }
 
-            return Ok(last_output);
+            return Ok(content_buf);
         }
     }
 }
