@@ -50,6 +50,13 @@ impl Orchestrator {
         *h = Some(Box::new(handler));
     }
 
+    pub fn add_system_message(&self, content: String) {
+        self.memory
+            .lock()
+            .unwrap()
+            .add_message(Message::system(content));
+    }
+
     fn should_confirm(&self, tool_name: &str, args: &serde_json::Value) -> bool {
         let action = tool_name;
         let target = args
