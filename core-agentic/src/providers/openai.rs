@@ -109,7 +109,8 @@ impl OpenAIProvider {
             .expect("Failed to build HTTP client");
 
         let async_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(300))
             .build()
             .expect("Failed to build async HTTP client");
 
