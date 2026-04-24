@@ -6,10 +6,43 @@ use serde::{Deserialize, Serialize};
 
 use super::{ChatRequest, ChatResponse, ChatUsage, LLMProvider, ProviderError, ProviderResult};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_base_delay_ms")]
+    pub base_delay_ms: u64,
+    #[serde(default = "default_max_delay_ms")]
+    pub max_delay_ms: u64,
+}
+
+fn default_max_retries() -> u32 { 3 }
+fn default_base_delay_ms() -> u64 { 1000 }
+fn default_max_delay_ms() -> u64 { 30000 }
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: default_max_retries(),
+            base_delay_ms: default_base_delay_ms(),
+            max_delay_ms: default_max_delay_ms(),
+        }
+    }
+}
+
+impl RetryConfig {
+    fn delay_for_attempt(&self, attempt: u32) -> std::time::Duration {
+        let exp = 2u64.saturating_pow(attempt);
+        let delay = self.base_delay_ms.saturating_mul(exp);
+        std::time::Duration::from_millis(delay.min(self.max_delay_ms))
+    }
+}
+
 pub struct OpenAIProvider {
     config: OpenAIProviderConfig,
     client: Client,
     async_client: reqwest::Client,
+    retry: RetryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +55,8 @@ pub struct OpenAIProviderConfig {
     pub api_key: String,
     pub models: Vec<ModelConfig>,
     pub default_model: String,
+    #[serde(default)]
+    pub retry: RetryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +83,7 @@ impl OpenAIProviderConfig {
             api_key: api_key.into(),
             models: vec![],
             default_model: default_model.into(),
+            retry: RetryConfig::default(),
         }
     }
 }
@@ -114,7 +150,8 @@ impl OpenAIProvider {
             .build()
             .expect("Failed to build async HTTP client");
 
-        Self { config, client, async_client }
+        let retry = config.retry.clone();
+        Self { config, client, async_client, retry }
     }
 
     fn extract_sse_line(buffer: &mut String) -> Option<String> {
@@ -188,13 +225,18 @@ impl OpenAIProvider {
         })
     }
 
-    pub fn chat(&self, request: ChatRequest) -> ProviderResult<ChatResponse> {
-        let url = format!(
-            "{}/chat/completions",
-            self.config.base_url.trim_end_matches('/')
-        );
+    fn is_retryable_error(error: &ProviderError) -> bool {
+        let msg = error.0.to_lowercase();
+        msg.contains("timeout")
+            || msg.contains("connection")
+            || msg.contains("429")
+            || msg.contains("500")
+            || msg.contains("502")
+            || msg.contains("503")
+            || msg.contains("504")
+    }
 
-        // first message is always system prompt
+    pub fn chat(&self, request: ChatRequest) -> ProviderResult<ChatResponse> {
         let mut messages: Vec<super::ChatMessageRequest> = vec![super::ChatMessageRequest {
             role: "system".into(),
             content: "You are a helpful coding assistant".into(),
@@ -202,7 +244,6 @@ impl OpenAIProvider {
             tool_calls: vec![],
         }];
 
-        // push the rest of the messages from the request
         messages.extend(request.messages.iter().cloned());
 
         let mut body = serde_json::json!({
@@ -219,6 +260,36 @@ impl OpenAIProvider {
         if !request.tools.is_empty() {
             body["tools"] = serde_json::json!(request.tools);
         }
+
+        let mut last_error = None;
+
+        for attempt in 0..=self.retry.max_retries {
+            if attempt > 0 {
+                let delay = self.retry.delay_for_attempt(attempt - 1);
+                log::warn!("Retry attempt {}/{} after {:?}", attempt, self.retry.max_retries, delay);
+                std::thread::sleep(delay);
+            }
+
+            match self.chat_once(&body) {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    let retryable = Self::is_retryable_error(&e);
+                    last_error = Some(e);
+                    if !retryable || attempt == self.retry.max_retries {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap())
+    }
+
+    fn chat_once(&self, body: &serde_json::Value) -> ProviderResult<ChatResponse> {
+        let url = format!(
+            "{}/chat/completions",
+            self.config.base_url.trim_end_matches('/')
+        );
 
         let response = self
             .client
@@ -334,47 +405,71 @@ impl LLMProvider for OpenAIProvider {
 
         let api_key = self.config.api_key.clone();
         let async_client = self.async_client.clone();
+        let retry = self.retry.clone();
 
-        let response = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                async_client
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {}", api_key))
-                    .header("Content-Type", "application/json")
-                    .json(&body)
-                    .send()
-                    .await
-                    .map_err(|e| ProviderError::new(format!("Stream request failed: {}", e)))?
-                    .error_for_status()
-                    .map_err(|e| ProviderError::new(format!("Stream API error: {}", e)))
-            })
-        })?;
+        let mut last_error = None;
 
-        let stream = async_stream::stream! {
-            let mut buffer = String::new();
-            let mut stream = response.bytes_stream();
+        for attempt in 0..=retry.max_retries {
+            if attempt > 0 {
+                let delay = retry.delay_for_attempt(attempt - 1);
+                log::warn!("Stream retry attempt {}/{} after {:?}", attempt, retry.max_retries, delay);
+                std::thread::sleep(delay);
+            }
 
-            while let Some(chunk_result) = stream.next().await {
-                match chunk_result {
-                    Ok(bytes) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-                        while let Some(line) = Self::extract_sse_line(&mut buffer) {
-                            if line == "[DONE]" {
-                                return;
-                            }
-                            if let Some(chat_chunk) = Self::parse_sse_chunk(&line) {
-                                yield Ok(chat_chunk);
+            let result = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    async_client
+                        .post(&url)
+                        .header("Authorization", format!("Bearer {}", api_key))
+                        .header("Content-Type", "application/json")
+                        .json(&body)
+                        .send()
+                        .await
+                        .map_err(|e| ProviderError::new(format!("Stream request failed: {}", e)))?
+                        .error_for_status()
+                        .map_err(|e| ProviderError::new(format!("Stream API error: {}", e)))
+                })
+            });
+
+            match result {
+                Ok(response) => {
+                    let stream = async_stream::stream! {
+                        let mut buffer = String::new();
+                        let mut stream = response.bytes_stream();
+
+                        while let Some(chunk_result) = stream.next().await {
+                            match chunk_result {
+                                Ok(bytes) => {
+                                    buffer.push_str(&String::from_utf8_lossy(&bytes));
+                                    while let Some(line) = Self::extract_sse_line(&mut buffer) {
+                                        if line == "[DONE]" {
+                                            return;
+                                        }
+                                        if let Some(chat_chunk) = Self::parse_sse_chunk(&line) {
+                                            yield Ok(chat_chunk);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    yield Err(ProviderError::new(format!("Stream read error: {}", e)));
+                                    return;
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        yield Err(ProviderError::new(format!("Stream read error: {}", e)));
-                        return;
+                    };
+
+                    return Ok(Box::pin(stream));
+                }
+                Err(e) => {
+                    let retryable = Self::is_retryable_error(&e);
+                    last_error = Some(e);
+                    if !retryable || attempt == retry.max_retries {
+                        break;
                     }
                 }
             }
-        };
+        }
 
-        Ok(Box::pin(stream))
+        Err(last_error.unwrap())
     }
 }

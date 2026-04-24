@@ -128,6 +128,7 @@ struct LegacySingleProvider {
     #[serde(default)]
     max_tokens: Option<u32>,
     #[serde(default)]
+    #[allow(dead_code)]
     tools_enabled: Option<Vec<String>>,
 }
 
