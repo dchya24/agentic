@@ -1,8 +1,22 @@
 //! LLM Provider trait and implementations
 
 pub mod openai;
+pub mod anthropic;
 
 pub use openai::{OpenAIProvider, OpenAIProviderConfig};
+pub use anthropic::{
+    AnthropicProvider,
+    AnthropicProviderConfig,
+    RetryConfig,
+    AnthropicResponse,
+    AnthropicContentBlockResponse,
+    AnthropicError,
+    AnthropicErrorDetail,
+    AnthropicStreamEvent,
+    AnthropicStreamMessage,
+    AnthropicStreamDelta,
+    AnthropicUsage,
+};
 
 use serde::{Deserialize, Serialize};
 

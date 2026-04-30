@@ -37,6 +37,7 @@ pub use tools::{
 
 // Re-export provider implementations
 pub use providers::openai::OpenAIProvider;
+pub use providers::anthropic::AnthropicProvider;
 
 pub type Result<T> = std::result::Result<T, AgenticError>;
 
