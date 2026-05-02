@@ -1,46 +1,70 @@
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(name = "agentic")]
-#[command(about = "AI agent orchestration CLI", long_about = None)]
+#[command(about = "AI agent orchestration command-line interface", long_about = None)]
 pub struct Cli {
-    #[command(subcommand)]
-    pub command: Option<Command>,
-
-    #[arg(short, long, value_name = "PATH", global = true)]
+    /// Set a custom config file path
+    #[arg(short, long, global = true)]
     pub config: Option<String>,
 
-    #[arg(short, long, action)]
-    pub verbose: Option<VerboseLevel>,
+    /// Verbose output level (can be used multiple times)
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    pub verbose: Option<u8>,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
 }
 
-#[derive(Parser, Debug, Clone)]
+#[derive(Subcommand)]
 pub enum Command {
-    #[command(about = "Run a single task")]
-    Run { task: String },
+    /// Run a single task
+    Run {
+        /// The task description
+        task: String,
+    },
 
-    #[command(about = "Start interactive mode")]
+    /// Start interactive mode
     Interactive,
 
-    #[command(about = "Manage configuration")]
-    Config { action: ConfigAction },
+    /// Configuration management
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
 
-    #[command(about = "Show version")]
+    /// Show version information
     Version,
 }
 
-#[derive(Parser, Debug, Clone, ValueEnum)]
+#[derive(Subcommand)]
 pub enum ConfigAction {
+    /// Show current configuration
     Show,
+
+    /// Initialize a new configuration file
+    Init,
+
+    /// Edit configuration in default editor
     Edit,
-    Reset,
+
+    /// Validate configuration file
+    Validate,
+
+    /// Reset configuration to defaults
+    Reset {
+        /// Skip confirmation prompt
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Get configuration file path
+    Path,
 }
 
-#[derive(ValueEnum, Debug, Clone)]
-pub enum VerboseLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
+impl ConfigAction {
+    pub fn needs_config_file(&self) -> bool {
+        matches!(self, Self::Show | Self::Validate | Self::Edit | Self::Reset { .. })
+    }
 }

@@ -148,14 +148,22 @@ impl Config {
         home.join(".config").join("agentic").join("config.json")
     }
 
+    /// Check if config file exists
+    pub fn config_exists() -> bool {
+        Self::config_path().exists()
+    }
+
+    /// Load config from default path
     pub fn load() -> Option<Self> {
         Self::load_from(Self::config_path())
     }
 
+    /// Load config from custom path
     pub fn load_from_path(path: &str) -> Option<Self> {
         Self::load_from(PathBuf::from(path))
     }
 
+    /// Load config from PathBuf
     pub fn load_from(path: PathBuf) -> Option<Self> {
         log::info!("Loading config from: {}", path.display());
 
@@ -241,6 +249,7 @@ impl Config {
         }
     }
 
+    /// Save config to default path
     pub fn save(&self) -> Result<(), String> {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
@@ -252,17 +261,25 @@ impl Config {
         std::fs::write(&path, content).map_err(|e| format!("Failed to write config file: {}", e))
     }
 
+    /// Create default config file (overwrites if exists)
+    pub fn create_default() -> Result<Self, String> {
+        let config = Self::fallback();
+        config.save()?;
+        Ok(config)
+    }
+
+    /// Get fallback/default config
     pub fn fallback() -> Self {
         Self {
             providers: vec![ProviderConfig {
-                name: "z.ai".to_string(),
+                name: "openai".to_string(),
                 provider_type: "openai-compatible".to_string(),
                 api_base: std::env::var("OPENAI_BASE_URL")
-                    .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string()),
+                    .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
                 api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
                 models: vec![ModelConfig {
-                    model: "glm-4.7".to_string(),
-                    display_name: Some("GLM-4.7".to_string()),
+                    model: "gpt-4o".to_string(),
+                    display_name: Some("GPT-4o".to_string()),
                     temperature: 0.7,
                     max_tokens: 8192,
                 }],
@@ -271,6 +288,35 @@ impl Config {
             output: OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
         }
+    }
+
+    /// Check if config is valid (has required fields)
+    pub fn is_valid(&self) -> (bool, Vec<String>) {
+        let mut errors = Vec::new();
+
+        if self.providers.is_empty() {
+            errors.push("No providers configured".to_string());
+        }
+
+        for (i, provider) in self.providers.iter().enumerate() {
+            if provider.name.is_empty() {
+                errors.push(format!("Provider #{}: name is empty", i + 1));
+            }
+
+            if provider.provider_type.is_empty() {
+                errors.push(format!("Provider #{}: type is empty", i + 1));
+            }
+
+            if provider.api_base.is_empty() {
+                errors.push(format!("Provider #{}: API base URL is empty", i + 1));
+            }
+
+            if provider.models.is_empty() {
+                errors.push(format!("Provider #{}: No models configured", i + 1));
+            }
+        }
+
+        (errors.is_empty(), errors)
     }
 
     pub fn active_provider(&self) -> Option<&ProviderConfig> {
