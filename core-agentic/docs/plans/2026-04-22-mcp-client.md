@@ -1,12 +1,12 @@
 # MCP Client Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **Status:** ✅ **Completed** (May 4, 2026)
 
 **Goal:** Add MCP (Model Context Protocol) client support to core-agentic, allowing the agent to discover and call tools from external MCP servers via both stdio and HTTP/SSE transports.
 
 **Architecture:** A new `mcp` module implements the MCP client protocol. Each remote MCP server is represented by an `McpConnection` that handles discovery (`tools/list`) and invocation (`tools/call`) via JSON-RPC 2.0. An `McpToolAdapter` wraps each remote tool as a `crate::tool::Tool` so it plugs into the existing `ToolRegistry`. Two transports are supported: `StdioTransport` (spawns a child process, communicates over stdin/stdout) and `HttpTransport` (POST to HTTP endpoint with optional SSE for streaming).
 
-**Tech Stack:** Rust, tokio (async runtime), serde_json (JSON-RPC), reqwest (HTTP), std::process (stdio)
+**Tech Stack:** Rust, serde_json (JSON-RPC), reqwest::blocking (HTTP), std::process (stdio)
 
 ---
 

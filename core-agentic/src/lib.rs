@@ -17,6 +17,7 @@ pub mod tool;
 pub mod tool_registry;
 pub mod mcp;
 pub mod tools;
+pub mod planner;
 
 // Re-export main types for public API
 pub use agent::{Agent, AgentConfig};
@@ -28,6 +29,7 @@ pub use providers::LLMProvider;
 pub use safety::{ConfirmationRequest, RiskLevel, RiskScore, SafetyDecision, AuditEntry, AuditDecision, RateLimit};
 pub use tool::{Tool, ToolError, ToolResult, ToolSchema, ToolCall, ToolResultValue};
 pub use mcp::{McpClient, McpServerConfig, McpToolAdapter};
+pub use planner::{PlannerAgent, PlannerConfig, Plan, Step, PlanStatus, StepStatus, PlanResult};
 pub use tool_registry::ToolRegistry;
 
 // Re-export tool implementations

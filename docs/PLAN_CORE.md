@@ -55,6 +55,7 @@ core-agentic/src/
 | OpenAI Provider | `providers/openai.rs` | ✅ Working |
 | Anthropic Provider | `providers/anthropic.rs` | ✅ Working |
 | MCP Client | `mcp/` | ✅ Working |
+| Planner Agent | `planner.rs` | ✅ Working |
 | 7 Builtin Tools | `tools/` | ✅ Working |
 
 ---
@@ -131,21 +132,45 @@ impl MemoryManager {
 
 ---
 
+### 1.3 MCP Client
+**File:** `core-agentic/src/mcp/`
+**Est:** 3-5 days
+**Status:** ✅ **Completed** (May 4, 2026)
+
+**Tasks:**
+- [x] MCP protocol types (JSON-RPC 2.0)
+- [x] Transport trait + StdioTransport (child process)
+- [x] Transport trait + HttpTransport (reqwest blocking)
+- [x] MCP client (connect, initialize, discover tools, call tools)
+- [x] Tool adapter (wraps remote MCP tools as local `Tool` trait)
+- [x] Config integration (`mcp_servers` field in `Config`)
+- [x] ToolRegistry helper (`register_mcp_server()`)
+- [x] Unit tests (types, serialization, config roundtrip)
+
+**Remaining improvements (deferred to Phase 2):**
+- [ ] Async transport (replace `reqwest::blocking` with tokio-based)
+- [ ] SSE streaming transport support
+- [ ] Auto-reconnection on server disconnect
+- [ ] Integration test against real MCP server
+
+---
+
 ## 🟡 Phase 2: Advanced Features (Week 3-6) — 10-15 days
 
 ### 2.1 Planner Agent
-**File:** `core-agentic/src/planner.rs` (NEW)
+**File:** `core-agentic/src/planner.rs`
 **Est:** 5-7 days
+**Status:** ✅ **Completed** (May 4, 2026)
 
 **Tasks:**
-- [ ] Design planner architecture
-- [ ] Task decomposition algorithm
-- [ ] Step planning (ordered + dependencies)
-- [ ] Plan execution tracking
-- [ ] Re-planning on failure
-- [ ] Plan approval flow (emit event → wait for response)
-- [ ] Plan step status management
-- [ ] Integration with orchestrator
+- [x] Design planner architecture
+- [x] Task decomposition algorithm (LLM-based + manual)
+- [x] Step planning (ordered + dependencies)
+- [x] Plan execution tracking
+- [x] Re-planning on failure (configurable max attempts)
+- [x] Plan approval flow (event + callback)
+- [x] Plan step status management
+- [ ] Integration with orchestrator (deferred)
 
 **Architecture:**
 ```rust
@@ -202,7 +227,20 @@ pub enum AgenticEvent {
 
 ---
 
-### 2.2 Provider Enhancements
+### 2.2 MCP Async & Streaming
+**Files:** `core-agentic/src/mcp/transport.rs`, `core-agentic/src/mcp/client.rs`
+**Est:** 2-3 days
+
+**Tasks:**
+- [ ] Async transport trait (`tokio` + `reqwest` async)
+- [ ] SSE streaming transport for HTTP MCP servers
+- [ ] Auto-reconnection on server disconnect
+- [ ] Connection health check
+- [ ] Integration test against real MCP server (e.g. `@modelcontextprotocol/server-filesystem`)
+
+---
+
+### 2.3 Provider Enhancements
 **Files:** `core-agentic/src/providers/`
 **Est:** 3-4 days
 
@@ -230,7 +268,7 @@ pub trait LlmProvider: Send + Sync {
 
 ---
 
-### 2.3 Tool Enhancements
+### 2.4 Tool Enhancements
 **Files:** `core-agentic/src/tools/`
 **Est:** 2-3 days
 
@@ -356,4 +394,4 @@ agentic_test_mcp_server(config)    → bool
 
 ---
 
-**Last Updated:** May 4, 2026
+**Last Updated:** May 4, 2026 — Phase 1 + §2.1 Planner Agent complete. Next: §2.2 MCP Async, §2.3 Providers, §2.4 Tools.
