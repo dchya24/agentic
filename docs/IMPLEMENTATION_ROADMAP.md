@@ -238,18 +238,18 @@ Planner:
 
 **Reference:** PRD Safety Requirements
 
-**Status:** Basic safety exists, needs enhancement
+**Status:** ✅ Core safety enhanced (May 4, 2026). Risk scoring, patterns, sandbox, rate limiting, audit logging done. UI pending.
 
 **Tasks:**
-- [ ] Implement command risk scoring
-- [ ] Add dynamic approval based on risk
+- [x] Implement command risk scoring
+- [x] Add dynamic approval based on risk
 - [ ] Add command preview before execution
 - [ ] Add undo capability for file operations
-- [ ] Implement basic sandbox mode (optional)
+- [x] Implement basic sandbox mode
 - [ ] Add command history review UI
 - [ ] Add safety settings UI
-- [ ] Test dangerous command blocking
-- [ ] Test risk scoring accuracy
+- [x] Test dangerous command blocking
+- [x] Test risk scoring accuracy
 
 **Files:**
 - `core-agentic/src/safety.rs` - Enhance
@@ -346,16 +346,16 @@ Planner:
 
 **Reference:** PRD Memory & Context Management
 
-**Status:** Basic memory exists, needs enhancement
+**Status:** ✅ Core memory enhanced (May 4, 2026). Sliding window, pinning, sessions, persistence, search done. UI pending.
 
 **Tasks:**
-- [ ] Implement context window management
-- [ ] Add message summarization
-- [ ] Add sliding window for long conversations
-- [ ] Add memory persistence across sessions
+- [x] Implement context window management
+- [x] Add message summarization
+- [x] Add sliding window for long conversations
+- [x] Add memory persistence across sessions
 - [ ] Add memory search UI
 - [ ] Add memory visualization
-- [ ] Add context optimization
+- [x] Add context optimization
 
 **Files:**
 - `core-agentic/src/memory.rs` - Enhance

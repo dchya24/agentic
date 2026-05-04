@@ -65,3 +65,5 @@
   - [ ] 8.1 Test backend commands
   - [ ] 8.2 Test frontend components
   - [ ] 8.3 Test end-to-end flow
+
+> **Full testing plan:** [docs/PLAN_TESTING.md](../../docs/PLAN_TESTING.md)
