@@ -28,7 +28,11 @@ pub use orchestrator::Orchestrator;
 pub use providers::LLMProvider;
 pub use safety::{ConfirmationRequest, RiskLevel, RiskScore, SafetyDecision, AuditEntry, AuditDecision, RateLimit};
 pub use tool::{Tool, ToolError, ToolResult, ToolSchema, ToolCall, ToolResultValue};
-pub use mcp::{McpClient, McpServerConfig, McpToolAdapter};
+pub use mcp::{
+    McpClient, McpServerConfig, McpToolAdapter,
+    AsyncMcpClient, AsyncMcpToolAdapter, ReconnectConfig,
+    AsyncMcpTransport, AsyncStdioTransport, AsyncHttpTransport, AsyncSseTransport,
+};
 pub use planner::{PlannerAgent, PlannerConfig, Plan, Step, PlanStatus, StepStatus, PlanResult};
 pub use tool_registry::ToolRegistry;
 

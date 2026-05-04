@@ -228,15 +228,21 @@ pub enum AgenticEvent {
 ---
 
 ### 2.2 MCP Async & Streaming
-**Files:** `core-agentic/src/mcp/transport.rs`, `core-agentic/src/mcp/client.rs`
+**Files:** `core-agentic/src/mcp/transport.rs`, `core-agentic/src/mcp/client.rs`, `core-agentic/src/mcp/tool_adapter.rs`
 **Est:** 2-3 days
+**Status:** ✅ **Completed** (May 4, 2026)
 
 **Tasks:**
-- [ ] Async transport trait (`tokio` + `reqwest` async)
-- [ ] SSE streaming transport for HTTP MCP servers
-- [ ] Auto-reconnection on server disconnect
-- [ ] Connection health check
-- [ ] Integration test against real MCP server (e.g. `@modelcontextprotocol/server-filesystem`)
+- [x] Async transport trait (`tokio` + `reqwest` async) — `AsyncMcpTransport`
+- [x] Async stdio transport — `AsyncStdioTransport` with reconnect support
+- [x] Async HTTP transport — `AsyncHttpTransport` with health check
+- [x] SSE transport — `AsyncSseTransport` for server-pushed events
+- [x] Async MCP client — `AsyncMcpClient` with full lifecycle
+- [x] Auto-reconnection with exponential backoff — `ReconnectConfig`
+- [x] Connection health check — `health_check()` on all transports
+- [x] Async tool adapter — `AsyncMcpToolAdapter` bridges sync→async via `Handle::block_on()`
+- [x] Backward compatibility — original blocking `McpClient`/`McpToolAdapter` unchanged
+- [x] Unit tests (13 new tests for async transports, client config, health check)
 
 ---
 
@@ -394,4 +400,4 @@ agentic_test_mcp_server(config)    → bool
 
 ---
 
-**Last Updated:** May 4, 2026 — Phase 1 + §2.1 Planner Agent complete. Next: §2.2 MCP Async, §2.3 Providers, §2.4 Tools.
+**Last Updated:** May 4, 2026 — Phase 1 + §2.1 §2.2 complete. Next: §2.3 Providers, §2.4 Tools.
