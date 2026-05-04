@@ -472,4 +472,80 @@ impl LLMProvider for OpenAIProvider {
 
         Err(last_error.unwrap())
     }
+
+    fn health_check(&self) -> super::ProviderResult<bool> {
+        let url = format!(
+            "{}/models",
+            self.config.base_url.trim_end_matches('/')
+        );
+        let result = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send();
+        match result {
+            Ok(resp) if resp.status().is_success() => Ok(true),
+            Ok(resp) => Err(super::ProviderError::new(format!(
+                "Health check failed: HTTP {}",
+                resp.status()
+            ))),
+            Err(e) => Err(super::ProviderError::new(format!(
+                "Health check connection failed: {}",
+                e
+            ))),
+        }
+    }
+
+    fn list_models(&self) -> super::ProviderResult<Vec<super::ModelInfo>> {
+        let url = format!(
+            "{}/models",
+            self.config.base_url.trim_end_matches('/')
+        );
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .map_err(|e| super::ProviderError::new(format!("List models request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(super::ProviderError::new(format!(
+                "List models failed: HTTP {}",
+                response.status()
+            )));
+        }
+
+        #[derive(Deserialize)]
+        struct ModelsResponse {
+            data: Vec<ModelEntry>,
+        }
+        #[derive(Deserialize)]
+        struct ModelEntry {
+            id: String,
+        }
+
+        let models: ModelsResponse = response
+            .json()
+            .map_err(|e| super::ProviderError::new(format!("Failed to parse models response: {}", e)))?;
+
+        Ok(models
+            .data
+            .into_iter()
+            .map(|m| super::ModelInfo {
+                id: m.id.clone(),
+                name: m.id,
+                context_window: None,
+                capabilities: vec![
+                    super::ModelCapability::Chat,
+                    super::ModelCapability::Streaming,
+                    super::ModelCapability::ToolCalling,
+                ],
+            })
+            .collect())
+    }
+
+    fn count_tokens(&self, text: &str) -> usize {
+        // OpenAI uses BPE, ~4 chars per token is a decent approximation
+        text.len() / 4
+    }
 }

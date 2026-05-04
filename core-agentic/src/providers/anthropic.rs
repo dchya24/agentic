@@ -654,4 +654,47 @@ impl LLMProvider for AnthropicProvider {
 
         Err(last_error.unwrap())
     }
+
+    fn health_check(&self) -> super::ProviderResult<bool> {
+        // Anthropic doesn't have a dedicated health endpoint.
+        // We just check that we can reach the API base URL.
+        let url = self.config.base_url.trim_end_matches('/').to_string();
+        let result = self
+            .client
+            .get(&url)
+            .header("x-api-key", &self.config.api_key)
+            .header("anthropic-version", &self.config.version)
+            .send();
+        match result {
+            Ok(_) => Ok(true), // Any response means the API is reachable
+            Err(e) => Err(super::ProviderError::new(format!(
+                "Health check connection failed: {}",
+                e
+            ))),
+        }
+    }
+
+    fn list_models(&self) -> super::ProviderResult<Vec<super::ModelInfo>> {
+        // Return the statically configured models from config
+        Ok(self
+            .config
+            .models
+            .iter()
+            .map(|m| super::ModelInfo {
+                id: m.id.clone(),
+                name: m.name.clone(),
+                context_window: m.context_window,
+                capabilities: vec![
+                    super::ModelCapability::Chat,
+                    super::ModelCapability::Streaming,
+                    super::ModelCapability::ToolCalling,
+                ],
+            })
+            .collect())
+    }
+
+    fn count_tokens(&self, text: &str) -> usize {
+        // Claude uses a different tokenizer, but ~3.5 chars per token is reasonable
+        (text.len() as f32 / 3.5) as usize
+    }
 }

@@ -38,12 +38,16 @@ pub use tool_registry::ToolRegistry;
 
 // Re-export tool implementations
 pub use tools::{
-    EditFileTool, GlobTool, GrepTool, ListFilesTool, ReadFileTool, RunCommandTool, WriteFileTool,
+    EditFileTool, GlobTool, GrepTool, ListFilesTool, ReadFileTool, RunCommandTool,
+    WriteFileTool, SearchFilesTool, RunScriptTool,
 };
 
 // Re-export provider implementations
 pub use providers::openai::OpenAIProvider;
 pub use providers::anthropic::AnthropicProvider;
+pub use providers::zai::ZaiProvider;
+pub use providers::failover::FailoverProvider;
+pub use providers::{ModelInfo, ModelCapability};
 
 pub type Result<T> = std::result::Result<T, AgenticError>;
 

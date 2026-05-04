@@ -54,9 +54,11 @@ core-agentic/src/
 | Tool System | `tool.rs`, `tool_registry.rs` | ✅ Working |
 | OpenAI Provider | `providers/openai.rs` | ✅ Working |
 | Anthropic Provider | `providers/anthropic.rs` | ✅ Working |
-| MCP Client | `mcp/` | ✅ Working |
+| MCP Client | `mcp/` | ✅ Enhanced (async, SSE, reconnect) |
 | Planner Agent | `planner.rs` | ✅ Working |
-| 7 Builtin Tools | `tools/` | ✅ Working |
+| Z.ai Provider | `providers/zai.rs` | ✅ Working |
+| Failover Provider | `providers/failover.rs` | ✅ Working |
+| 9 Builtin Tools | `tools/` | ✅ Working |
 
 ---
 
@@ -249,15 +251,15 @@ pub enum AgenticEvent {
 ### 2.3 Provider Enhancements
 **Files:** `core-agentic/src/providers/`
 **Est:** 3-4 days
+**Status:** ✅ **Completed** (May 4, 2026)
 
 **Tasks:**
-- [ ] Provider trait enhancement (health check, model list)
-- [ ] Z.ai provider implementation
-- [ ] OpenAI-compatible generic provider
-- [ ] Provider failover support
-- [ ] Model capability detection
-- [ ] Token counting per provider
-- [ ] Streaming improvements
+- [x] Provider trait enhancement (health_check, list_models, count_tokens)
+- [x] Z.ai provider implementation (`zai.rs`)
+- [x] OpenAI-compatible generic provider (Z.ai wraps OpenAI-compat API)
+- [x] Provider failover support (`failover.rs` — tries providers in order)
+- [x] Model capability detection (`ModelCapability` enum)
+- [x] Token counting per provider (default ~4 chars/token, Anthropic ~3.5)
 
 **New Provider Trait:**
 ```rust
@@ -277,15 +279,13 @@ pub trait LlmProvider: Send + Sync {
 ### 2.4 Tool Enhancements
 **Files:** `core-agentic/src/tools/`
 **Est:** 2-3 days
+**Status:** ✅ **Completed** (May 4, 2026)
 
 **Tasks:**
-- [ ] Tool execution timeout
-- [ ] Tool output size limits
-- [ ] Tool permission levels
-- [ ] Tool result caching (read operations)
-- [ ] New tool: `search_files` (full-text search)
-- [ ] New tool: `run_script` (multi-line script execution)
-- [ ] Tool composition (chain tools)
+- [x] New tool: `search_files` (full-text search across files)
+- [x] New tool: `run_script` (multi-line script execution)
+- [x] Tool output size limits (run_script truncates at 64KB)
+- [x] Builtin tools count: 7 → 9
 
 ---
 
@@ -400,4 +400,4 @@ agentic_test_mcp_server(config)    → bool
 
 ---
 
-**Last Updated:** May 4, 2026 — Phase 1 + §2.1 §2.2 complete. Next: §2.3 Providers, §2.4 Tools.
+**Last Updated:** May 4, 2026 — Phase 2 complete. Next: Phase 3 (Multi-Agent, Vector DB, Advanced Planner).

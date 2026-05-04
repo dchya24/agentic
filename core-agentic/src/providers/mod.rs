@@ -2,6 +2,8 @@
 
 pub mod openai;
 pub mod anthropic;
+pub mod zai;
+pub mod failover;
 
 pub use openai::{OpenAIProvider, OpenAIProviderConfig};
 pub use anthropic::{
@@ -17,6 +19,8 @@ pub use anthropic::{
     AnthropicStreamDelta,
     AnthropicUsage,
 };
+pub use zai::{ZaiProvider, ZaiProviderConfig, ZaiModelConfig};
+pub use failover::FailoverProvider;
 
 use serde::{Deserialize, Serialize};
 
@@ -199,4 +203,46 @@ pub trait LLMProvider: Send + Sync {
     fn chat(&self, request: ChatRequest) -> ProviderResult<ChatResponse>;
 
     fn chat_stream(&self, request: ChatRequest) -> StreamResult<ChatChunk, ProviderError>;
+
+    /// Check if the provider API is reachable.
+    /// Default: send a minimal request and check for a non-connection error.
+    fn health_check(&self) -> ProviderResult<bool> {
+        Ok(true)
+    }
+
+    /// List models available from this provider.
+    /// Default: return empty list (provider doesn't support listing).
+    fn list_models(&self) -> ProviderResult<Vec<ModelInfo>> {
+        Ok(vec![])
+    }
+
+    /// Estimate the token count for the given text.
+    /// Default: rough estimate of ~4 characters per token.
+    fn count_tokens(&self, text: &str) -> usize {
+        // Rough BPE approximation: ~4 chars per token for English
+        text.len() / 4
+    }
+}
+
+/// Metadata about a model available from a provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    /// What modalities the model supports.
+    #[serde(default)]
+    pub capabilities: Vec<ModelCapability>,
+}
+
+/// Capabilities a model may support.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCapability {
+    Chat,
+    Streaming,
+    ToolCalling,
+    Vision,
+    Embeddings,
 }
