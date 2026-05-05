@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn test_error_types_display() {
-        use crate::commands::CommandError;
+        use crate::error::CommandError;
 
         let provider_err = CommandError::Provider("connection timeout".to_string());
         assert!(provider_err.to_string().contains("Provider error"));
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn test_retryable_error_detection() {
-        use crate::commands::is_retryable_error;
+        use crate::error::CommandError;
 
         let retryable_errors = vec![
             "network error",
@@ -88,7 +88,7 @@ mod tests {
 
         for err in retryable_errors {
             assert!(
-                is_retryable_error(err),
+                CommandError::is_retryable(err),
                 "Expected '{}' to be retryable",
                 err
             );
@@ -96,7 +96,7 @@ mod tests {
 
         for err in non_retryable_errors {
             assert!(
-                !is_retryable_error(err),
+                !CommandError::is_retryable(err),
                 "Expected '{}' to not be retryable",
                 err
             );

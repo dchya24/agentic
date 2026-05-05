@@ -3,13 +3,16 @@ mod tests;
 
 mod cli;
 mod commands;
+mod config;
 mod confirmation;
+mod error;
+mod interactive;
 mod markdown;
 
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Command, ConfigAction};
-use commands::{Commands, CommandError};
+use commands::Commands;
 use core_agentic::Config;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -25,12 +28,12 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    if let Some(level) = cli.verbose {
-        tracing::info!("Verbose mode enabled: {:?}", level);
+    if cli.verbose > 0 {
+        tracing::info!("Verbose mode enabled: level {}", cli.verbose);
     }
 
     // Handle config commands that don't need a loaded config
-    if let Some(Command::Config { action }) = &cli.command {
+    if let Some(Command::Config(action)) = &cli.command {
         // Config path doesn't need config loaded
         if matches!(action, ConfigAction::Path) {
             println!("{}", Config::config_path().display());
@@ -38,14 +41,14 @@ async fn main() -> Result<()> {
         }
 
         // Init and Reset create their own config
-        if matches!(action, ConfigAction::Init | ConfigAction::Reset { .. }) {
+        if matches!(action, ConfigAction::Init { .. } | ConfigAction::Reset { .. }) {
             let fallback_config = Config::fallback();
             let commands = Commands::new(fallback_config);
             return commands.config(action).map_err(|e| anyhow::anyhow!(e));
         }
 
         // Validate can work with fallback if file doesn't exist
-        if matches!(action, ConfigAction::Validate) {
+        if matches!(action, ConfigAction::Validate { .. }) {
             if !Config::config_exists() {
                 eprintln!("✗ Config file not found. Run 'agentic config init' to create one.");
                 std::process::exit(1);
@@ -93,8 +96,14 @@ async fn main() -> Result<()> {
         Some(Command::Interactive) => {
             interactive::run(commands).await?;
         }
-        Some(Command::Config { action }) => {
+        Some(Command::Config(action)) => {
             commands.config(action)?;
+        }
+        Some(Command::Status) => {
+            commands.status()?;
+        }
+        Some(Command::Examples) => {
+            commands.examples();
         }
         Some(Command::Version) => {
             println!("agentic {}", env!("CARGO_PKG_VERSION"));

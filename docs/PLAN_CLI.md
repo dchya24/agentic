@@ -12,18 +12,21 @@ Rencana pengembangan untuk standalone Agentic CLI binary.
 agentic-cli/
 ├── Cargo.toml
 ├── src/
-│   ├── main.rs           ← Entry point
-│   ├── cli.rs            ← CLI argument parsing
-│   ├── interactive.rs    ← Interactive mode (REPL)
-│   ├── render.rs         ← Output rendering (markdown, colors)
-│   ├── config_cmd.rs     ← Config subcommands
-│   └── stream.rs         ← Streaming output handler
-├── tests/
-│   └── integration.rs
+│   ├── main.rs           ← Entry point + command dispatch
+│   ├── cli.rs            ← clap CLI argument parsing (v4)
+│   ├── commands.rs       ← Command handlers (run, config, status, examples)
+│   ├── config.rs         ← Local Config struct (legacy, used in tests)
+│   ├── interactive.rs    ← Interactive mode (REPL) — minimal
+│   ├── markdown.rs       ← Output rendering (markdown → colored terminal)
+│   ├── confirmation.rs   ← Risk-level confirmation prompts
+│   ├── error.rs          ← CommandError enum + suggestion system
+│   ├── output.rs         ← Categorized output helpers (Thought/Tool/System/Error)
+│   └── tests.rs          ← Unit tests (11 tests)
 └── README.md
 ```
 
 > **Note:** CLI menggunakan `core-agentic` sebagai library dependency.
+> **Actual files** differ slightly from original plan — see `📦 CLI Binary Structure` below.
 
 ---
 
@@ -32,13 +35,22 @@ agentic-cli/
 | Feature | Status |
 |---------|--------|
 | Standalone CLI Binary | ✅ Working |
-| Interactive Mode (REPL) | ✅ Working |
+| Interactive Mode (REPL) | ⚠️ Minimal (help/clear/exit only) |
 | Config File Support | ✅ Working |
 | Environment Variables | ✅ Working |
 | Safety Controls | ✅ Basic |
-| Markdown Rendering | ✅ Working |
+| Markdown Rendering | ✅ Working (headings, code blocks, lists, tables, links, blockquotes) |
 | Streaming Output | ✅ Working |
 | Config Commands (init, show, edit, validate, reset, path) | ✅ Working |
+| Config Commands (backup, restore, export, import) | ✅ Working |
+| Status Command | ✅ Working |
+| Examples Command | ✅ Working |
+| Error Types with Suggestions | ✅ Working |
+| Retryable Error Detection | ✅ Working |
+| Colored Output (termcolor) | ✅ Working |
+| Confirmation Prompts (risk-level based) | ✅ Working |
+| CLI Flags (verbose, debug, color) | ✅ Defined |
+| Unit Tests | ✅ 11 tests passing |
 
 ---
 
@@ -50,12 +62,12 @@ agentic-cli/
 **Tasks:**
 - [ ] `agentic config init --interactive` — Full interactive wizard
 - [ ] `agentic config init --provider <name>` — Quick setup for specific provider
-- [ ] `agentic config show --format json|toml|table` — Multiple output formats
-- [ ] `agentic config validate --verbose` — Detailed validation output
-- [ ] `agentic config backup` — Create config backup
-- [ ] `agentic config restore <file>` — Restore from backup
-- [ ] `agentic config export` — Export to shareable format
-- [ ] `agentic config import <file>` — Import from file/URL
+- [ ] `agentic config show --format json|toml|table` — Multiple output formats (CLI flag defined, only json implemented)
+- [x] `agentic config validate --verbose` — Detailed validation output
+- [x] `agentic config backup` — Create config backup (timestamped, stored in `~/.config/agentic/backups/`)
+- [x] `agentic config restore <file>` — Restore from backup (auto-backups current config)
+- [x] `agentic config export` — Export to shareable format (API keys masked)
+- [x] `agentic config import <file>` — Import from file (auto-backups current config)
 
 **Command Design:**
 ```bash
@@ -81,13 +93,13 @@ agentic status                        # Show provider/model/status
 **Est:** 1 day
 
 **Tasks:**
-- [ ] Better error messages (human-readable)
-- [ ] Suggestion on common errors ("Did you mean...?")
+- [x] Better error messages (human-readable) — `CommandError` enum with context
+- [x] Suggestion on common errors ("Did you mean...?") — `suggest_command()` function
 - [ ] Progress indicators for long operations
 - [ ] Graceful shutdown (Ctrl+C handling)
-- [ ] Verbose mode (`--verbose` / `-v`)
-- [ ] Debug mode (`--debug`)
-- [ ] Colored output with `--color=auto|always|never`
+- [x] Verbose mode (`--verbose` / `-v`) — flag defined, basic logging
+- [x] Debug mode (`--debug`) — flag defined
+- [x] Colored output with `--color=auto|always|never` — flag defined
 
 ---
 
@@ -95,9 +107,9 @@ agentic status                        # Show provider/model/status
 **Est:** 1 day
 
 **Tasks:**
-- [ ] Comprehensive `--help` text
+- [x] Comprehensive `--help` text — all commands have `long_about`
 - [ ] `agentic help <command>` detailed help
-- [ ] `agentic examples` — Show usage examples
+- [x] `agentic examples` — Show usage examples
 - [ ] Man page generation (optional)
 - [ ] Shell completion (bash, zsh, fish)
 
@@ -111,25 +123,27 @@ agentic status                        # Show provider/model/status
 
 **Tasks:**
 - [ ] Multi-line input support (Shift+Enter for newline)
-- [ ] Input history persistence (across sessions)
-- [ ] History search (Ctrl+R)
+- [ ] Input history persistence (across sessions) — needs `rustyline`
+- [ ] History search (Ctrl+R) — needs `rustyline`
 - [ ] Tab completion for:
   - [ ] Commands (/help, /config, /clear, etc.)
   - [ ] File paths
   - [ ] Tool names
+- [ ] Upgrade to `rustyline` for proper readline support
+- [x] Basic REPL loop (stdin, help/clear/exit) — `interactive.rs`
 - [ ] Slash commands:
-  - `/help` — Show help
+  - [x] `/help` — Show help (basic)
   - `/config` — Show/edit config
   - `/provider <name>` — Switch provider
   - `/model <name>` — Switch model
-  - `/clear` — Clear conversation
+  - [x] `/clear` — Clear screen
   - `/history` — Show conversation history
   - `/save <file>` — Export conversation
   - `/load <file>` — Import conversation
   - `/tools` — List available tools
   - `/mcp` — Show MCP server status
   - `/plan <goal>` — Create a plan
-  - `/quit` or Ctrl+D — Exit
+  - [x] `/quit` or Ctrl+D — Exit
 
 ---
 
@@ -138,9 +152,9 @@ agentic status                        # Show provider/model/status
 **Est:** 2 days
 
 **Tasks:**
-- [ ] Better markdown rendering (tables, lists, headers)
-- [ ] Code syntax highlighting (ansi colors)
-- [ ] Streaming character-by-character display
+- [x] Better markdown rendering (tables, lists, headers) — `pulldown-cmark` with termcolor
+- [ ] Code syntax highlighting (ansi colors) — needs `syntect` or `bat`
+- [x] Streaming character-by-character display — via `print_chunk()`
 - [ ] Thought/reasoning section (collapsible)
 - [ ] Tool call display (collapsible)
 - [ ] Token usage display per response
@@ -271,33 +285,44 @@ Testing untuk CLI module diatur di **[PLAN_TESTING.md](./PLAN_TESTING.md)**:
 
 ---
 
-## 📦 CLI Binary Structure
+## 📦 CLI Binary Structure (Actual)
 
 ```
 agentic-cli/
 ├── Cargo.toml                    # Depends on core-agentic
 ├── src/
-│   ├── main.rs                   # Entry point + dispatch
-│   ├── cli.rs                    # clap CLI definitions
-│   ├── interactive.rs            # REPL loop
-│   ├── render.rs                 # Terminal rendering
-│   ├── config_cmd.rs             # Config subcommands
-│   └── stream.rs                 # Stream handler
-└── tests/
-    └── integration.rs
+│   ├── main.rs                   # Entry point + command dispatch (109 lines)
+│   ├── cli.rs                    # clap CLI definitions (226 lines)
+│   ├── commands.rs               # Command handlers: run, config, status, examples (530 lines)
+│   ├── config.rs                 # Local Config struct (legacy, used in tests) (138 lines)
+│   ├── interactive.rs            # REPL loop — minimal (56 lines)
+│   ├── markdown.rs               # Markdown → colored terminal rendering (216 lines)
+│   ├── confirmation.rs           # Risk-level confirmation prompts (62 lines)
+│   ├── error.rs                  # CommandError enum + suggestion system (105 lines)
+│   ├── output.rs                 # Categorized output helpers (81 lines)
+│   └── tests.rs                  # Unit tests (11 tests) (105 lines)
+└── README.md
 ```
 
-**Dependencies:**
+**Actual Dependencies (Cargo.toml):**
 ```toml
 [dependencies]
 core-agentic = { path = "../core-agentic" }
-clap = { version = "4", features = ["derive"] }
-colored = "2"
-indicatif = "0.17"       # Progress bars
-dialoguer = "0.11"       # Interactive prompts
-comfy-table = "7"        # Table rendering
-syntect = "5"            # Syntax highlighting
-rustyline = "14"         # Readline for REPL
+clap = { version = "4.5", features = ["derive", "string"] }
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+pulldown-cmark = "0.10"          # Markdown parsing
+termcolor = "1.4"                # Colored output
+indicatif = "0.17"               # Progress bars (not yet used)
+dialoguer = "0.11"               # Interactive prompts (not yet used)
+comfy-table = "7"                # Table rendering (not yet used)
+chrono = "0.4"                   # Timestamps for backups
+console = "0.15"                 # Terminal utilities
+dirs = "5.0"                     # Home directory
 ```
 
 ---
@@ -324,4 +349,4 @@ rustyline = "14"         # Readline for REPL
 
 ---
 
-**Last Updated:** May 2, 2026
+**Last Updated:** May 5, 2026

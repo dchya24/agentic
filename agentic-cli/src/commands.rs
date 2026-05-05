@@ -6,28 +6,12 @@ use std::io::{self, Write};
 use std::process::Command as ProcessCommand;
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
-use crate::cli::{ConfigAction, CommandError};
+use crate::cli::ConfigAction;
 use crate::confirmation::{prompt_confirmation, ConfirmationResponse};
 use crate::markdown::render_markdown;
+use crate::error::CommandError;
 
 static ALWAYS_CONFIRM: AtomicBool = AtomicBool::new(false);
-
-#[derive(Debug)]
-pub enum CommandError {
-    Config(String),
-    Validation(String),
-}
-
-impl std::fmt::Display for CommandError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CommandError::Config(msg) => write!(f, "Configuration error: {}", msg),
-            CommandError::Validation(msg) => write!(f, "Validation error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for CommandError {}
 
 pub struct Commands {
     config: Config,
@@ -69,6 +53,78 @@ impl Commands {
         }
     }
 
+    pub fn status(&self) -> Result<()> {
+        println!("╔══════════════════════════════════════════╗");
+        println!("║        🤖 Agentic Status                 ║");
+        println!("╠══════════════════════════════════════════╣");
+
+        let config_path = Config::config_path();
+        let config_exists = config_path.exists();
+
+        print_info(&format!("Config file: {}", config_path.display()));
+        if config_exists {
+            print_success("Config file exists");
+        } else {
+            print_warning("Config file not found");
+        }
+
+        // Show provider info from config
+        let json = serde_json::to_string_pretty(&self.config)
+            .unwrap_or_default();
+        let val: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
+
+        if let Some(providers) = val.get("providers").and_then(|p| p.as_array()) {
+            for (i, p) in providers.iter().enumerate() {
+                let name = p.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                let ptype = p.get("provider_type").and_then(|t| t.as_str()).unwrap_or("unknown");
+                let has_key = p.get("api_key")
+                    .and_then(|k| k.as_str())
+                    .map(|k| !k.is_empty())
+                    .unwrap_or(false);
+                println!("  Provider #{}: {} ({})", i + 1, name, ptype);
+                if has_key {
+                    println!("    API Key: ✓ configured");
+                } else {
+                    println!("    API Key: ✗ not set");
+                }
+            }
+        } else {
+            print_warning("No providers configured");
+        }
+
+        println!("╚══════════════════════════════════════════╝");
+        Ok(())
+    }
+
+    pub fn examples(&self) {
+        println!("\n╔══════════════════════════════════════════╗");
+        println!("║        📖 Agentic Examples               ║");
+        println!("╠══════════════════════════════════════════╣");
+        println!("║                                          ║");
+        println!("║  # Run a single task                     ║");
+        println!("║  agentic run \"list all Rust files\"      ║");
+        println!("║  agentic run \"create hello.txt\"         ║");
+        println!("║                                          ║");
+        println!("║  # Interactive mode                       ║");
+        println!("║  agentic interactive                      ║");
+        println!("║  agentic i                                ║");
+        println!("║                                          ║");
+        println!("║  # Config management                      ║");
+        println!("║  agentic config init                      ║");
+        println!("║  agentic config show                      ║");
+        println!("║  agentic config edit                      ║");
+        println!("║  agentic config validate                  ║");
+        println!("║  agentic config backup                    ║");
+        println!("║                                          ║");
+        println!("║  # Status                                 ║");
+        println!("║  agentic status                           ║");
+        println!("║                                          ║");
+        println!("║  # Version                                ║");
+        println!("║  agentic version                          ║");
+        println!("║                                          ║");
+        println!("╚══════════════════════════════════════════╝\n");
+    }
+
     pub async fn run(&self, task: &str) -> Result<()> {
         let orchestrator = self
             .orchestrator
@@ -97,16 +153,16 @@ impl Commands {
 
     pub fn config(&self, action: &ConfigAction) -> Result<()> {
         match action {
-            ConfigAction::Show => {
+            ConfigAction::Show { format: _ } => {
                 self.config_show()?;
             }
-            ConfigAction::Init => {
+            ConfigAction::Init { interactive: _, provider: _ } => {
                 self.config_init()?;
             }
             ConfigAction::Edit => {
                 self.config_edit()?;
             }
-            ConfigAction::Validate => {
+            ConfigAction::Validate { verbose: _ } => {
                 self.config_validate()?;
             }
             ConfigAction::Reset { force } => {
@@ -114,6 +170,18 @@ impl Commands {
             }
             ConfigAction::Path => {
                 self.config_path()?;
+            }
+            ConfigAction::Backup => {
+                self.config_backup()?;
+            }
+            ConfigAction::Restore { file } => {
+                self.config_restore(file)?;
+            }
+            ConfigAction::Export => {
+                self.config_export()?;
+            }
+            ConfigAction::Import { file } => {
+                self.config_import(file)?;
             }
         }
 
@@ -340,6 +408,138 @@ impl Commands {
 
     fn config_path(&self) -> Result<()> {
         println!("{}", Config::config_path().display());
+        Ok(())
+    }
+
+    fn config_backup(&self) -> Result<()> {
+        let config_path = Config::config_path();
+
+        if !config_path.exists() {
+            return Err(anyhow::anyhow!("No config file found at: {}", config_path.display()));
+        }
+
+        let backup_dir = Config::config_path()
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("backups");
+
+        std::fs::create_dir_all(&backup_dir)
+            .map_err(|e| CommandError::Config(format!("Failed to create backup dir: {}", e)))?;
+
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let backup_file = backup_dir.join(format!("config_{}.json", timestamp));
+
+        std::fs::copy(&config_path, &backup_file)
+            .map_err(|e| CommandError::Config(format!("Failed to create backup: {}", e)))?;
+
+        print_success(&format!("Backup created at: {}", backup_file.display()));
+        Ok(())
+    }
+
+    fn config_restore(&self, file: &str) -> Result<()> {
+        let source = std::path::PathBuf::from(file);
+
+        if !source.exists() {
+            return Err(anyhow::anyhow!("Backup file not found: {}", file));
+        }
+
+        let config_path = Config::config_path();
+
+        // Backup current config before overwriting
+        if config_path.exists() {
+            let backup_dir = config_path
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("backups");
+            std::fs::create_dir_all(&backup_dir).ok();
+            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+            let pre_restore = backup_dir.join(format!("pre_restore_{}.json", ts));
+            std::fs::copy(&config_path, &pre_restore).ok();
+            print_info(&format!("Current config backed up to: {}", pre_restore.display()));
+        }
+
+        std::fs::copy(&source, &config_path)
+            .map_err(|e| CommandError::Config(format!("Failed to restore config: {}", e)))?;
+
+        print_success(&format!("Config restored from: {}", file));
+        Ok(())
+    }
+
+    fn config_export(&self) -> Result<()> {
+        let config_path = Config::config_path();
+
+        if !config_path.exists() {
+            return Err(anyhow::anyhow!("No config file found. Run 'agentic config init' first."));
+        }
+
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| CommandError::Config(format!("Failed to read config: {}", e)))?;
+
+        // Mask API keys for safe sharing
+        let mut json: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| CommandError::Config(format!("Invalid JSON: {}", e)))?;
+
+        if let Some(providers) = json.get_mut("providers").and_then(|p| p.as_array_mut()) {
+            for provider in providers.iter_mut() {
+                if let Some(api_key) = provider.get_mut("api_key") {
+                    if let Some(key) = api_key.as_str() {
+                        if key.len() > 8 {
+                            *api_key = serde_json::Value::String(format!("{}...{}", &key[..4], &key[key.len()-4..]));
+                        } else {
+                            *api_key = serde_json::Value::String("****".to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let exported = serde_json::to_string_pretty(&json)
+            .map_err(|e| CommandError::Config(e.to_string()))?;
+
+        println!("{}", exported);
+        print_info("API keys have been masked for safe sharing.");
+        Ok(())
+    }
+
+    fn config_import(&self, file: &str) -> Result<()> {
+        let source = std::path::PathBuf::from(file);
+
+        if !source.exists() {
+            return Err(anyhow::anyhow!("Import file not found: {}", file));
+        }
+
+        let content = std::fs::read_to_string(&source)
+            .map_err(|e| CommandError::Config(format!("Failed to read import file: {}", e)))?;
+
+        // Validate it's valid JSON
+        let _: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| CommandError::Config(format!("Invalid JSON in import file: {}", e)))?;
+
+        let config_path = Config::config_path();
+
+        // Backup current config
+        if config_path.exists() {
+            let backup_dir = config_path
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("backups");
+            std::fs::create_dir_all(&backup_dir).ok();
+            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+            let pre_import = backup_dir.join(format!("pre_import_{}.json", ts));
+            std::fs::copy(&config_path, &pre_import).ok();
+            print_info(&format!("Current config backed up to: {}", pre_import.display()));
+        }
+
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CommandError::Config(format!("Failed to create directory: {}", e)))?;
+        }
+
+        std::fs::write(&config_path, &content)
+            .map_err(|e| CommandError::Config(format!("Failed to write config: {}", e)))?;
+
+        print_success(&format!("Config imported from: {}", file));
+        print_info("Run 'agentic config validate' to verify the imported config.");
         Ok(())
     }
 }
