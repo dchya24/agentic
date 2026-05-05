@@ -49,7 +49,10 @@ agentic-cli/
 | Retryable Error Detection | ✅ Working |
 | Colored Output (termcolor) | ✅ Working |
 | Confirmation Prompts (risk-level based) | ✅ Working |
-| CLI Flags (verbose, debug, color) | ✅ Defined |
+| CLI Flags (verbose, debug, color) | ✅ Defined & wired up |
+| Progress Indicator (spinner) | ✅ Working (indicatif) |
+| Ctrl+C Graceful Shutdown | ✅ Working (tokio signal) |
+| Lazy Orchestrator Init | ✅ Working (avoids panic on non-run commands) |
 | Unit Tests | ✅ 11 tests passing |
 
 ---
@@ -60,9 +63,9 @@ agentic-cli/
 **Est:** 1-2 days
 
 **Tasks:**
-- [ ] `agentic config init --interactive` — Full interactive wizard
-- [ ] `agentic config init --provider <name>` — Quick setup for specific provider
-- [ ] `agentic config show --format json|toml|table` — Multiple output formats (CLI flag defined, only json implemented)
+- [x] `agentic config init --interactive` — Full interactive wizard (dialoguer: Select, Input, Confirm)
+- [x] `agentic config init --provider <name>` — Quick setup (openai, anthropic, zai, custom)
+- [x] `agentic config show --format json|toml|table` — Multiple output formats (comfy-table for table)
 - [x] `agentic config validate --verbose` — Detailed validation output
 - [x] `agentic config backup` — Create config backup (timestamped, stored in `~/.config/agentic/backups/`)
 - [x] `agentic config restore <file>` — Restore from backup (auto-backups current config)
@@ -95,11 +98,11 @@ agentic status                        # Show provider/model/status
 **Tasks:**
 - [x] Better error messages (human-readable) — `CommandError` enum with context
 - [x] Suggestion on common errors ("Did you mean...?") — `suggest_command()` function
-- [ ] Progress indicators for long operations
-- [ ] Graceful shutdown (Ctrl+C handling)
-- [x] Verbose mode (`--verbose` / `-v`) — flag defined, basic logging
-- [x] Debug mode (`--debug`) — flag defined
-- [x] Colored output with `--color=auto|always|never` — flag defined
+- [x] Progress indicators for long operations — indicatif spinner
+- [x] Graceful shutdown (Ctrl+C handling) — tokio::signal::ctrl_c
+- [x] Verbose mode (`--verbose` / `-v`) — wired to tracing log levels (warn→info→debug→trace)
+- [x] Debug mode (`--debug`) — enables debug tracing with targets
+- [x] Colored output with `--color=auto|always|never` — respected by all print helpers
 
 ---
 
@@ -349,4 +352,4 @@ dirs = "5.0"                     # Home directory
 
 ---
 
-**Last Updated:** May 5, 2026
+**Last Updated:** May 5, 2026 (Phase 1 complete)

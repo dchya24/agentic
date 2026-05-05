@@ -1,7 +1,7 @@
 use crate::commands::Commands;
 use anyhow::Result;
 
-pub async fn run(commands: Commands) -> Result<()> {
+pub async fn run(mut commands: Commands) -> Result<()> {
     println!("\n╔══════════════════════════════════════════╗");
     println!("║      🤖 Agentic Interactive Mode         ║");
     println!("╠══════════════════════════════════════════╣");
