@@ -172,6 +172,99 @@ impl Commands {
         Ok(())
     }
 
+    // ── Inline config display (for REPL /config) ──────────
+
+    pub fn config_show_inline(&self) {
+        println!();
+        if let Some(p) = self.config.active_provider() {
+            println!("  \x1b[1mProvider:\x1b[0m  {} ({})", p.name, p.provider_type);
+            println!("  \x1b[1mAPI Base:\x1b[0m {}", p.api_base);
+            if p.api_key.is_empty() {
+                println!("  \x1b[1mAPI Key:\x1b[0m  \x1b[31mnot set\x1b[0m");
+            } else {
+                println!("  \x1b[1mAPI Key:\x1b[0m  {}...{}",
+                    &p.api_key[..4.min(p.api_key.len())],
+                    &p.api_key[p.api_key.len().saturating_sub(4)..]);
+            }
+            if let Some(m) = p.models.first() {
+                println!("  \x1b[1mModel:\x1b[0m    {} (temp: {}, max_tokens: {})",
+                    m.model, m.temperature, m.max_tokens);
+            }
+        } else {
+            println!("  \x1b[33mNo provider configured.\x1b[0m");
+        }
+        println!("  \x1b[1mConfig:\x1b[0m    {}", Config::config_path().display());
+        println!();
+    }
+
+    // ── List tools (for REPL /tools) ────────────────────────
+
+    pub fn list_tools(&self) {
+        // Build a temporary tool registry to list tools
+        let tools = core_agentic::ToolRegistry::new();
+        for tool in core_agentic::tools::builtin_tools() {
+            tools.register(tool);
+        }
+
+        let tool_list = tools.list();
+
+        println!();
+        println!("  \x1b[1m\x1b[36m🔧 Available Tools ({}):\x1b[0m\n", tool_list.len());
+        for t in &tool_list {
+            println!("  \x1b[1m{}\x1b[0m", t.name);
+            println!("    {}", t.description);
+            if !t.parameters.is_empty() {
+                let params: Vec<String> = t.parameters.keys()
+                    .map(|p| {
+                        let is_required = t.required.contains(p);
+                        format!("{}{}{}",
+                            p,
+                            if is_required { "*" } else { "" },
+                            if is_required { " (required)" } else { " (optional)" })
+                    })
+                    .collect();
+                println!("    Params: {}", params.join(", "));
+            }
+            println!();
+        }
+    }
+
+    // ── MCP status (for REPL /mcp) ──────────────────────────
+
+    pub fn show_mcp_status(&self) {
+        println!();
+        if self.config.mcp_servers.is_empty() {
+            println!("  \x1b[33mNo MCP servers configured.\x1b[0m");
+            println!("  Add servers in your config file: {}\n", Config::config_path().display());
+            return;
+        }
+
+        println!("  \x1b[1m\x1b[36m📡 MCP Servers ({}):\x1b[0m\n", self.config.mcp_servers.len());
+        for (name, srv) in &self.config.mcp_servers {
+            println!("  \x1b[1m{}\x1b[0m", name);
+            if let Some(cmd) = &srv.command {
+                println!("    Command: {}", cmd);
+            }
+            if let Some(args) = &srv.args {
+                if !args.is_empty() {
+                    println!("    Args:    {}", args.join(" "));
+                }
+            }
+            if let Some(url) = &srv.url {
+                println!("    URL:     {}", url);
+            }
+            println!();
+        }
+    }
+
+    // ── Clear memory (for REPL /clear after history) ────────
+
+    pub fn clear_memory(&self) {
+        if let Some(orch) = &self.orchestrator {
+            orch.clear_memory();
+        }
+    }
+
     // ── Examples ────────────────────────────────────────────
 
     pub fn examples(&self) {
@@ -225,9 +318,10 @@ impl Commands {
         );
         pb.set_message("Thinking...");
 
+        let start = std::time::Instant::now();
+
         let result = orchestrator
             .run_stream(task, |chunk| {
-                // Stop spinner on first real content
                 if !pb.is_finished() {
                     pb.finish_and_clear();
                 }
@@ -235,15 +329,19 @@ impl Commands {
             })
             .await;
 
+        let elapsed = start.elapsed();
+
         match result {
             Ok(final_result) => {
                 println!("\n");
                 print_markdown_header("Final Result");
                 render_markdown(&final_result).ok();
+                print_response_stats(elapsed.as_millis());
             }
             Err(e) => {
                 pb.finish_and_clear();
                 print_error(&format!("Error: {}", e), self.color_enabled);
+                print_response_stats(elapsed.as_millis());
             }
         }
 
@@ -1155,5 +1253,16 @@ fn print_info(text: &str) {
         let _ = stdout.reset();
     } else {
         println!("ℹ {}", text);
+    }
+}
+
+fn print_response_stats(ms: u128) {
+    if COLOR_ENABLED.load(Ordering::Relaxed) {
+        let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
+        let _ = stdout.set_color(ColorSpec::new().set_dimmed(true));
+        println!("  📊 Completed in {}.{:03}s", ms / 1000, ms % 1000);
+        let _ = stdout.reset();
+    } else {
+        println!("  Completed in {}.{:03}s", ms / 1000, ms % 1000);
     }
 }

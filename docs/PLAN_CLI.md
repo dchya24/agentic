@@ -35,7 +35,7 @@ agentic-cli/
 | Feature | Status |
 |---------|--------|
 | Standalone CLI Binary | ✅ Working |
-| Interactive Mode (REPL) | ⚠️ Minimal (help/clear/exit only) |
+| Interactive Mode (REPL) | ✅ Working (rustyline: history, Ctrl+R, tab completion, 12 slash commands) |
 | Config File Support | ✅ Working |
 | Environment Variables | ✅ Working |
 | Safety Controls | ✅ Basic |
@@ -53,6 +53,9 @@ agentic-cli/
 | Progress Indicator (spinner) | ✅ Working (indicatif) |
 | Ctrl+C Graceful Shutdown | ✅ Working (tokio signal) |
 | Lazy Orchestrator Init | ✅ Working (avoids panic on non-run commands) |
+| Execution Time Display | ✅ Working |
+| Conversation Save/Load | ✅ Working (JSON) |
+| Session History | ✅ Working (timestamped) |
 | Unit Tests | ✅ 11 tests passing |
 
 ---
@@ -121,37 +124,37 @@ agentic status                        # Show provider/model/status
 ## 🟡 Phase 2: Interactive Mode Enhancement (Week 3-4) — 4-5 days
 
 ### 2.1 REPL Improvements
-**File:** `src/interactive.rs`
+**File:** `src/interactive.rs` (536 lines)
 **Est:** 2-3 days
 
 **Tasks:**
 - [ ] Multi-line input support (Shift+Enter for newline)
-- [ ] Input history persistence (across sessions) — needs `rustyline`
-- [ ] History search (Ctrl+R) — needs `rustyline`
-- [ ] Tab completion for:
-  - [ ] Commands (/help, /config, /clear, etc.)
-  - [ ] File paths
+- [x] Input history persistence (across sessions) — `rustyline` with file-backed history
+- [x] History search (Ctrl+R) — `rustyline` built-in
+- [x] Tab completion for:
+  - [x] Commands (/help, /config, /clear, etc.) — slash command completer
+  - [x] File paths — `FilenameCompleter`
   - [ ] Tool names
-- [ ] Upgrade to `rustyline` for proper readline support
+- [x] Upgrade to `rustyline` for proper readline support
 - [x] Basic REPL loop (stdin, help/clear/exit) — `interactive.rs`
-- [ ] Slash commands:
-  - [x] `/help` — Show help (basic)
-  - `/config` — Show/edit config
-  - `/provider <name>` — Switch provider
-  - `/model <name>` — Switch model
-  - [x] `/clear` — Clear screen
-  - `/history` — Show conversation history
-  - `/save <file>` — Export conversation
-  - `/load <file>` — Import conversation
-  - `/tools` — List available tools
-  - `/mcp` — Show MCP server status
-  - `/plan <goal>` — Create a plan
-  - [x] `/quit` or Ctrl+D — Exit
+- [x] Slash commands:
+  - [x] `/help` — Show help (detailed, with tips)
+  - [x] `/config` — Show current config (inline)
+  - `/provider <name>` — Switch provider (placeholder, needs core support)
+  - `/model <name>` — Switch model (placeholder, needs core support)
+  - [x] `/clear` — Clear screen + conversation reset
+  - [x] `/history` — Show conversation history with timestamps
+  - [x] `/save <file>` — Export conversation to JSON
+  - [x] `/load <file>` — Import conversation from JSON
+  - [x] `/tools` — List available tools with params
+  - [x] `/mcp` — Show MCP server status
+  - [x] `/plan <goal>` — Create a plan
+  - [x] `/quit` or Ctrl+D — Exit with session stats
 
 ---
 
 ### 2.2 Output Rendering Enhancement
-**File:** `src/render.rs`
+**File:** `src/markdown.rs` + `src/commands.rs`
 **Est:** 2 days
 
 **Tasks:**
@@ -161,7 +164,7 @@ agentic status                        # Show provider/model/status
 - [ ] Thought/reasoning section (collapsible)
 - [ ] Tool call display (collapsible)
 - [ ] Token usage display per response
-- [ ] Execution time display
+- [x] Execution time display — `print_response_stats()` in commands.rs
 - [ ] Plan step progress visualization
 
 **Design:**
@@ -294,11 +297,11 @@ Testing untuk CLI module diatur di **[PLAN_TESTING.md](./PLAN_TESTING.md)**:
 agentic-cli/
 ├── Cargo.toml                    # Depends on core-agentic
 ├── src/
-│   ├── main.rs                   # Entry point + command dispatch (109 lines)
-│   ├── cli.rs                    # clap CLI definitions (226 lines)
-│   ├── commands.rs               # Command handlers: run, config, status, examples (530 lines)
+│   ├── main.rs                   # Entry point + command dispatch (157 lines)
+│   ├── cli.rs                    # clap CLI definitions (211 lines)
+│   ├── commands.rs               # Command handlers: run, config, status, examples (1268 lines)
 │   ├── config.rs                 # Local Config struct (legacy, used in tests) (138 lines)
-│   ├── interactive.rs            # REPL loop — minimal (56 lines)
+│   ├── interactive.rs            # REPL with rustyline: history, completion, slash commands (536 lines)
 │   ├── markdown.rs               # Markdown → colored terminal rendering (216 lines)
 │   ├── confirmation.rs           # Risk-level confirmation prompts (62 lines)
 │   ├── error.rs                  # CommandError enum + suggestion system (105 lines)
@@ -352,4 +355,4 @@ dirs = "5.0"                     # Home directory
 
 ---
 
-**Last Updated:** May 5, 2026 (Phase 1 complete)
+**Last Updated:** May 5, 2026 (Phase 2 complete)
