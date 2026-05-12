@@ -41,9 +41,9 @@ Ringkasan rencana pengembangan Termul — dibagi per modul.
 
 | Module | Task | Est |
 |--------|------|-----|
-| UI | Integrate FirstRunBanner in App.tsx | 1-2h |
-| UI | Integrate AgenticPanel in WorkspaceLayout | 1-2h |
-| UI | Add Agentic Settings in AppPreferences | 1h |
+| UI | Integrate FirstRunBanner in App.tsx | 1-2h | ✅ |
+| UI | Integrate AgenticPanel in WorkspaceLayout | 1-2h | ✅ |
+| UI | Add Agentic Settings in AppPreferences | 1h | ✅ |
 | Core | ~~Safety system enhancement~~ ✅ Done | 2-3d |
 | CLI | Config commands polish | 1-2d |
 
@@ -85,16 +85,16 @@ Ringkasan rencana pengembangan Termul — dibagi per modul.
 ## ✅ Global Checklist
 
 ### Week 1-2
-- [ ] FirstRunBanner integrated
-- [ ] AgenticPanel integrated
-- [ ] Agentic Settings added
+- [x] FirstRunBanner integrated
+- [x] AgenticPanel integrated
+- [x] Agentic Settings added
 - [x] Safety scoring implemented
 - [x] Memory enhancement implemented
 - [ ] Config CLI polished
 
 ### Week 3-4
 - [ ] Markdown rendering in UI
-- [ ] Command palette actions
+- [x] Command palette actions
 - [ ] Memory compaction in core
 - [ ] REPL improvements in CLI
 
@@ -126,4 +126,4 @@ Ringkasan rencana pengembangan Termul — dibagi per modul.
 
 ---
 
-**Last Updated:** May 4, 2026
+**Last Updated:** May 12, 2026

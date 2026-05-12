@@ -24,13 +24,14 @@ Rencana implementasi pengembangan selanjutnya untuk Termul Manager dan Agentic A
 | Config Automation | ✅ Done | Wizard + CLI commands |
 | Agentic Integration | ✅ Done | Store + Tauri commands |
 
-### ⚠️ In Progress / Needs Integration
+### ✅ Completed (Phase 3 — Integration)
 
-| Feature | Status | Priority |
-|---------|--------|----------|
-| First-Run Wizard Integration | ⚠️ Created, not integrated | 🔴 High |
-| First-Run Banner Integration | ⚠️ Created, not integrated | 🔴 High |
-| Agentic Panel in UI | ⚠️ Components exist, not in layout | 🔴 High |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| First-Run Banner Integration | ✅ Done | Mounted in App.tsx, auto-checks config |
+| Agentic Panel in UI | ✅ Done | AgenticPanel in PaneContent, agentic tab via workspace store |
+| Agentic Settings in Preferences | ✅ Done | Config status, wizard, validate, edit in AppPreferences |
+| Command Palette Agentic Actions | ✅ Done | Open Chat, Open Settings, Clear History |
 
 ---
 
@@ -40,14 +41,14 @@ Rencana implementasi pengembangan selanjutnya untuk Termul Manager dan Agentic A
 
 #### 1. Integrate Config Automation (1-2 days)
 
-**Status:** Components created but not integrated
+**Status:** ✅ Done
 
 **Tasks:**
-- [ ] Add FirstRunBanner to App.tsx
-- [ ] Add hook to auto-check config on app start
-- [ ] Show banner if config not set up
-- [ ] Wire up Quick Setup button
-- [ ] Wire up Setup Wizard button
+- [x] Add FirstRunBanner to App.tsx
+- [x] Add hook to auto-check config on app start
+- [x] Show banner if config not set up
+- [x] Wire up Quick Setup button
+- [x] Wire up Setup Wizard button
 - [ ] Test first-run flow end-to-end
 - [ ] Test config creation flow
 - [ ] Test banner dismiss behavior
@@ -68,15 +69,15 @@ Rencana implementasi pengembangan selanjutnya untuk Termul Manager dan Agentic A
 
 #### 2. Integrate Agentic Panel in WorkspaceLayout (1-2 days)
 
-**Status:** AgenticPanel and AgenticSidebar exist but not in layout
+**Status:** ✅ Done
 
 **Tasks:**
-- [ ] Add AgenticPanel to WorkspaceLayout
-- [ ] Add AgenticSidebar to WorkspaceLayout
-- [ ] Wire up message sending
-- [ ] Wire up streaming display
-- [ ] Wire up token usage display
-- [ ] Wire up status display
+- [x] Add AgenticPanel to WorkspaceLayout
+- [x] Add AgenticSidebar to WorkspaceLayout
+- [x] Wire up message sending
+- [x] Wire up streaming display
+- [x] Wire up token usage display
+- [x] Wire up status display
 - [ ] Add keyboard shortcuts for agentic
 - [ ] Test chat flow
 - [ ] Test streaming responses
@@ -101,16 +102,16 @@ Rencana implementasi pengembangan selanjutnya untuk Termul Manager dan Agentic A
 
 #### 3. Add Agentic Settings to AppPreferences (1 day)
 
-**Status:** No UI for agentic config
+**Status:** ✅ Done
 
 **Tasks:**
-- [ ] Add "Agentic AI" section to AppPreferences
-- [ ] Display current provider and model
-- [ ] Add button to open config wizard
-- [ ] Add button to open config file
-- [ ] Add button to validate config
+- [x] Add "Agentic AI" section to AppPreferences
+- [x] Display current provider and model
+- [x] Add button to open config wizard
+- [x] Add button to open config file
+- [x] Add button to validate config
 - [ ] Add button to reset config
-- [ ] Display config status (valid/invalid)
+- [x] Display config status (valid/invalid)
 - [ ] Show API key status (masked)
 
 **Files:**
@@ -128,14 +129,14 @@ Rencana implementasi pengembangan selanjutnya untuk Termul Manager dan Agentic A
 
 #### 4. Add Agentic Command Palette Actions (1 day)
 
-**Status:** No agentic actions in command palette
+**Status:** ✅ Done
 
 **Tasks:**
-- [ ] Add "Open Agentic Chat" action
-- [ ] Add "Open Agentic Settings" action
-- [ ] Add "Clear Agentic History" action
+- [x] Add "Open Agentic Chat" action
+- [x] Add "Open Agentic Settings" action
+- [x] Add "Clear Agentic History" action
 - [ ] Add "Restart Agentic" action
-- [ ] Register actions in command palette
+- [x] Register actions in command palette
 - [ ] Add keyboard shortcuts
 
 **Files:**
@@ -557,10 +558,10 @@ Reviewer Agent:
 
 ## 🎯 Sprint Planning (Recommended)
 
-### Sprint 1 (1 week): Integration
-- [ ] Integrate Config Automation
-- [ ] Integrate Agentic Panel
-- [ ] Add Agentic Settings
+### Sprint 1 (1 week): Integration ✅
+- [x] Integrate Config Automation
+- [x] Integrate Agentic Panel
+- [x] Add Agentic Settings
 - [ ] Basic testing
 
 ### Sprint 2 (1 week): Polish
