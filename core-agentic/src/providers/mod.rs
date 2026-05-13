@@ -24,6 +24,16 @@ pub use failover::FailoverProvider;
 
 use serde::{Deserialize, Serialize};
 
+/// Default system prompt used when no custom prompt is provided.
+///
+/// This prompt establishes the assistant's role as a coding-focused AI
+/// with guidelines for clarity, best practices, and honest communication.
+pub const DEFAULT_SYSTEM_PROMPT: &str = "\
+You are an intelligent coding assistant. You help users with software \
+development tasks including writing, reviewing, refactoring, and debugging \
+code. You provide clear explanations, follow best practices, and write clean, \
+maintainable code. When uncertain, you ask for clarification rather than guessing.";
+
 pub type ProviderResult<T> = std::result::Result<T, ProviderError>;
 
 #[derive(Debug, thiserror::Error)]
@@ -87,6 +97,9 @@ pub struct ChatRequest {
     pub stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDefinition>,
+    /// Optional system prompt override. If `None`, the provider's default is used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +125,7 @@ impl ChatRequest {
             max_tokens: None,
             stream: false,
             tools: vec![],
+            system_prompt: None,
         }
     }
 
@@ -133,6 +147,19 @@ impl ChatRequest {
     pub fn stream(mut self) -> Self {
         self.stream = true;
         self
+    }
+
+    /// Set a custom system prompt for this request.
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
+        self
+    }
+
+    /// Resolve the effective system prompt: custom override or default.
+    pub fn effective_system_prompt(&self) -> &str {
+        self.system_prompt
+            .as_deref()
+            .unwrap_or(DEFAULT_SYSTEM_PROMPT)
     }
 }
 

@@ -10,7 +10,7 @@ pub struct AgentConfig {
     pub model: String,
     pub max_iterations: u32,
     pub tools: Vec<String>,
-    #[serde(skip_deserializing, default)]
+    #[serde(default)]
     pub system_prompt: Option<String>,
 }
 

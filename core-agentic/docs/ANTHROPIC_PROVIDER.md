@@ -100,7 +100,6 @@ use core_agentic::providers::{ChatRequest, ChatMessageRequest};
 let request = ChatRequest::new(
     "claude-3-5-sonnet-20241022",
     vec![
-        ChatMessageRequest::system("You are a helpful assistant."),
         ChatMessageRequest::user("What is the capital of France?"),
     ]
 );
@@ -108,6 +107,27 @@ let request = ChatRequest::new(
 let response = provider.chat(request)?;
 println!("Response: {}", response.message.content.unwrap());
 ```
+
+#### Custom System Prompt
+
+Override the default system prompt per-request:
+
+```rust
+let request = ChatRequest::new(
+    "claude-3-5-sonnet-20241022",
+    vec![
+        ChatMessageRequest::user("Explain ownership in Rust"),
+    ]
+)
+.with_system_prompt("You are a Rust language expert. Be concise and use code examples.");
+
+let response = provider.chat(request)?;
+```
+
+> **Note:** The Anthropic API uses a dedicated `system` field in the request body rather than
+> a system-role message. The provider handles this automatically — it extracts any system
+> prompt set via `with_system_prompt()` and sends it in the correct Anthropic format.
+> If no custom prompt is set, `DEFAULT_SYSTEM_PROMPT` is used.
 
 ### Streaming Responses
 

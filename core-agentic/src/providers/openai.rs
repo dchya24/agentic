@@ -237,9 +237,11 @@ impl OpenAIProvider {
     }
 
     pub fn chat(&self, request: ChatRequest) -> ProviderResult<ChatResponse> {
+        let system_content = request.effective_system_prompt().to_string();
+
         let mut messages: Vec<super::ChatMessageRequest> = vec![super::ChatMessageRequest {
             role: "system".into(),
-            content: "You are a helpful coding assistant".into(),
+            content: system_content,
             tool_call_id: None,
             tool_calls: vec![],
         }];
@@ -378,9 +380,11 @@ impl LLMProvider for OpenAIProvider {
             self.config.base_url.trim_end_matches('/')
         );
 
+        let system_content = request.effective_system_prompt().to_string();
+
         let mut messages: Vec<super::ChatMessageRequest> = vec![super::ChatMessageRequest {
             role: "system".into(),
-            content: "You are a helpful coding assistant".into(),
+            content: system_content,
             tool_call_id: None,
             tool_calls: vec![],
         }];

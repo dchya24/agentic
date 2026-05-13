@@ -86,9 +86,11 @@ impl ZaiProvider {
     }
 
     fn build_request_body(&self, request: &ChatRequest, stream: bool) -> serde_json::Value {
+        let system_content = request.effective_system_prompt().to_string();
+
         let mut messages = vec![serde_json::json!({
             "role": "system",
-            "content": "You are a helpful coding assistant"
+            "content": system_content
         })];
 
         for msg in &request.messages {

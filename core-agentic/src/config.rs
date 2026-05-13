@@ -11,6 +11,8 @@ pub struct Config {
     pub output: OutputConfig,
     #[serde(default)]
     pub mcp_servers: std::collections::HashMap<String, crate::mcp::types::McpServerConfig>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +209,7 @@ impl Config {
             safety: SafetyConfig::default(),
             output: OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
+            system_prompt: None,
         })
     }
 
@@ -229,6 +232,7 @@ impl Config {
             safety: SafetyConfig::default(),
             output: OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
+            system_prompt: None,
         })
     }
 
@@ -287,6 +291,7 @@ impl Config {
             safety: SafetyConfig::default(),
             output: OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
+            system_prompt: None,
         }
     }
 

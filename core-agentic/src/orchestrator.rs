@@ -27,6 +27,7 @@ pub struct Orchestrator {
     events: EventEmitter,
     confirmation_handler:
         Mutex<Option<Box<dyn Fn(crate::safety::ConfirmationRequest) -> bool + Send + Sync>>>,
+    system_prompt: Option<String>,
 }
 
 impl Orchestrator {
@@ -39,6 +40,7 @@ impl Orchestrator {
             state: Mutex::new(OrchestratorState::Idle),
             events: EventEmitter::new(),
             confirmation_handler: Mutex::new(None),
+            system_prompt: None,
         }
     }
 
@@ -55,6 +57,12 @@ impl Orchestrator {
             .lock()
             .unwrap()
             .add_message(Message::system(content));
+    }
+
+    /// Set a custom system prompt for all LLM requests.
+    /// If not set, the provider's default system prompt is used.
+    pub fn set_system_prompt(&mut self, prompt: impl Into<String>) {
+        self.system_prompt = Some(prompt.into());
     }
 
     fn should_confirm(&self, tool_name: &str, args: &serde_json::Value) -> bool {
@@ -151,7 +159,10 @@ impl Orchestrator {
 
         loop {
             let messages = self.build_messages();
-            let request = ChatRequest::new("glm-4.7", messages).with_tools(tool_defs.clone());
+            let mut request = ChatRequest::new("glm-4.7", messages).with_tools(tool_defs.clone());
+            if let Some(ref prompt) = self.system_prompt {
+                request = request.with_system_prompt(prompt.clone());
+            }
 
             let response = self
                 .provider
@@ -215,9 +226,12 @@ impl Orchestrator {
 
         loop {
             let messages = self.build_messages();
-            let request = ChatRequest::new("glm-4.7", messages)
+            let mut request = ChatRequest::new("glm-4.7", messages)
                 .with_tools(tool_defs.clone())
                 .stream();
+            if let Some(ref prompt) = self.system_prompt {
+                request = request.with_system_prompt(prompt.clone());
+            }
 
             let mut content_buf = String::new();
             let mut tool_calls_map: HashMap<u32, (String, String, String)> = HashMap::new();
