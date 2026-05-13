@@ -78,6 +78,19 @@ pub enum Command {
         Slash commands: /help, /config, /provider, /model, /clear, /save, /tools, /quit")]
     Interactive,
 
+    /// Start TUI mode (full-screen interactive)
+    #[command(long_about = "Start a full-screen TUI session.\n\
+        \n\
+        Features:\n\
+        - Rich markdown rendering\n\
+        - Animated progress indicators\n\
+        - Dropdown for / commands\n\
+        - Dropdown for @ file completion\n\
+        - Scrollable message history\n\
+        \n\
+        Keybindings: /help, Ctrl+C to cancel, Ctrl+D to quit")]
+    Tui,
+
     /// Show current status (provider, model, connection)
     #[command(long_about = "Show current agent status.\n\
         \n\

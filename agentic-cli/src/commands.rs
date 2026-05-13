@@ -172,6 +172,21 @@ impl Commands {
         Ok(())
     }
 
+    // ── Model info (for REPL prompt) ────────────────────────
+
+    pub fn model_info(&self) -> (String, String, String) {
+        if let Some(p) = self.config.active_provider() {
+            let model = p.models
+                .first()
+                .map(|m| m.display_name.as_deref().unwrap_or(&m.model))
+                .unwrap_or("unknown")
+                .to_string();
+            (p.name.clone(), model, p.api_base.clone())
+        } else {
+            ("none".into(), "none".into(), "-".into())
+        }
+    }
+
     // ── Inline config display (for REPL /config) ──────────
 
     pub fn config_show_inline(&self) {
@@ -346,6 +361,27 @@ impl Commands {
         }
 
         Ok(())
+    }
+
+    /// Run task with a callback for streaming chunks (used by TUI)
+    pub async fn run_with_callback<F>(&mut self, task: &str, mut on_chunk: F) -> Result<String>
+    where
+        F: FnMut(&str),
+    {
+        self.ensure_orchestrator()?;
+
+        let orchestrator = self
+            .orchestrator
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Orchestrator not initialized"))?;
+
+        let result = orchestrator
+            .run_stream(task, |chunk| {
+                on_chunk(&chunk);
+            })
+            .await?;
+
+        Ok(result)
     }
 
     // ── Config dispatch ─────────────────────────────────────

@@ -8,6 +8,7 @@ mod confirmation;
 mod error;
 mod interactive;
 mod markdown;
+mod tui;
 
 use anyhow::Result;
 use clap::Parser;
@@ -119,6 +120,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::Interactive) => {
             interactive::run(commands).await?;
+        }
+        Some(Command::Tui) => {
+            tui::run_tui(commands).await?;
         }
         Some(Command::Config(action)) => {
             commands.config(action)?;
