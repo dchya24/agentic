@@ -1,13 +1,22 @@
+//! Interactive REPL mode using reedline
+//!
+//! Provides an interactive CLI with:
+//! - `/` command completion with description popup (auto-activates on `/`)
+//! - `@` file path completion with popup (auto-activates on `@`)
+//! - Syntax highlighting for `/` (yellow) and `@` (blue)
+//! - Fish-style inline hints
+//! - Session statistics, conversation history, save/load
+
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
-use rustyline::completion::{Completer, Pair};
-use rustyline::error::ReadlineError;
-use rustyline::highlight::Highlighter;
-use rustyline::hint::Hinter;
-use rustyline::history::DefaultHistory;
-use rustyline::validate::{ValidationContext, ValidationResult, Validator};
-use rustyline::{Config, Context, Editor, Helper};
-use std::borrow::Cow::{self, Borrowed, Owned};
+use nu_ansi_term::{Color as AnsiColor, Style};
+use reedline::{
+    default_emacs_keybindings, Completer, DescriptionMenu, EditCommand, Emacs, FileBackedHistory,
+    Highlighter, Hinter, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
+    PromptHistorySearch, PromptHistorySearchStatus, Reedline, ReedlineEvent, ReedlineMenu, Signal,
+    Span, StyledText, Suggestion, ValidationResult, Validator,
+};
+use std::borrow::Cow;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -118,8 +127,6 @@ const SLASH_COMMANDS: &[(&str, &[&str], &str)] = &[
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-// ── Progress bar helper ─────────────────────────────────────
-
 fn start_spinner(message: &str) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
     pb.set_style(
@@ -133,71 +140,40 @@ fn start_spinner(message: &str) -> ProgressBar {
     pb
 }
 
-// ── Custom Completer with @ file and / command support ──────
+// ── Agentic Completer ───────────────────────────────────────
 
-#[derive(Helper)]
-struct ReplHelper {}
+/// Custom completer that handles both `/` commands and `@` file paths.
+struct AgenticCompleter;
 
-impl ReplHelper {
-    fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Completer for ReplHelper {
-    type Candidate = Pair;
-
-    fn complete(
-        &self,
-        line: &str,
-        pos: usize,
-        _ctx: &Context<'_>,
-    ) -> Result<(usize, Vec<Pair>), ReadlineError> {
+impl Completer for AgenticCompleter {
+    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        // Guard: reedline may pass pos > line.len() in some edge cases
+        let pos = pos.min(line.len());
         let before_cursor = &line[..pos];
 
         // ── Case 1: `/` command completion ──
-        // Only when line starts with `/` and we're still in the command part
         if line.starts_with('/') {
             if let Some(space_pos) = line.find(' ') {
-                // Cursor is before the first space → complete the command
                 if pos <= space_pos {
-                    let partial = &line[..pos];
-                    let matches = complete_slash_command(partial);
-                    if !matches.is_empty() {
-                        return Ok((0, matches));
-                    }
+                    return complete_slash_command_suggestions(&line[..pos]);
                 }
             } else {
-                // No space yet, entire line is command
-                let matches = complete_slash_command(before_cursor);
-                if !matches.is_empty() {
-                    return Ok((0, matches));
-                }
+                return complete_slash_command_suggestions(before_cursor);
             }
         }
 
         // ── Case 2: `@` file completion ──
-        // Find `@` trigger at or before cursor
         if let Some(at_pos) = find_at_trigger(before_cursor) {
             let query = &before_cursor[at_pos + 1..];
-            let matches = complete_file_path(query);
-            if !matches.is_empty() {
-                // Replace from `@` to cursor with the selected completion
-                return Ok((at_pos, matches));
-            }
+            return complete_file_path_suggestions(query, at_pos);
         }
 
-        // ── Case 3: No completions ──
-        Ok((pos, Vec::new()))
+        Vec::new()
     }
 }
 
 /// Find the `@` trigger position in text before cursor.
-/// Returns the byte position of `@` if it's a valid trigger:
-/// - `@` at start of line or after whitespace
-/// - No whitespace between `@` and end of text
 fn find_at_trigger(text: &str) -> Option<usize> {
-    // Walk backwards looking for `@`
     for (i, c) in text.char_indices().rev() {
         match c {
             '@' => {
@@ -218,8 +194,8 @@ fn find_at_trigger(text: &str) -> Option<usize> {
     None
 }
 
-/// Complete a slash command partial (e.g. `/he` → `/help`)
-fn complete_slash_command(partial: &str) -> Vec<Pair> {
+/// Complete slash commands and return Suggestions with descriptions.
+fn complete_slash_command_suggestions(partial: &str) -> Vec<Suggestion> {
     let partial_lower = partial.to_lowercase();
 
     SLASH_COMMANDS
@@ -229,25 +205,33 @@ fn complete_slash_command(partial: &str) -> Vec<Pair> {
             if full.starts_with(&partial_lower) || full.starts_with(partial) {
                 return true;
             }
-            // Check aliases
             aliases.iter().any(|a| {
                 let alias_full = format!("/{}", a);
                 alias_full.starts_with(&partial_lower) || alias_full.starts_with(partial)
             })
         })
-        .map(|(cmd, _, desc)| {
-            let display = format!("/{} — {}", cmd, desc);
-            let replacement = format!("/{}", cmd);
-            Pair {
-                display,
-                replacement,
+        .map(|(cmd, aliases, desc)| {
+            let display = if aliases.is_empty() {
+                format!("/{}", cmd)
+            } else {
+                format!("/{} ({})", cmd, aliases.join(", "))
+            };
+            Suggestion {
+                value: format!("/{}", cmd),
+                display_override: Some(display),
+                description: Some(desc.to_string()),
+                style: None,
+                extra: None,
+                span: Span::new(0, partial.len()),
+                append_whitespace: true,
+                match_indices: None,
             }
         })
         .collect()
 }
 
-/// Complete a file path query (e.g. `src/ma` → `src/main.rs`)
-fn complete_file_path(query: &str) -> Vec<Pair> {
+/// Complete file paths and return Suggestions.
+fn complete_file_path_suggestions(query: &str, at_pos: usize) -> Vec<Suggestion> {
     let mut results = Vec::new();
 
     let (base_path, search_pattern) = if query.contains('/') {
@@ -271,19 +255,16 @@ fn complete_file_path(query: &str) -> Vec<Pair> {
         for entry in entries.filter_map(|e| e.ok()) {
             let file_name = entry.file_name().to_string_lossy().to_string();
 
-            // Skip hidden files unless explicitly requested
             if file_name.starts_with('.') && !search_pattern.starts_with('.') {
                 continue;
             }
 
-            // Skip noisy dirs
             if matches!(file_name.as_str(), "target" | "node_modules" | ".git")
                 && !search_pattern.starts_with(&file_name[..2.min(file_name.len())])
             {
                 continue;
             }
 
-            // Match: prefix or substring
             let matches = if search_pattern.is_empty() {
                 true
             } else {
@@ -308,24 +289,40 @@ fn complete_file_path(query: &str) -> Vec<Pair> {
                     full_path.clone()
                 };
 
-                let icon = if is_dir { "📁 " } else { "📄 " };
+                let icon = if is_dir { "📁" } else { "📄" };
 
-                results.push(Pair {
-                    display: format!("{}{}", icon, display),
-                    replacement: display,
+                results.push(Suggestion {
+                    value: display.clone(),
+                    display_override: Some(format!("{} {}", icon, display)),
+                    description: Some(if is_dir {
+                        "Directory".to_string()
+                    } else {
+                        let ext_str = entry
+                            .path()
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let ext_ref = ext_str.as_str();
+                        format!("File ({})", if ext_str.is_empty() { "?" } else { ext_ref })
+                    }),
+                    style: None,
+                    extra: None,
+                    span: Span::new(at_pos, at_pos + 1 + query.len()),
+                    append_whitespace: !is_dir,
+                    match_indices: None,
                 });
             }
         }
     }
 
-    // Sort: dirs first, then alphabetically
     results.sort_by(|a, b| {
-        let a_dir = a.replacement.ends_with('/');
-        let b_dir = b.replacement.ends_with('/');
+        let a_dir = a.value.ends_with('/');
+        let b_dir = b.value.ends_with('/');
         match (a_dir, b_dir) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => a.replacement.to_lowercase().cmp(&b.replacement.to_lowercase()),
+            _ => a.value.to_lowercase().cmp(&b.value.to_lowercase()),
         }
     });
 
@@ -333,76 +330,109 @@ fn complete_file_path(query: &str) -> Vec<Pair> {
     results
 }
 
-impl Highlighter for ReplHelper {
-    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
-        &'s self,
-        prompt: &'p str,
-        _default: bool,
-    ) -> Cow<'b, str> {
-        Owned(format!("\x1b[1;36m{}\x1b[0m", prompt))
-    }
+// ── Agentic Highlighter ─────────────────────────────────────
 
-    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
-        Owned(format!("\x1b[2m{}\x1b[0m", hint))
-    }
+/// Syntax highlighter for `/` commands and `@` file references.
+struct AgenticHighlighter;
 
-    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+impl Highlighter for AgenticHighlighter {
+    fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
+        let mut styled = StyledText::new();
+
         if line.is_empty() {
-            return Borrowed(line);
+            return styled;
         }
 
         // Slash command highlighting (yellow)
         if line.starts_with('/') {
-            return Owned(format!("\x1b[1;33m{}\x1b[0m", line));
+            if let Some(space_pos) = line.find(' ') {
+                styled.push((
+                    Style::new().fg(AnsiColor::Yellow).bold(),
+                    line[..space_pos].to_string(),
+                ));
+                styled.push((Style::new(), line[space_pos..].to_string()));
+            } else {
+                styled.push((
+                    Style::new().fg(AnsiColor::Yellow).bold(),
+                    line.to_string(),
+                ));
+            }
+            return styled;
         }
 
         // @ file reference highlighting (blue)
-        // Highlight @ and the path after it
         if line.contains('@') {
-            let mut result = String::new();
-            let mut chars = line.char_indices().peekable();
             let mut i = 0;
+            let mut in_at_ref = false;
+            let mut at_start = 0;
 
-            while let Some((pos, c)) = chars.next() {
+            for (pos, c) in line.char_indices() {
                 if c == '@' && (pos == 0 || line[..pos].ends_with(char::is_whitespace)) {
-                    // Found an @ trigger — highlight from here until whitespace or end
-                    result.push_str(&line[i..pos]); // push any un-highlighted text before @
-                    result.push_str("\x1b[1;34m@");
-                    let mut end = pos + 1;
-                    for (j, fc) in line[pos + 1..].char_indices() {
-                        if fc.is_whitespace() {
-                            break;
-                        }
-                        end = pos + 1 + j + fc.len_utf8();
+                    // Flush previous
+                    if i < pos {
+                        styled.push((Style::new(), line[i..pos].to_string()));
                     }
-                    result.push_str(&line[pos + 1..end]);
-                    result.push_str("\x1b[0m");
-                    i = end;
+                    in_at_ref = true;
+                    at_start = pos;
+                    i = pos;
+                } else if in_at_ref && c.is_whitespace() {
+                    styled.push((
+                        Style::new().fg(AnsiColor::Rgb(52, 152, 219)).bold(),
+                        line[at_start..pos].to_string(),
+                    ));
+                    in_at_ref = false;
+                    i = pos;
                 }
             }
 
+            // Flush remaining
             if i < line.len() {
-                result.push_str(&line[i..]);
+                if in_at_ref {
+                    styled.push((
+                        Style::new().fg(AnsiColor::Rgb(52, 152, 219)).bold(),
+                        line[i..].to_string(),
+                    ));
+                } else {
+                    styled.push((Style::new(), line[i..].to_string()));
+                }
             }
 
-            if !result.is_empty() {
-                return Owned(result);
-            }
+            return styled;
         }
 
-        Borrowed(line)
-    }
-
-    fn highlight_char(&self, line: &str, _pos: usize, _forced: bool) -> bool {
-        !line.is_empty()
+        // Default
+        styled.push((Style::new(), line.to_string()));
+        styled
     }
 }
 
-impl Hinter for ReplHelper {
-    type Hint = String;
+// ── Agentic Hinter ──────────────────────────────────────────
 
-    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
-        // Slash command hints — show remaining text for unique match
+/// Fish-style hinter that shows first match inline.
+struct AgenticHinter {
+    last_hint: String,
+}
+
+impl AgenticHinter {
+    fn new() -> Self {
+        Self {
+            last_hint: String::new(),
+        }
+    }
+}
+
+impl Hinter for AgenticHinter {
+    fn handle(
+        &mut self,
+        line: &str,
+        pos: usize,
+        _history: &dyn reedline::History,
+        _use_ansi_coloring: bool,
+        _cwd: &str,
+    ) -> String {
+        self.last_hint.clear();
+
+        // Slash command hints
         if line.starts_with('/') && !line.contains(' ') {
             let partial = &line[..pos];
             let matches: Vec<&&str> = SLASH_COMMANDS
@@ -413,40 +443,129 @@ impl Hinter for ReplHelper {
                     full != partial && full.starts_with(partial)
                 })
                 .collect();
-            if matches.len() == 1 {
-                let full = format!("/{}", matches[0]);
-                let remainder = full[partial.len()..].to_string();
+
+            if !matches.is_empty() {
+                let first = format!("/{}", matches[0]);
+                let remainder = first[partial.len()..].to_string();
                 if !remainder.is_empty() {
-                    return Some(remainder);
+                    let hint = if matches.len() > 1 {
+                        format!("{} [{}+]", remainder, matches.len() - 1)
+                    } else {
+                        remainder
+                    };
+                    self.last_hint = hint.clone();
+                    return AnsiColor::DarkGray.paint(hint).to_string();
                 }
             }
         }
 
-        // @ file path hint — show first match
+        // @ file path hints
         if line.contains('@') {
             let before = &line[..pos];
             if let Some(at_pos) = find_at_trigger(before) {
                 let query = &before[at_pos + 1..];
-                let completions = complete_file_path(query);
-                if completions.len() == 1 {
-                    let comp = &completions[0].replacement;
-                    // Show only the part after what user already typed
+                let completions = complete_file_path_suggestions(query, at_pos);
+
+                if !completions.is_empty() {
+                    let comp = &completions[0].value;
                     if let Some(remaining) = comp.get(query.len()..) {
                         if !remaining.is_empty() {
-                            return Some(remaining.to_string());
+                            let hint = if completions.len() > 1 {
+                                format!("{} [{}+]", remaining, completions.len() - 1)
+                            } else {
+                                remaining.to_string()
+                            };
+                            self.last_hint = hint.clone();
+                            return AnsiColor::DarkGray.paint(hint).to_string();
                         }
                     }
                 }
             }
         }
 
-        None
+        String::new()
+    }
+
+    fn complete_hint(&self) -> String {
+        if let Some(space_pos) = self.last_hint.find(" [") {
+            self.last_hint[..space_pos].to_string()
+        } else {
+            self.last_hint.clone()
+        }
+    }
+
+    fn next_hint_token(&self) -> String {
+        let hint = self.complete_hint();
+        if let Some(slash_pos) = hint.find('/') {
+            hint[..slash_pos + 1].to_string()
+        } else if let Some(space_pos) = hint.find(' ') {
+            hint[..space_pos].to_string()
+        } else {
+            hint
+        }
     }
 }
 
-impl Validator for ReplHelper {
-    fn validate(&self, _ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
-        Ok(ValidationResult::Valid(None))
+// ── Agentic Validator ───────────────────────────────────────
+
+struct AgenticValidator;
+
+impl Validator for AgenticValidator {
+    fn validate(&self, _line: &str) -> ValidationResult {
+        ValidationResult::Complete
+    }
+}
+
+// ── Agentic Prompt ──────────────────────────────────────────
+
+struct AgenticPrompt {
+    dir_name: String,
+}
+
+impl AgenticPrompt {
+    fn new() -> Self {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let dir_name = cwd
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+        Self { dir_name }
+    }
+}
+
+impl Prompt for AgenticPrompt {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
+        let styled = format!(
+            "{}{}{}agentic> ",
+            AnsiColor::DarkGray.prefix(),
+            self.dir_name,
+            Style::new().prefix()
+        );
+        Cow::Owned(styled)
+    }
+
+    fn render_prompt_right(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
+        Cow::Borrowed("... ")
+    }
+
+    fn render_prompt_history_search_indicator(
+        &self,
+        history_search: PromptHistorySearch,
+    ) -> Cow<'_, str> {
+        let prefix = match history_search.status {
+            PromptHistorySearchStatus::Passing => "",
+            PromptHistorySearchStatus::Failing => "FAILED ",
+        };
+        Cow::Owned(format!("{}({})", prefix, history_search.term))
     }
 }
 
@@ -467,42 +586,111 @@ pub async fn run(mut commands: Commands) -> Result<()> {
 
     print_banner(&model_info, &stats);
 
-    let config = Config::builder()
-        .history_ignore_space(true)
-        .completion_type(rustyline::CompletionType::List)
-        .edit_mode(rustyline::EditMode::Emacs)
-        .build();
+    // Build reedline with all features
+    let completer = Box::new(AgenticCompleter);
+    let highlighter = Box::new(AgenticHighlighter);
+    let hinter = Box::new(AgenticHinter::new());
+    let validator = Box::new(AgenticValidator);
+    let prompt = AgenticPrompt::new();
 
-    let helper = ReplHelper::new();
-
-    let mut rl = Editor::with_history(config, DefaultHistory::new())?;
-    rl.set_helper(Some(helper));
-
+    // File-backed history
     let history_path = dirs::home_dir()
         .unwrap_or_default()
         .join(".config")
         .join("agentic")
         .join("history.txt");
 
-    if history_path.exists() {
-        let _ = rl.load_history(&history_path);
+    if let Some(parent) = history_path.parent() {
+        std::fs::create_dir_all(parent).ok();
     }
+
+    let history = Box::new(
+        FileBackedHistory::with_file(1000, history_path.clone())
+            .map_err(|e| anyhow::anyhow!("Failed to create history: {}", e))?,
+    );
+
+    // Description menu — only_buffer_difference: false so completer gets full buffer
+    let completion_menu = Box::new(
+        DescriptionMenu::default()
+            .with_name("completion_menu")
+            .with_marker("\u{25bc} ")
+            .with_columns(1)
+            .with_selection_rows(8)
+            .with_description_rows(4)
+            .with_only_buffer_difference(false),
+    );
+
+    // Custom keybindings for Tab completion + auto-trigger on `/` and `@`
+    let mut keybindings = default_emacs_keybindings();
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("completion_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
+    // Arrow up/down: navigate menu items when active, history when not
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Down,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::MenuNext,
+            ReedlineEvent::Down,
+        ]),
+    );
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Up,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::MenuPrevious,
+            ReedlineEvent::Up,
+        ]),
+    );
+    // Auto-activate completion menu when typing `/`
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Char('/'),
+        ReedlineEvent::Multiple(vec![
+            ReedlineEvent::Edit(vec![EditCommand::InsertChar('/')]),
+            ReedlineEvent::Menu("completion_menu".to_string()),
+        ]),
+    );
+    // Auto-activate completion menu when typing `@`
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Char('@'),
+        ReedlineEvent::Multiple(vec![
+            ReedlineEvent::Edit(vec![EditCommand::InsertChar('@')]),
+            ReedlineEvent::Menu("completion_menu".to_string()),
+        ]),
+    );
+
+    let edit_mode = Box::new(Emacs::new(keybindings));
+
+    let mut line_editor = Reedline::create()
+        .with_completer(completer)
+        .with_highlighter(highlighter)
+        .with_hinter(hinter)
+        .with_validator(validator)
+        .with_history(history)
+        .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
+        .with_edit_mode(edit_mode)
+        .with_quick_completions(true)
+        .with_partial_completions(true);
 
     let mut conversation: Vec<ConversationEntry> = Vec::new();
 
     loop {
-        let prompt = build_prompt();
-        let readline = rl.readline(&prompt);
+        let sig = line_editor.read_line(&prompt);
 
-        match readline {
-            Ok(line) => {
-                let input = line.trim().to_string();
+        match sig {
+            Ok(Signal::Success(input)) => {
+                let input = input.trim().to_string();
 
                 if input.is_empty() {
                     continue;
                 }
-
-                let _ = rl.add_history_entry(&input);
 
                 // Handle slash commands
                 if input.starts_with('/') {
@@ -517,7 +705,7 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                             ReplAction::ClearHistory => {
                                 conversation.clear();
                                 commands.clear_memory();
-                                println!("\n  \x1b[32m✓ Conversation cleared.\x1b[0m\n");
+                                println!("\n  \x1b[32m\u{2713} Conversation cleared.\x1b[0m\n");
                                 print_status_bar(&model_info, &stats);
                             }
                             ReplAction::Config => {
@@ -538,16 +726,23 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                             ReplAction::Load(file) => {
                                 if let Ok(entries) = load_conversation(&file) {
                                     conversation = entries;
-                                    println!("\n  \x1b[32m✓ Conversation loaded from: {}\x1b[0m\n", file);
+                                    println!(
+                                        "\n  \x1b[32m\u{2713} Conversation loaded from: {}\x1b[0m\n",
+                                        file
+                                    );
                                 }
                             }
                             ReplAction::Provider(name) => {
-                                println!("\n  \x1b[33m⚠ Provider switching not yet supported in REPL.\x1b[0m");
+                                println!(
+                                    "\n  \x1b[33m\u{26a0} Provider switching not yet supported in REPL.\x1b[0m"
+                                );
                                 println!("  Use: agentic config edit to change providers.\n");
                                 let _ = &name;
                             }
                             ReplAction::Model(name) => {
-                                println!("\n  \x1b[33m⚠ Model switching not yet supported in REPL.\x1b[0m");
+                                println!(
+                                    "\n  \x1b[33m\u{26a0} Model switching not yet supported in REPL.\x1b[0m"
+                                );
                                 println!("  Use: agentic config edit to change models.\n");
                                 let _ = &name;
                             }
@@ -564,15 +759,20 @@ pub async fn run(mut commands: Commands) -> Result<()> {
 
                                 let pb = start_spinner("Planning...");
                                 let start = Instant::now();
-                                if let Err(e) = commands.run(&format!("Create a plan for: {}", goal)).await {
+                                if let Err(e) =
+                                    commands.run(&format!("Create a plan for: {}", goal)).await
+                                {
                                     pb.finish_and_clear();
-                                    eprintln!("\n  \x1b[31m✗ Error: {}\x1b[0m\n", e);
+                                    eprintln!("\n  \x1b[31m\u{2717} Error: {}\x1b[0m\n", e);
                                 } else {
                                     pb.finish_and_clear();
                                     let elapsed = start.elapsed();
                                     conversation.push(ConversationEntry {
                                         role: "assistant".into(),
-                                        content: format!("(plan created in {:.1}s)", elapsed.as_secs_f64()),
+                                        content: format!(
+                                            "(plan created in {:.1}s)",
+                                            elapsed.as_secs_f64()
+                                        ),
                                         timestamp: chrono::Local::now(),
                                     });
                                     print_response_summary(&stats, elapsed.as_millis());
@@ -605,7 +805,7 @@ pub async fn run(mut commands: Commands) -> Result<()> {
 
                         if let Err(e) = commands.run(&input).await {
                             pb.finish_and_clear();
-                            eprintln!("\n  \x1b[31m✗ Error: {}\x1b[0m\n", e);
+                            eprintln!("\n  \x1b[31m\u{2717} Error: {}\x1b[0m\n", e);
                         } else {
                             pb.finish_and_clear();
                             let elapsed = start.elapsed();
@@ -615,7 +815,10 @@ pub async fn run(mut commands: Commands) -> Result<()> {
 
                             conversation.push(ConversationEntry {
                                 role: "assistant".into(),
-                                content: format!("(response in {:.1}s)", elapsed.as_secs_f64()),
+                                content: format!(
+                                    "(response in {:.1}s)",
+                                    elapsed.as_secs_f64()
+                                ),
                                 timestamp: chrono::Local::now(),
                             });
                             print_response_summary(&stats, elapsed.as_millis());
@@ -623,25 +826,20 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                     }
                 }
             }
-            Err(ReadlineError::Interrupted) => {
+            Ok(Signal::CtrlC) => {
                 println!("\n  \x1b[33mUse /quit or Ctrl+D to exit.\x1b[0m\n");
                 continue;
             }
-            Err(ReadlineError::Eof) => {
+            Ok(Signal::CtrlD) => {
                 break;
             }
-            Err(err) => {
-                eprintln!("Error: {:?}", err);
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error: {:?}", e);
                 break;
             }
         }
     }
-
-    // Save history on exit
-    if let Some(parent) = history_path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let _ = rl.save_history(&history_path);
 
     print_goodbye(&stats);
     Ok(())
@@ -662,17 +860,6 @@ fn get_model_info(commands: &Commands) -> ModelInfo {
         model,
         api_base,
     }
-}
-
-// ── Dynamic prompt builder ──────────────────────────────────
-
-fn build_prompt() -> String {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let dir_name = cwd
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("?");
-    format!("\x1b[2m{}\x1b[0m \x1b[1;36magentic>\x1b[0m ", dir_name)
 }
 
 // ── REPL actions ────────────────────────────────────────────
@@ -755,29 +942,32 @@ fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
         .to_string();
 
     println!();
-    println!("  \x1b[1m\x1b[36m╔══════════════════════════════════════════════════════╗\x1b[0m");
-    println!("  \x1b[1m\x1b[36m║            🤖 Agentic Interactive Mode               ║\x1b[0m");
-    println!("  \x1b[1m\x1b[36m╠══════════════════════════════════════════════════════╣\x1b[0m");
-    println!("  \x1b[1m\x1b[36m║\x1b[0m  \x1b[2m📂 {}\x1b[0m", pad_str(&cwd, 52));
+    println!("  \x1b[1m\x1b[36m\u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}\x1b[0m");
+    println!("  \x1b[1m\x1b[36m\u{2551}            \u{1f916} Agentic Interactive Mode               \u{2551}\x1b[0m");
+    println!("  \x1b[1m\x1b[36m\u{2560}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2563}\x1b[0m");
     println!(
-        "  \x1b[1m\x1b[36m║\x1b[0m  \x1b[33m⚡ {} \x1b[2m/ {}\x1b[0m",
+        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  \x1b[2m\u{1f4c2} {}\x1b[0m",
+        pad_str(&cwd, 52)
+    );
+    println!(
+        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  \x1b[33m\u{26a1} {} \x1b[2m/ {}\x1b[0m",
         pad_str(&format!("Provider: {}", model_info.provider), 25),
         pad_str(&format!("Model: {}", model_info.model), 25)
     );
-    println!("  \x1b[1m\x1b[36m╠══════════════════════════════════════════════════════╣\x1b[0m");
+    println!("  \x1b[1m\x1b[36m\u{2560}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2563}\x1b[0m");
     println!(
-        "  \x1b[1m\x1b[36m║\x1b[0m  /help    Show commands                              \x1b[1m\x1b[36m║\x1b[0m"
+        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  /help    Show commands                              \x1b[1m\x1b[36m\u{2551}\x1b[0m"
     );
     println!(
-        "  \x1b[1m\x1b[36m║\x1b[0m  /tools   List available tools                        \x1b[1m\x1b[36m║\x1b[0m"
+        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  /tools   List available tools                        \x1b[1m\x1b[36m\u{2551}\x1b[0m"
     );
     println!(
-        "  \x1b[1m\x1b[36m║\x1b[0m  /stats   Show session statistics                     \x1b[1m\x1b[36m║\x1b[0m"
+        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  /stats   Show session statistics                     \x1b[1m\x1b[36m\u{2551}\x1b[0m"
     );
     println!(
-        "  \x1b[1m\x1b[36m║\x1b[0m  /quit    Exit (Ctrl+D)                               \x1b[1m\x1b[36m║\x1b[0m"
+        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  /quit    Exit (Ctrl+D)                               \x1b[1m\x1b[36m\u{2551}\x1b[0m"
     );
-    println!("  \x1b[1m\x1b[36m╚══════════════════════════════════════════════════════╝\x1b[0m");
+    println!("  \x1b[1m\x1b[36m\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}\x1b[0m");
     println!();
 
     print_status_bar(model_info, stats);
@@ -788,7 +978,7 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
     println!(
-        "  \x1b[2m┌─ \x1b[33m⚡ {} {}\x1b[2m ─── \x1b[36m💬 {} msgs\x1b[2m ─── \x1b[35m📊 tokens: {} in / {} out\x1b[2m ─── \x1b[32m⏱ {}\x1b[2m ─┐\x1b[0m",
+        "  \x1b[2m\u{250c}\u{2500} \x1b[33m\u{26a1} {} {}\x1b[2m \u{2500}\u{2500}\u{2500} \x1b[36m\u{1f4ac} {} msgs\x1b[2m \u{2500}\u{2500}\u{2500} \x1b[35m\u{1f4ca} tokens: {} in / {} out\x1b[2m \u{2500}\u{2500}\u{2500} \x1b[32m\u{23f1} {}\x1b[2m \u{2500}\u{2510}\x1b[0m",
         model_info.provider,
         model_info.model,
         stats.messages_sent(),
@@ -805,7 +995,7 @@ fn print_response_summary(stats: &SessionStats, ms: u128) {
 
     println!();
     println!(
-        "  \x1b[2m┌─ \x1b[32m✓ Done\x1b[2m ─── ⏱ {}.{:03}s ─── 💬 {} msgs ─── 📊 {} in / {} out ─── ⏱ session: {} ─┐\x1b[0m",
+        "  \x1b[2m\u{250c}\u{2500} \x1b[32m\u{2713} Done\x1b[2m \u{2500}\u{2500}\u{2500} \u{23f1} {}.{:03}s \u{2500}\u{2500}\u{2500} \u{1f4ac} {} msgs \u{2500}\u{2500}\u{2500} \u{1f4ca} {} in / {} out \u{2500}\u{2500}\u{2500} \u{23f1} session: {} \u{2500}\u{2510}\x1b[0m",
         ms / 1000,
         ms % 1000,
         stats.messages_sent(),
@@ -818,7 +1008,7 @@ fn print_response_summary(stats: &SessionStats, ms: u128) {
 
 fn print_help() {
     println!();
-    println!("  \x1b[1m\x1b[36m📖 Commands:\x1b[0m");
+    println!("  \x1b[1m\x1b[36m\u{1f4d6} Commands:\x1b[0m");
     println!();
     println!("  \x1b[33mSlash commands:\x1b[0m");
     println!("  /help              Show this help");
@@ -840,17 +1030,19 @@ fn print_help() {
     println!("  clear              Clear screen");
     println!("  exit, q            Exit");
     println!();
-    println!("  \x1b[33mAuto-completion:\x1b[0m");
-    println!("  \x1b[1;33m/\x1b[0m + Tab         Show available commands");
-    println!("  \x1b[1;34m@\x1b[0m + Tab         Browse and complete file paths");
-    println!("  • Type \x1b[1;33m/he\x1b[0m + Tab to complete \x1b[1;33m/help\x1b[0m");
-    println!("  • Type \x1b[1;34m@src/\x1b[0m + Tab to list files in src/");
-    println!("  • Type \x1b[1;34m@src/ma\x1b[0m + Tab to complete \x1b[1;34m@src/main.rs\x1b[0m");
+    println!("  \x1b[33mCompletion & Hints:\x1b[0m");
+    println!("  \x1b[1;33m/\x1b[0m                Popup with command list + descriptions");
+    println!("  \x1b[1;34m@\x1b[0m                Popup with file list + icons");
+    println!("  Tab               Navigate/open completion menu");
+    println!("  \u{2192} (Right Arrow)   Accept inline hint");
+    println!("  \u{2022} Type \x1b[1;33m/\x1b[0m \u{2192} popup shows all commands with descriptions");
+    println!("  \u{2022} Type \x1b[1;34m@src/\x1b[0m \u{2192} popup shows files in src/");
+    println!("  \u{2022} Arrow keys \u{2191}\u{2193} to navigate, Enter to select");
     println!();
     println!("  \x1b[33mTips:\x1b[0m");
-    println!("  • Type any text to send as a task to the AI agent");
-    println!("  • Ctrl+R to search command history");
-    println!("  • Ctrl+C to cancel, Ctrl+D to exit");
+    println!("  \u{2022} Type any text to send as a task to the AI agent");
+    println!("  \u{2022} Ctrl+R to search command history");
+    println!("  \u{2022} Ctrl+C to cancel, Ctrl+D to exit");
     println!();
 }
 
@@ -861,9 +1053,9 @@ fn show_stats(stats: &SessionStats, model_info: &ModelInfo) {
         .to_string();
 
     println!();
-    println!("  \x1b[1m\x1b[36m📊 Session Statistics:\x1b[0m");
+    println!("  \x1b[1m\x1b[36m\u{1f4ca} Session Statistics:\x1b[0m");
     println!();
-    println!("  \x1b[2m────────────────────────────────────────────────\x1b[0m");
+    println!("  \x1b[2m\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\x1b[0m");
     println!();
 
     println!("  \x1b[1mSession:\x1b[0m");
@@ -890,13 +1082,13 @@ fn show_stats(stats: &SessionStats, model_info: &ModelInfo) {
         let out_ratio = bar_width - in_ratio;
         println!(
             "    Input:        \x1b[32m{}\x1b[31m{}\x1b[0m {} tokens",
-            "█".repeat(in_ratio),
-            "█".repeat(out_ratio),
+            "\u{2588}".repeat(in_ratio),
+            "\u{2588}".repeat(out_ratio),
             stats.format_tokens(in_tok)
         );
         println!(
             "    Output:       \x1b[31m{}\x1b[0m {} tokens",
-            "█".repeat(
+            "\u{2588}".repeat(
                 bar_width.min(out_tok as usize / (total_tok as usize / bar_width + 1))
             ),
             stats.format_tokens(out_tok)
@@ -915,7 +1107,7 @@ fn show_stats(stats: &SessionStats, model_info: &ModelInfo) {
     println!("    Working dir:  \x1b[2m{}\x1b[0m", cwd);
     println!();
 
-    println!("  \x1b[2m────────────────────────────────────────────────\x1b[0m");
+    println!("  \x1b[2m\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\x1b[0m");
     println!();
 }
 
@@ -927,22 +1119,25 @@ fn show_history(conversation: &[ConversationEntry]) {
     }
 
     println!(
-        "  \x1b[1m\x1b[36m📜 Conversation History ({} messages):\x1b[0m\n",
+        "  \x1b[1m\x1b[36m\u{1f4dc} Conversation History ({} messages):\x1b[0m\n",
         conversation.len()
     );
     for (i, entry) in conversation.iter().enumerate() {
         let time = entry.timestamp.format("%H:%M:%S");
         let icon = match entry.role.as_str() {
-            "user" => "\x1b[1;34m👤\x1b[0m",
-            "assistant" => "\x1b[1;32m🤖\x1b[0m",
-            _ => "\x1b[1;33m💬\x1b[0m",
+            "user" => "\x1b[1;34m\u{1f464}\x1b[0m",
+            "assistant" => "\x1b[1;32m\u{1f916}\x1b[0m",
+            _ => "\x1b[1;33m\u{1f4ac}\x1b[0m",
         };
         let content_preview = if entry.content.len() > 120 {
             format!("{}...", &entry.content[..117])
         } else {
             entry.content.clone()
         };
-        println!("  {} \x1b[2m[{}] #{}\x1b[0m {}", icon, time, i + 1, content_preview);
+        println!(
+            "  {} \x1b[2m[{}] #{}\x1b[0m {}",
+            icon, time, i + 1, content_preview
+        );
     }
     println!();
 }
@@ -952,18 +1147,18 @@ fn print_goodbye(stats: &SessionStats) {
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
     println!();
-    println!("  \x1b[1m\x1b[36m📊 Session Summary:\x1b[0m");
-    println!("  \x1b[2m──────────────────────────────────────\x1b[0m");
+    println!("  \x1b[1m\x1b[36m\u{1f4ca} Session Summary:\x1b[0m");
+    println!("  \x1b[2m\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\x1b[0m");
     println!(
-        "  💬 Messages: {}  │  ⏱ Duration: {}  │  📊 Tokens: {} in / {} out",
+        "  \u{1f4ac} Messages: {}  \u{2502}  \u{23f1} Duration: {}  \u{2502}  \u{1f4ca} Tokens: {} in / {} out",
         stats.messages_sent(),
         stats.elapsed_str(),
         in_tok,
         out_tok,
     );
-    println!("  \x1b[2m──────────────────────────────────────\x1b[0m");
+    println!("  \x1b[2m\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\x1b[0m");
     println!();
-    println!("  \x1b[36m👋 Goodbye!\x1b[0m\n");
+    println!("  \x1b[36m\u{1f44b} Goodbye!\x1b[0m\n");
 }
 
 fn pad_str(s: &str, max: usize) -> String {
@@ -993,7 +1188,7 @@ fn save_conversation(conversation: &[ConversationEntry], file: &str) {
     let content = match serde_json::to_string_pretty(&data) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("\n  \x1b[31m✗ Failed to serialize: {}\x1b[0m\n", e);
+            eprintln!("\n  \x1b[31m\u{2717} Failed to serialize: {}\x1b[0m\n", e);
             return;
         }
     };
@@ -1001,20 +1196,20 @@ fn save_conversation(conversation: &[ConversationEntry], file: &str) {
     match std::fs::write(file, content) {
         Ok(_) => {
             println!(
-                "\n  \x1b[32m✓ Conversation saved to: {} ({} messages)\x1b[0m\n",
+                "\n  \x1b[32m\u{2713} Conversation saved to: {} ({} messages)\x1b[0m\n",
                 file,
                 conversation.len()
             );
         }
         Err(e) => {
-            eprintln!("\n  \x1b[31m✗ Failed to save: {}\x1b[0m\n", e);
+            eprintln!("\n  \x1b[31m\u{2717} Failed to save: {}\x1b[0m\n", e);
         }
     }
 }
 
 fn load_conversation(file: &str) -> Result<Vec<ConversationEntry>> {
-    let content =
-        std::fs::read_to_string(file).map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+    let content = std::fs::read_to_string(file)
+        .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
 
     let data: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("Invalid JSON: {}", e))?;

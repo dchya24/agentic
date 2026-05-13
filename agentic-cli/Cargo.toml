@@ -30,7 +30,9 @@ indicatif = "0.17"
 comfy-table = "7"
 chrono = "0.4"
 console = "0.15"
-rustyline = { version = "14", features = ["derive", "with-file-history"] }
+# rustyline removed - using reedline for interactive mode
+reedline = "0.47"
+nu-ansi-term = "0.50"
 uuid = { version = "1", features = ["v4"] }
 
 # TUI
