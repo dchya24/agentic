@@ -113,7 +113,7 @@ const SLASH_COMMANDS: &[(&str, &[&str], &str)] = &[
     ("config", &["cfg"], "Show current configuration"),
     ("history", &["hist"], "Show conversation history"),
     ("tools", &["t"], "List available tools"),
-    ("model", &["m"], "Switch or show model"),
+    ("models", &["m"], "List all models from all providers"),
     ("provider", &["prov"], "Switch or show provider"),
     ("save", &["s"], "Save conversation to file"),
     ("load", &["l"], "Load conversation from file"),
@@ -739,12 +739,8 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                 println!("  Use: agentic config edit to change providers.\n");
                                 let _ = &name;
                             }
-                            ReplAction::Model(name) => {
-                                println!(
-                                    "\n  \x1b[33m\u{26a0} Model switching not yet supported in REPL.\x1b[0m"
-                                );
-                                println!("  Use: agentic config edit to change models.\n");
-                                let _ = &name;
+                            ReplAction::Models => {
+                                commands.list_models();
                             }
                             ReplAction::Mcp => {
                                 commands.show_mcp_status();
@@ -875,7 +871,7 @@ enum ReplAction {
     Save(String),
     Load(String),
     Provider(String),
-    Model(String),
+    Models,
     Mcp,
     Plan(String),
 }
@@ -915,11 +911,7 @@ fn handle_slash_command(input: &str) -> Option<ReplAction> {
             println!("\n  \x1b[33mUsage: /provider <name>\x1b[0m\n");
             None
         }
-        "/model" if !arg.is_empty() => Some(ReplAction::Model(arg)),
-        "/model" => {
-            println!("\n  \x1b[33mUsage: /model <name>\x1b[0m\n");
-            None
-        }
+        "/models" | "/m" => Some(ReplAction::Models),
         "/plan" if !arg.is_empty() => Some(ReplAction::Plan(arg)),
         "/plan" => {
             println!("\n  \x1b[33mUsage: /plan <goal>\x1b[0m\n");
@@ -1022,7 +1014,7 @@ fn print_help() {
     println!("  /load <file>       Load conversation from file");
     println!("  /plan <goal>       Create a plan for a goal");
     println!("  /provider <name>   Switch provider (not yet supported)");
-    println!("  /model <name>      Switch model (not yet supported)");
+    println!("  /models            List all models from all providers");
     println!("  /quit              Exit interactive mode");
     println!();
     println!("  \x1b[33mShortcuts:\x1b[0m");

@@ -244,6 +244,70 @@ impl Commands {
         }
     }
 
+    // ── List all models from all providers ─────────────────
+
+    pub fn list_models(&self) {
+        let providers = &self.config.providers;
+
+        println!();
+        println!("  \x1b[1m\x1b[36m🤖 Available Models:\x1b[0m\n");
+
+        if providers.is_empty() {
+            println!("  \x1b[33mNo providers configured.\x1b[0m");
+            println!("  Run \x1b[1magentic init\x1b[0m to set up a provider.\n");
+            return;
+        }
+
+        let active_provider = self.config.active_provider();
+        let active_model = self.config.active_model();
+
+        for provider in providers {
+            let is_active_provider = active_provider.map(|p| p.name == provider.name).unwrap_or(false);
+            let provider_marker = if is_active_provider { "\x1b[32m● \x1b[0m" } else { "  " };
+
+            println!(
+                "  {}\x1b[1m{}\x1b[0m \x1b[2m({})\x1b[0m",
+                provider_marker, provider.name, provider.provider_type
+            );
+            println!("  \x1b[2m  {}\x1b[0m", provider.api_base);
+            println!();
+
+            if provider.models.is_empty() {
+                println!("    \x1b[33mNo models configured for this provider.\x1b[0m");
+            } else {
+                for model in &provider.models {
+                    let is_active_model = is_active_provider
+                        && active_model.map(|m| m.model == model.model).unwrap_or(false);
+
+                    let marker = if is_active_model {
+                        "\x1b[32m  ✓ \x1b[0m"
+                    } else {
+                        "    "
+                    };
+
+                    let display = model.display_name.as_deref().unwrap_or(&model.model);
+                    let name_style = if is_active_model {
+                        format!("\x1b[1;32m{}\x1b[0m", display)
+                    } else {
+                        format!("\x1b[1m{}\x1b[0m", display)
+                    };
+
+                    println!(
+                        "  {}{}  \x1b[2m{}\x1b[0m",
+                        marker, name_style, model.model
+                    );
+                    println!(
+                        "       \x1b[2mtemp: {}  max_tokens: {}\x1b[0m",
+                        model.temperature, model.max_tokens
+                    );
+                }
+            }
+            println!();
+        }
+
+        println!("  \x1b[2m● = active provider   ✓ = active model\x1b[0m\n");
+    }
+
     // ── MCP status (for REPL /mcp) ──────────────────────────
 
     pub fn show_mcp_status(&self) {
