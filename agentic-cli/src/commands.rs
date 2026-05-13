@@ -308,6 +308,109 @@ impl Commands {
         println!("  \x1b[2m● = active provider   ✓ = active model\x1b[0m\n");
     }
 
+    // ── Switch model ────────────────────────────────────────
+
+    /// Switch to a model by name (partial match ok).
+    /// Returns (provider_name, model_name) if switched, or error string.
+    pub fn switch_model(&mut self, name: &str) -> Result<(String, String), String> {
+        let name_lower = name.to_lowercase();
+
+        // Find matching (provider_idx, model_idx)
+        let mut found: Option<(usize, usize)> = None;
+        for (pi, provider) in self.config.providers.iter().enumerate() {
+            for (mi, model) in provider.models.iter().enumerate() {
+                let display = model.display_name.as_deref().unwrap_or(&model.model);
+                if model.model.to_lowercase().contains(&name_lower)
+                    || display.to_lowercase().contains(&name_lower)
+                {
+                    found = Some((pi, mi));
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+
+        let (pi, mi) = found.ok_or_else(|| format!("Model '{}' not found", name))?;
+
+        // Reorder: move selected provider to front, selected model to front
+        let mut providers = self.config.providers.clone();
+        let mut provider = providers.remove(pi);
+        let model = provider.models.remove(mi);
+        provider.models.insert(0, model);
+        providers.insert(0, provider);
+        self.config.providers = providers;
+
+        // Save config
+        self.config.save().map_err(|e| format!("Failed to save config: {}", e))?;
+
+        // Reset orchestrator so it reinitializes with new model
+        self.orchestrator = None;
+
+        let active_provider = self.config.providers[0].name.clone();
+        let active_model = self.config.providers[0].models[0]
+            .display_name
+            .clone()
+            .unwrap_or_else(|| self.config.providers[0].models[0].model.clone());
+
+        Ok((active_provider, active_model))
+    }
+
+    /// Interactive model picker using dialoguer.
+    /// Returns (provider_name, model_name) if switched, None if cancelled.
+    pub fn pick_model_interactive(&mut self) -> Option<(String, String)> {
+        use dialoguer::{FuzzySelect, theme::ColorfulTheme};
+
+        // Build flat list of (display_label, provider_idx, model_idx)
+        let mut items: Vec<(String, usize, usize)> = Vec::new();
+        let active_provider = self.config.active_provider().map(|p| p.name.clone());
+        let active_model = self.config.active_model().map(|m| m.model.clone());
+
+        for (pi, provider) in self.config.providers.iter().enumerate() {
+            for (mi, model) in provider.models.iter().enumerate() {
+                let display = model.display_name.as_deref().unwrap_or(&model.model);
+                let is_active = active_provider.as_deref() == Some(&provider.name)
+                    && active_model.as_deref() == Some(&model.model);
+                let label = format!(
+                    "{}{} \x1b[2m[{}]\x1b[0m",
+                    if is_active { "✓ " } else { "  " },
+                    display,
+                    provider.name,
+                );
+                items.push((label, pi, mi));
+            }
+        }
+
+        if items.is_empty() {
+            println!("\n  \x1b[33mNo models configured.\x1b[0m\n");
+            return None;
+        }
+
+        // Find current selection index
+        let default = items.iter().position(|(label, _, _)| label.starts_with('✓')).unwrap_or(0);
+
+        let labels: Vec<&str> = items.iter().map(|(l, _, _)| l.as_str()).collect();
+
+        let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select model")
+            .default(default)
+            .items(&labels)
+            .interact_opt()
+            .ok()??
+            ;
+
+        let (_, pi, mi) = &items[selection];
+        let name = self.config.providers[*pi].models[*mi].model.clone();
+        match self.switch_model(&name) {
+            Ok(result) => Some(result),
+            Err(e) => {
+                println!("\n  \x1b[31m✗ {}\x1b[0m\n", e);
+                None
+            }
+        }
+    }
+
     // ── MCP status (for REPL /mcp) ──────────────────────────
 
     pub fn show_mcp_status(&self) {

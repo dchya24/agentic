@@ -740,7 +740,26 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                 let _ = &name;
                             }
                             ReplAction::Models => {
-                                commands.list_models();
+                                if let Some((provider, model)) = commands.pick_model_interactive() {
+                                    println!(
+                                        "\n  \x1b[32m\u{2713} Switched to {} / {}\x1b[0m\n",
+                                        provider, model
+                                    );
+                                }
+                            }
+                            ReplAction::ModelsSwitch(name) => {
+                                match commands.switch_model(&name) {
+                                    Ok((provider, model)) => {
+                                        println!(
+                                            "\n  \x1b[32m\u{2713} Switched to {} / {}\x1b[0m\n",
+                                            provider, model
+                                        );
+                                    }
+                                    Err(e) => {
+                                        println!("\n  \x1b[31m\u{2717} {}\x1b[0m", e);
+                                        println!("  Use \x1b[1m/models\x1b[0m to see available models.\n");
+                                    }
+                                }
                             }
                             ReplAction::Mcp => {
                                 commands.show_mcp_status();
@@ -872,6 +891,7 @@ enum ReplAction {
     Load(String),
     Provider(String),
     Models,
+    ModelsSwitch(String),
     Mcp,
     Plan(String),
 }
@@ -911,6 +931,7 @@ fn handle_slash_command(input: &str) -> Option<ReplAction> {
             println!("\n  \x1b[33mUsage: /provider <name>\x1b[0m\n");
             None
         }
+        "/models" | "/m" if !arg.is_empty() => Some(ReplAction::ModelsSwitch(arg)),
         "/models" | "/m" => Some(ReplAction::Models),
         "/plan" if !arg.is_empty() => Some(ReplAction::Plan(arg)),
         "/plan" => {
@@ -1014,7 +1035,8 @@ fn print_help() {
     println!("  /load <file>       Load conversation from file");
     println!("  /plan <goal>       Create a plan for a goal");
     println!("  /provider <name>   Switch provider (not yet supported)");
-    println!("  /models            List all models from all providers");
+    println!("  /models            List & switch models (interactive picker)");
+    println!("  /models <name>     Switch to model by name (partial match ok)");
     println!("  /quit              Exit interactive mode");
     println!();
     println!("  \x1b[33mShortcuts:\x1b[0m");
