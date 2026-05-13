@@ -1,53 +1,43 @@
-//! Input handling utilities
+//! Input handling and rendering utilities
+//!
+//! Provides:
+//! - Syntax-highlighted input rendering with cursor
+//! - `@` reference highlighting (blue)
+//! - `/` command highlighting (yellow)
+//! - Placeholder text when input is empty
 
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
-/// Render input with syntax highlighting for special characters
+/// Render input with syntax highlighting and cursor
 pub fn render_input(input: &str, cursor_pos: usize) -> Line<'static> {
+    if input.is_empty() {
+        return Line::from(vec![Span::styled(
+            " ",
+            Style::default().bg(Color::White),
+        )]);
+    }
+
     let mut spans = Vec::new();
-    let mut current_text = String::new();
-    let mut current_style = Style::default();
-    let _char_index = 0;
+    let chars: Vec<(usize, char)> = input.char_indices().collect();
 
-    for (byte_pos, c) in input.char_indices() {
-        let new_style = get_char_style(c, input, byte_pos);
-        
-        // Check if we need to insert cursor
-        if byte_pos == cursor_pos {
-            if !current_text.is_empty() {
-                spans.push(Span::styled(current_text.clone(), current_style));
-                current_text.clear();
-            }
-            // Cursor character
-            spans.push(Span::styled(
-                c.to_string(),
-                Style::default()
-                    .bg(Color::White)
-                    .fg(Color::Black),
-            ));
-            continue;
-        }
+    // Build style regions
+    for (_idx, (byte_pos, c)) in chars.iter().enumerate() {
+        let style = get_char_style(*c, input, *byte_pos);
+        let is_cursor = *byte_pos == cursor_pos;
 
-        if new_style != current_style {
-            if !current_text.is_empty() {
-                spans.push(Span::styled(current_text.clone(), current_style));
-                current_text.clear();
-            }
-            current_style = new_style;
-        }
-        
-        current_text.push(c);
+        let char_style = if is_cursor {
+            Style::default().bg(Color::White).fg(Color::Black)
+        } else {
+            style
+        };
+
+        spans.push(Span::styled(c.to_string(), char_style));
     }
 
-    // Push remaining text
-    if !current_text.is_empty() {
-        spans.push(Span::styled(current_text, current_style));
-    }
-
-    // If cursor is at end, add cursor block
+    // If cursor is at the very end (after last char), add a cursor block
     if cursor_pos >= input.len() {
         spans.push(Span::styled(
             " ",
@@ -60,36 +50,40 @@ pub fn render_input(input: &str, cursor_pos: usize) -> Line<'static> {
 
 /// Get style for a character based on context
 fn get_char_style(c: char, input: &str, pos: usize) -> Style {
-    // Slash command highlighting
+    // ── Slash command highlighting ──
     if input.starts_with('/') {
         if pos == 0 {
             return Style::default()
                 .fg(Color::Rgb(241, 196, 15))
                 .add_modifier(Modifier::BOLD);
         }
-        // Command name (until space)
-        if !input[..pos].contains(' ') {
-            return Style::default()
-                .fg(Color::Rgb(241, 196, 15));
+        // Highlight the command name (until first space)
+        if let Some(space_pos) = input.find(' ') {
+            if pos < space_pos {
+                return Style::default().fg(Color::Rgb(241, 196, 15));
+            }
+        } else {
+            // No space yet — whole thing is command
+            return Style::default().fg(Color::Rgb(241, 196, 15));
         }
     }
 
-    // @ file reference highlighting
+    // ── @ file reference highlighting ──
     if c == '@' {
         return Style::default()
             .fg(Color::Rgb(52, 152, 219))
             .add_modifier(Modifier::BOLD);
     }
 
-    // Check if we're in an @reference
+    // Check if we're inside an @reference
     let before = &input[..pos];
     if let Some(at_pos) = before.rfind('@') {
-        // Check if @ is at start or after whitespace
-        if at_pos == 0 || before[..at_pos].ends_with(char::is_whitespace) {
-            // Check if no space between @ and current position
-            if !before[at_pos..].contains(' ') {
-                return Style::default()
-                    .fg(Color::Rgb(52, 152, 219));
+        // @ must be at start or after whitespace
+        let at_valid = at_pos == 0 || input[..at_pos].ends_with(char::is_whitespace);
+        if at_valid {
+            // Check no space between @ and current position
+            if !input[at_pos..pos + c.len_utf8()].contains(char::is_whitespace) {
+                return Style::default().fg(Color::Rgb(52, 152, 219));
             }
         }
     }
@@ -141,11 +135,27 @@ mod tests {
     fn test_render_slash_command() {
         let line = render_input("/help", 5);
         assert!(!line.spans.is_empty());
+        // Cursor should be at end (cursor_pos == input.len())
+        let last = line.spans.last().unwrap();
+        assert_eq!(last.content, " "); // cursor block
     }
 
     #[test]
     fn test_render_at_reference() {
         let line = render_input("read @src/main.rs", 17);
+        assert!(!line.spans.is_empty());
+    }
+
+    #[test]
+    fn test_render_cursor_in_middle() {
+        let line = render_input("hello", 2);
+        // Should have 5 chars + maybe end cursor
+        assert!(!line.spans.is_empty());
+    }
+
+    #[test]
+    fn test_render_slash_with_arg() {
+        let line = render_input("/help me", 8);
         assert!(!line.spans.is_empty());
     }
 }

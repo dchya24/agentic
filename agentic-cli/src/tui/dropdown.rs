@@ -1,4 +1,8 @@
 //! Dropdown widget for command and file completion
+//!
+//! Handles:
+//! - `/` command dropdown: shows available slash commands
+//! - `@` file dropdown: shows files and directories with fuzzy matching
 
 use std::path::PathBuf;
 
@@ -13,7 +17,6 @@ pub enum DropdownType {
 
 /// Dropdown state
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct Dropdown {
     pub dropdown_type: DropdownType,
     pub query: String,
@@ -22,20 +25,21 @@ pub struct Dropdown {
     pub visible_count: usize,
 }
 
-/// Available slash commands
-const SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("help", "Show help message"),
-    ("clear", "Clear conversation"),
-    ("config", "Show configuration"),
-    ("tools", "List available tools"),
-    ("history", "Show command history"),
-    ("save", "Save conversation to file"),
-    ("load", "Load conversation from file"),
-    ("mcp", "Show MCP server status"),
-    ("plan", "Create a plan for a goal"),
-    ("model", "Switch model"),
-    ("provider", "Switch provider"),
-    ("quit", "Exit TUI"),
+/// Available slash commands with aliases and descriptions
+const SLASH_COMMANDS: &[(&str, &[&str], &str)] = &[
+    ("help", &["h", "?"], "Show help message"),
+    ("clear", &["cls", "c"], "Clear conversation"),
+    ("config", &["cfg"], "Show configuration"),
+    ("tools", &["t"], "List available tools"),
+    ("history", &["hist"], "Show command history"),
+    ("save", &["s"], "Save conversation to file"),
+    ("load", &["l"], "Load conversation from file"),
+    ("mcp", &[], "Show MCP server status"),
+    ("plan", &["p"], "Create a plan for a goal"),
+    ("model", &["m"], "Switch model"),
+    ("provider", &["prov"], "Switch provider"),
+    ("stats", &[], "Show session statistics"),
+    ("quit", &["q", "exit"], "Exit TUI"),
 ];
 
 impl Dropdown {
@@ -54,55 +58,76 @@ impl Dropdown {
         }
     }
 
-    /// Filter slash commands by query
+    /// Filter slash commands by query (supports aliases)
     fn filter_commands(query: &str) -> Vec<String> {
         let query_lower = query.to_lowercase();
         SLASH_COMMANDS
             .iter()
-            .filter(|(cmd, _)| cmd.starts_with(&query_lower))
-            .map(|(cmd, _)| cmd.to_string())
+            .filter(|(cmd, aliases, _)| {
+                cmd.starts_with(&query_lower)
+                    || aliases.iter().any(|a| a.starts_with(&query_lower))
+            })
+            .map(|(cmd, _, _)| cmd.to_string())
             .collect()
     }
 
-    /// Filter files by query
+    /// Filter files by query — supports nested paths, directories, and fuzzy matching
     fn filter_files(query: &str) -> Vec<String> {
         let mut results = Vec::new();
-        
+
         // Determine base path and search pattern
         let (base_path, search_pattern) = if query.contains('/') {
             let path = PathBuf::from(query);
             if query.ends_with('/') {
+                // "src/" -> list contents of src/
                 (path, String::new())
             } else {
+                // "src/ma" -> list contents of src/, filter by "ma"
                 let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-                let file_part = path.file_name()
+                let file_part = path
+                    .file_name()
                     .and_then(|f| f.to_str())
                     .unwrap_or("")
                     .to_string();
                 (parent, file_part)
             }
         } else {
+            // No slash -> search current directory
             (PathBuf::from("."), query.to_string())
         };
 
-        // Read directory
+        // Read directory entries
         if let Ok(entries) = std::fs::read_dir(&base_path) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let file_name = entry.file_name().to_string_lossy().to_string();
-                
-                // Skip hidden files unless query starts with .
+
+                // Skip hidden files/dirs unless query explicitly starts with .
                 if file_name.starts_with('.') && !search_pattern.starts_with('.') {
                     continue;
                 }
 
-                // Filter by search pattern
-                if file_name.to_lowercase().starts_with(&search_pattern.to_lowercase()) {
-                    // Build full path properly
+                // Skip common non-useful dirs
+                if file_name == "target" || file_name == "node_modules" || file_name == ".git" {
+                    if !search_pattern.starts_with(&file_name[..2.min(file_name.len())]) {
+                        continue;
+                    }
+                }
+
+                // Filter by search pattern (prefix match + contains fallback)
+                let matches = if search_pattern.is_empty() {
+                    true
+                } else {
+                    let fname_lower = file_name.to_lowercase();
+                    let pattern_lower = search_pattern.to_lowercase();
+                    fname_lower.starts_with(&pattern_lower)
+                        || fname_lower.contains(&pattern_lower)
+                };
+
+                if matches {
                     let base_str = base_path.to_string_lossy();
                     let full_path = if base_str == "." {
                         file_name.clone()
                     } else {
-                        // Remove trailing slash from base if present, then join
                         let base_clean = base_str.trim_end_matches('/');
                         format!("{}/{}", base_clean, file_name)
                     };
@@ -140,7 +165,7 @@ impl Dropdown {
         self.items.get(self.selected).map(|s| s.as_str())
     }
 
-    /// Select previous item
+    /// Select previous item (wraps around)
     pub fn select_prev(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
@@ -149,7 +174,7 @@ impl Dropdown {
         }
     }
 
-    /// Select next item
+    /// Select next item (wraps around)
     pub fn select_next(&mut self) {
         if !self.items.is_empty() {
             self.selected = (self.selected + 1) % self.items.len();
@@ -178,8 +203,8 @@ impl Dropdown {
         if self.dropdown_type == DropdownType::Command {
             SLASH_COMMANDS
                 .iter()
-                .find(|(c, _)| *c == cmd)
-                .map(|(_, desc)| *desc)
+                .find(|(c, _, _)| *c == cmd)
+                .map(|(_, _, desc)| *desc)
         } else {
             None
         }
@@ -218,6 +243,12 @@ mod tests {
     }
 
     #[test]
+    fn test_command_filter_by_alias() {
+        let dropdown = Dropdown::new(DropdownType::Command, "h".to_string());
+        assert!(dropdown.items.contains(&"help".to_string()));
+    }
+
+    #[test]
     fn test_command_filter_empty() {
         let dropdown = Dropdown::new(DropdownType::Command, "".to_string());
         assert_eq!(dropdown.items.len(), SLASH_COMMANDS.len());
@@ -227,15 +258,32 @@ mod tests {
     fn test_select_navigation() {
         let mut dropdown = Dropdown::new(DropdownType::Command, "".to_string());
         assert_eq!(dropdown.selected, 0);
-        
+
         dropdown.select_next();
         assert_eq!(dropdown.selected, 1);
-        
+
         dropdown.select_prev();
         assert_eq!(dropdown.selected, 0);
-        
+
         // Wrap around
         dropdown.select_prev();
         assert_eq!(dropdown.selected, dropdown.items.len() - 1);
+    }
+
+    #[test]
+    fn test_file_filter_current_dir() {
+        let dropdown = Dropdown::new(DropdownType::File, "src".to_string());
+        // Should find src/ if it exists
+        if std::path::Path::new("src").exists() {
+            assert!(dropdown.items.iter().any(|i| i.contains("src")));
+        }
+    }
+
+    #[test]
+    fn test_file_filter_nested() {
+        // This tests that nested path queries work
+        let dropdown = Dropdown::new(DropdownType::File, "src/".to_string());
+        // Just verify it doesn't crash
+        let _ = dropdown.items;
     }
 }

@@ -758,6 +758,7 @@ impl Commands {
                 show_tool_calls: true,
             },
             mcp_servers: std::collections::HashMap::new(),
+            system_prompt: None
         };
 
         // Summary
@@ -837,6 +838,7 @@ impl Commands {
             safety: core_agentic::SafetyConfig::default(),
             output: core_agentic::OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
+            system_prompt: None
         };
 
         Ok(config)

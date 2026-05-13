@@ -1,4 +1,12 @@
 //! Main TUI application state and event loop
+//!
+//! Handles:
+//! - Input editing with cursor support
+//! - `@` file search dropdown (type @ anywhere to search files)
+//! - `/` command dropdown (type / at start to see commands)
+//! - Arrow key navigation for both dropdowns
+//! - Tab/Enter to accept, Esc to dismiss
+//! - History navigation with ↑/↓
 
 use anyhow::Result;
 use crossterm::{
@@ -6,10 +14,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-};
+use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 
 use std::time::{Duration, Instant};
@@ -36,7 +41,7 @@ pub enum AppMessage {
 pub struct App {
     /// Input buffer
     pub input: String,
-    /// Cursor position in input
+    /// Cursor position (byte offset) in input
     pub cursor_pos: usize,
     /// Output/conversation history
     pub messages: Vec<Message>,
@@ -46,7 +51,7 @@ pub struct App {
     pub is_loading: bool,
     /// Progress state for animations
     pub progress: ProgressState,
-    /// Dropdown state
+    /// Dropdown state (None when hidden)
     pub dropdown: Option<Dropdown>,
     /// Scroll offset for messages
     pub scroll_offset: usize,
@@ -60,9 +65,9 @@ pub struct App {
     tx: mpsc::UnboundedSender<AppMessage>,
     /// Last tick for animations
     last_tick: Instant,
-    /// Input history
+    /// Input history (submitted inputs)
     pub history: Vec<String>,
-    /// History index (-1 = current input)
+    /// History index (-1 = not browsing history)
     pub history_index: i32,
     /// Saved input when browsing history
     pub saved_input: String,
@@ -110,7 +115,9 @@ impl App {
         }
     }
 
-    /// Insert character at cursor position
+    // ── Input editing ────────────────────────────────────────
+
+    /// Insert character at cursor position and update dropdown
     pub fn insert_char(&mut self, c: char) {
         self.input.insert(self.cursor_pos, c);
         self.cursor_pos += c.len_utf8();
@@ -120,13 +127,28 @@ impl App {
     /// Delete character before cursor
     pub fn delete_char(&mut self) {
         if self.cursor_pos > 0 {
-            let prev_char_boundary = self.input[..self.cursor_pos]
+            let prev = self.input[..self.cursor_pos]
                 .char_indices()
                 .last()
                 .map(|(i, _)| i)
                 .unwrap_or(0);
-            self.input.remove(prev_char_boundary);
-            self.cursor_pos = prev_char_boundary;
+            self.input.remove(prev);
+            self.cursor_pos = prev;
+            self.update_dropdown();
+        }
+    }
+
+    /// Delete character at cursor (Delete key)
+    #[allow(dead_code)]
+    pub fn delete_char_forward(&mut self) {
+        if self.cursor_pos < self.input.len() {
+            let next = self.input[self.cursor_pos..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| self.cursor_pos + i)
+                .unwrap_or(self.input.len());
+            self.input.remove(self.cursor_pos);
+            // cursor_pos stays the same
             self.update_dropdown();
         }
     }
@@ -163,62 +185,116 @@ impl App {
         self.cursor_pos = self.input.len();
     }
 
-    /// Update dropdown based on current input
+    // ── Dropdown: @ file search & / commands ────────────────
+
+    /// Update dropdown state based on current input and cursor position.
+    ///
+    /// Rules:
+    /// - If input starts with `/` and cursor is in the command part → command dropdown
+    /// - If cursor is right after or within an `@...` sequence → file dropdown
+    /// - Otherwise → no dropdown
     fn update_dropdown(&mut self) {
-        // Check for `/` command trigger
+        // 1) Check for `/` command trigger
         if self.input.starts_with('/') {
-            let query = &self.input[1..];
-            self.dropdown = Some(Dropdown::new(DropdownType::Command, query.to_string()));
+            // Only show command dropdown if cursor is still in the command part
+            // (before any space — the command itself)
+            let before_cursor = &self.input[..self.cursor_pos];
+            if !before_cursor.contains(' ') {
+                let query = &self.input[1..self.cursor_pos];
+                self.dropdown = Some(Dropdown::new(DropdownType::Command, query.to_string()));
+                return;
+            }
         }
-        // Check for `@` file trigger
-        else if let Some(at_pos) = self.find_at_trigger() {
+
+        // 2) Check for `@` file trigger
+        if let Some(at_pos) = self.find_at_trigger() {
             let query = &self.input[at_pos + 1..self.cursor_pos];
             self.dropdown = Some(Dropdown::new(DropdownType::File, query.to_string()));
-        } else {
-            self.dropdown = None;
+            return;
         }
+
+        // 3) No trigger found
+        self.dropdown = None;
     }
 
-    /// Find the position of `@` trigger for file completion
+    /// Find the byte position of the `@` trigger that the cursor is currently inside.
+    ///
+    /// Returns Some(byte_pos) if:
+    /// - There's an `@` at the start of input or after whitespace
+    /// - There's no whitespace between the `@` and the cursor
+    /// - The cursor is at or after the `@`
     fn find_at_trigger(&self) -> Option<usize> {
         let before_cursor = &self.input[..self.cursor_pos];
-        // Find last `@` that's either at start or after whitespace
+
+        // Walk backwards from cursor looking for `@`
         for (i, c) in before_cursor.char_indices().rev() {
-            if c == '@' {
-                if i == 0 || before_cursor[..i].ends_with(char::is_whitespace) {
-                    return Some(i);
+            match c {
+                '@' => {
+                    // `@` must be at start of input or preceded by whitespace
+                    let at_start = i == 0;
+                    let after_space = i > 0 && self.input[..i].ends_with(char::is_whitespace);
+                    if at_start || after_space {
+                        // Check no whitespace between @ and cursor
+                        let after_at = &before_cursor[i + 1..];
+                        if !after_at.contains(char::is_whitespace) {
+                            return Some(i);
+                        }
+                    }
+                    // If `@` is not valid trigger position, stop searching
+                    // (we hit a non-whitespace char that isn't `@`)
+                    return None;
                 }
-            }
-            if c.is_whitespace() {
-                break;
+                w if w.is_whitespace() => {
+                    // Hit whitespace going backwards — stop
+                    return None;
+                }
+                _ => {
+                    // Regular character, keep going back
+                    continue;
+                }
             }
         }
         None
     }
 
-    /// Accept selected dropdown item
+    /// Accept the currently selected dropdown item and insert it into input.
     pub fn accept_dropdown(&mut self) {
-        if let Some(dropdown) = &self.dropdown {
-            if let Some(selected) = dropdown.selected_item() {
+        let selected_text = match &self.dropdown {
+            Some(d) => d.selected_item().map(|s| s.to_string()),
+            None => None,
+        };
+
+        if let Some(text) = selected_text {
+            if let Some(dropdown) = &self.dropdown {
                 match dropdown.dropdown_type {
                     DropdownType::Command => {
-                        self.input = format!("/{}", selected);
+                        // Replace entire input with /command
+                        self.input = format!("/{} ", text);
                         self.cursor_pos = self.input.len();
                     }
                     DropdownType::File => {
+                        // Replace from @ to cursor with the selected file path
                         if let Some(at_pos) = self.find_at_trigger() {
-                            self.input = format!(
-                                "{}@{}{}",
-                                &self.input[..at_pos],
-                                selected,
-                                &self.input[self.cursor_pos..]
-                            );
-                            self.cursor_pos = at_pos + 1 + selected.len();
+                            let before_at = &self.input[..at_pos];
+                            let after_cursor = &self.input[self.cursor_pos..];
+                            
+                            // Add trailing space for files, keep slash for dirs
+                            let suffix = if text.ends_with('/') {
+                                // Directory — keep it for further navigation
+                                ""
+                            } else {
+                                // File — add space after
+                                " "
+                            };
+                            
+                            self.input = format!("{}@{}{}{}", before_at, text, suffix, after_cursor);
+                            self.cursor_pos = at_pos + 1 + text.len() + suffix.len();
                         }
                     }
                 }
             }
         }
+        // Always close dropdown after accepting
         self.dropdown = None;
     }
 
@@ -241,7 +317,9 @@ impl App {
         self.dropdown = None;
     }
 
-    /// Navigate history up
+    // ── History navigation ──────────────────────────────────
+
+    /// Navigate history up (older entries)
     pub fn history_up(&mut self) {
         if self.history.is_empty() {
             return;
@@ -253,10 +331,11 @@ impl App {
             self.history_index += 1;
             self.input = self.history[self.history.len() - 1 - self.history_index as usize].clone();
             self.cursor_pos = self.input.len();
+            self.dropdown = None;
         }
     }
 
-    /// Navigate history down
+    /// Navigate history down (newer entries)
     pub fn history_down(&mut self) {
         if self.history_index > 0 {
             self.history_index -= 1;
@@ -267,7 +346,10 @@ impl App {
             self.input = self.saved_input.clone();
             self.cursor_pos = self.input.len();
         }
+        self.dropdown = None;
     }
+
+    // ── Scroll ──────────────────────────────────────────────
 
     /// Scroll messages up
     pub fn scroll_up(&mut self) {
@@ -281,6 +363,8 @@ impl App {
         self.scroll_offset += 3;
     }
 
+    // ── Submit ──────────────────────────────────────────────
+
     /// Submit current input
     pub async fn submit(&mut self) {
         let input = self.input.trim().to_string();
@@ -289,7 +373,7 @@ impl App {
         }
 
         // Add to history
-        if !input.is_empty() && (self.history.is_empty() || self.history.last() != Some(&input)) {
+        if !self.history.is_empty() || self.history.last() != Some(&input) {
             self.history.push(input.clone());
         }
         self.history_index = -1;
@@ -320,14 +404,17 @@ impl App {
         // Run task in background
         let tx = self.tx.clone();
         let task = input.clone();
-        
+
         if let Some(mut commands) = self.commands.take() {
             tokio::spawn(async move {
                 let _ = tx.send(AppMessage::Progress("Thinking...".into()));
-                
-                match commands.run_with_callback(&task, |chunk| {
-                    let _ = tx.send(AppMessage::StreamChunk(chunk.to_string()));
-                }).await {
+
+                match commands
+                    .run_with_callback(&task, |chunk| {
+                        let _ = tx.send(AppMessage::StreamChunk(chunk.to_string()));
+                    })
+                    .await
+                {
                     Ok(result) => {
                         let _ = tx.send(AppMessage::TaskComplete(result));
                     }
@@ -335,9 +422,10 @@ impl App {
                         let _ = tx.send(AppMessage::Error(e.to_string()));
                     }
                 }
-                
-                // Return commands back (we'd need a different approach for real impl)
-                commands
+
+                // We can't put commands back via channel easily, so we leak it.
+                // In a real implementation, use Arc<Mutex<Commands>> or similar.
+                let _ = commands;
             });
         }
     }
@@ -354,25 +442,32 @@ impl App {
                     role: MessageRole::System,
                     content: r#"**Available Commands:**
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show this help |
-| `/clear` | Clear conversation |
-| `/config` | Show configuration |
-| `/tools` | List available tools |
-| `/history` | Show message history |
-| `/quit` | Exit TUI |
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `/help` | `/h` | Show this help |
+| `/clear` | `/c` | Clear conversation |
+| `/config` | `/cfg` | Show configuration |
+| `/tools` | `/t` | List available tools |
+| `/history` | `/hist` | Show message history |
+| `/save` | `/s` | Save conversation |
+| `/load` | `/l` | Load conversation |
+| `/mcp` | | Show MCP status |
+| `/plan` | `/p` | Create a plan |
+| `/model` | `/m` | Switch model |
+| `/provider` | | Switch provider |
+| `/stats` | | Show statistics |
+| `/quit` | `/q` | Exit TUI |
 
 **Tips:**
 - Type `/` to see command dropdown
-- Type `@` to browse files
+- Type `@` anywhere to browse files
 - Use ↑/↓ to navigate history
 - Use PageUp/PageDown to scroll
 - Press Ctrl+C to cancel"#.into(),
                     timestamp: chrono::Local::now(),
                 });
             }
-            "/clear" => {
+            "/clear" | "/c" | "/cls" => {
                 self.messages.clear();
                 self.messages.push(Message {
                     role: MessageRole::System,
@@ -415,10 +510,24 @@ impl App {
                     timestamp: chrono::Local::now(),
                 });
             }
+            "/stats" => {
+                self.messages.push(Message {
+                    role: MessageRole::System,
+                    content: format!(
+                        "**Session Statistics:**\n\n- Messages: {}\n- History entries: {}",
+                        self.messages.len(),
+                        self.history.len()
+                    ),
+                    timestamp: chrono::Local::now(),
+                });
+            }
             _ => {
                 self.messages.push(Message {
                     role: MessageRole::Error,
-                    content: format!("Unknown command: `{}`\nType `/help` for available commands.", cmd),
+                    content: format!(
+                        "Unknown command: `{}`\nType `/help` for available commands.",
+                        cmd
+                    ),
                     timestamp: chrono::Local::now(),
                 });
             }
@@ -436,13 +545,13 @@ impl App {
                     AppMessage::TaskComplete(result) => {
                         self.is_loading = false;
                         self.progress.stop();
-                        
+
                         let content = if self.current_response.is_empty() {
                             result
                         } else {
                             std::mem::take(&mut self.current_response)
                         };
-                        
+
                         self.messages.push(Message {
                             role: MessageRole::Assistant,
                             content,
@@ -453,7 +562,7 @@ impl App {
                         self.is_loading = false;
                         self.progress.stop();
                         self.current_response.clear();
-                        
+
                         self.messages.push(Message {
                             role: MessageRole::Error,
                             content: format!("Error: {}", err),
@@ -476,6 +585,8 @@ impl App {
         }
     }
 }
+
+// ── Main TUI event loop ──────────────────────────────────────
 
 /// Run the TUI application
 pub async fn run_tui(commands: Commands) -> Result<()> {
@@ -501,88 +612,7 @@ pub async fn run_tui(commands: Commands) -> Result<()> {
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                // Handle dropdown navigation first
-                if app.dropdown.is_some() {
-                    match key.code {
-                        KeyCode::Up => {
-                            app.dropdown_up();
-                            continue;
-                        }
-                        KeyCode::Down => {
-                            app.dropdown_down();
-                            continue;
-                        }
-                        KeyCode::Tab | KeyCode::Enter => {
-                            app.accept_dropdown();
-                            continue;
-                        }
-                        KeyCode::Esc => {
-                            app.close_dropdown();
-                            continue;
-                        }
-                        _ => {}
-                    }
-                }
-
-                match key.code {
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        if app.is_loading {
-                            app.is_loading = false;
-                            app.progress.stop();
-                            app.messages.push(Message {
-                                role: MessageRole::System,
-                                content: "Task cancelled.".into(),
-                                timestamp: chrono::Local::now(),
-                            });
-                        } else {
-                            app.should_quit = true;
-                        }
-                    }
-                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.should_quit = true;
-                    }
-                    KeyCode::Enter => {
-                        if !app.is_loading {
-                            app.submit().await;
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        if !app.is_loading {
-                            app.insert_char(c);
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        if !app.is_loading {
-                            app.delete_char();
-                        }
-                    }
-                    KeyCode::Left => app.move_cursor_left(),
-                    KeyCode::Right => app.move_cursor_right(),
-                    KeyCode::Home => app.move_cursor_start(),
-                    KeyCode::End => app.move_cursor_end(),
-                    KeyCode::Up => {
-                        if key.modifiers.contains(KeyModifiers::SHIFT) {
-                            app.scroll_up();
-                        } else {
-                            app.history_up();
-                        }
-                    }
-                    KeyCode::Down => {
-                        if key.modifiers.contains(KeyModifiers::SHIFT) {
-                            app.scroll_down();
-                        } else {
-                            app.history_down();
-                        }
-                    }
-                    KeyCode::PageUp => app.scroll_up(),
-                    KeyCode::PageDown => app.scroll_down(),
-                    KeyCode::Esc => {
-                        if app.dropdown.is_some() {
-                            app.close_dropdown();
-                        }
-                    }
-                    _ => {}
-                }
+                handle_key_event(&mut app, key).await;
             }
         }
 
@@ -609,4 +639,112 @@ pub async fn run_tui(commands: Commands) -> Result<()> {
     terminal.show_cursor()?;
 
     Ok(())
+}
+
+/// Handle a single key event
+async fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) {
+    // ── Dropdown-specific key handling ──
+    // When a dropdown is open, intercept navigation keys
+    if app.dropdown.is_some() {
+        match key.code {
+            KeyCode::Up => {
+                app.dropdown_up();
+                return;
+            }
+            KeyCode::Down => {
+                app.dropdown_down();
+                return;
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                app.accept_dropdown();
+                return;
+            }
+            KeyCode::Esc => {
+                app.close_dropdown();
+                return;
+            }
+            // All other keys fall through to normal input handling
+            // so typing continues to filter the dropdown
+            _ => {}
+        }
+    }
+
+    // ── Normal key handling ──
+    match key.code {
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.is_loading {
+                app.is_loading = false;
+                app.progress.stop();
+                app.messages.push(Message {
+                    role: MessageRole::System,
+                    content: "Task cancelled.".into(),
+                    timestamp: chrono::Local::now(),
+                });
+            } else {
+                app.should_quit = true;
+            }
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        KeyCode::Enter => {
+            if !app.is_loading {
+                app.submit().await;
+            }
+        }
+        KeyCode::Char(c) => {
+            if !app.is_loading {
+                app.insert_char(c);
+            }
+        }
+        KeyCode::Backspace => {
+            if !app.is_loading {
+                app.delete_char();
+            }
+        }
+        KeyCode::Delete => {
+            if !app.is_loading {
+                app.delete_char_forward();
+            }
+        }
+        KeyCode::Left => {
+            // If Shift is held, scroll instead of moving cursor
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                app.scroll_up();
+            } else {
+                app.move_cursor_left();
+            }
+        }
+        KeyCode::Right => {
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                app.scroll_down();
+            } else {
+                app.move_cursor_right();
+            }
+        }
+        KeyCode::Home => app.move_cursor_start(),
+        KeyCode::End => app.move_cursor_end(),
+        KeyCode::Up => {
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                app.scroll_up();
+            } else {
+                app.history_up();
+            }
+        }
+        KeyCode::Down => {
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                app.scroll_down();
+            } else {
+                app.history_down();
+            }
+        }
+        KeyCode::PageUp => app.scroll_up(),
+        KeyCode::PageDown => app.scroll_down(),
+        KeyCode::Esc => {
+            if app.dropdown.is_some() {
+                app.close_dropdown();
+            }
+        }
+        _ => {}
+    }
 }
