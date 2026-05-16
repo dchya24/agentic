@@ -2,9 +2,13 @@
 //!
 //! Handles:
 //! - `/` command dropdown: shows available slash commands
-//! - `@` file dropdown: shows files and directories with fuzzy matching
+//! - `@` file dropdown: shows all project files recursively (flat list)
+//! - Respects `.gitignore` rules (skips node_modules, target, .git, etc.)
+//! - Type `@` → full recursive file tree
+//! - Type `@src/` → all files under src/
+//! - Type `@chat` → fuzzy filter all files matching "chat"
 
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Type of dropdown
 #[derive(Clone, Debug, PartialEq)]
@@ -71,80 +75,97 @@ impl Dropdown {
             .collect()
     }
 
-    /// Filter files by query — supports nested paths, directories, and fuzzy matching
+    /// Filter files by query — always recursive, respects .gitignore.
+    ///
+    /// Behavior based on query:
+    /// - `""`     → all files in project (recursive flat list)
+    /// - `"src/"` → all files under `src/` (recursive)
+    /// - `"src/ma"` → all files under `src/` matching `ma`
+    /// - `"chat"` → all files in project matching `chat` (by name or path)
     fn filter_files(query: &str) -> Vec<String> {
         let mut results = Vec::new();
 
-        // Determine base path and search pattern
-        let (base_path, search_pattern) = if query.contains('/') {
-            let path = PathBuf::from(query);
-            if query.ends_with('/') {
-                // "src/" -> list contents of src/
-                (path, String::new())
-            } else {
-                // "src/ma" -> list contents of src/, filter by "ma"
-                let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-                let file_part = path
-                    .file_name()
-                    .and_then(|f| f.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                (parent, file_part)
-            }
+        // Parse query into (path_prefix, name_filter)
+        // e.g. "src/components/cha" → prefix="src/components/", filter="cha"
+        // e.g. "src/"              → prefix="src/",         filter=""
+        // e.g. "chat"             → prefix="",              filter="chat"
+        // e.g. ""                 → prefix="",              filter=""
+        let (path_prefix, name_filter) = if query.is_empty() {
+            (String::new(), String::new())
+        } else if query.ends_with('/') {
+            // Pure path browse: "src/" → show all under src/
+            (query.to_string(), String::new())
+        } else if query.contains('/') {
+            // Path + filter: "src/components/cha"
+            let last_slash = query.rfind('/').unwrap();
+            (
+                query[..=last_slash].to_string(),
+                query[last_slash + 1..].to_string(),
+            )
         } else {
-            // No slash -> search current directory
-            (PathBuf::from("."), query.to_string())
+            // Just a filter, no path
+            (String::new(), query.to_string())
         };
 
-        // Read directory entries
-        if let Ok(entries) = std::fs::read_dir(&base_path) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let file_name = entry.file_name().to_string_lossy().to_string();
+        let filter_lower = name_filter.to_lowercase();
 
-                // Skip hidden files/dirs unless query explicitly starts with .
-                if file_name.starts_with('.') && !search_pattern.starts_with('.') {
+        // Walk the entire project recursively, respecting .gitignore
+        let mut builder = ignore::WalkBuilder::new(".");
+        builder
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .require_git(false);
+
+        for entry in builder.build().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let path_str = path.to_string_lossy();
+
+            // Skip `.` itself
+            if path_str == "." || path_str == "./" {
+                continue;
+            }
+
+            // Normalize: backslashes to forward slashes, strip leading "./"
+            let normalized = path_str.replace('\\', "/");
+            let clean = normalized.strip_prefix("./").unwrap_or(&normalized);
+
+            // If a path prefix was given, only include files under that prefix
+            if !path_prefix.is_empty() {
+                // Normalize: ensure prefix comparison works
+                if !clean.starts_with(&path_prefix) && !clean.starts_with(&path_prefix.trim_end_matches('/')) {
                     continue;
                 }
+            }
 
-                // Skip common non-useful dirs
-                if file_name == "target" || file_name == "node_modules" || file_name == ".git" {
-                    if !search_pattern.starts_with(&file_name[..2.min(file_name.len())]) {
-                        continue;
-                    }
+            // If a name filter was given, match against filename and full path
+            if !filter_lower.is_empty() {
+                let fname = Path::new(&clean)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                let fname_lower = fname.to_lowercase();
+                let clean_lower = clean.to_lowercase();
+
+                // Match: filename starts with, filename contains, or path contains
+                if !fname_lower.starts_with(&filter_lower)
+                    && !fname_lower.contains(&filter_lower)
+                    && !clean_lower.contains(&filter_lower)
+                {
+                    continue;
                 }
+            }
 
-                // Filter by search pattern (prefix match + contains fallback)
-                let matches = if search_pattern.is_empty() {
-                    true
-                } else {
-                    let fname_lower = file_name.to_lowercase();
-                    let pattern_lower = search_pattern.to_lowercase();
-                    fname_lower.starts_with(&pattern_lower)
-                        || fname_lower.contains(&pattern_lower)
-                };
-
-                if matches {
-                    let base_str = base_path.to_string_lossy();
-                    let full_path = if base_str == "." {
-                        file_name.clone()
-                    } else {
-                        let base_clean = base_str.trim_end_matches('/');
-                        format!("{}/{}", base_clean, file_name)
-                    };
-
-                    // Add trailing slash for directories
-                    let display = if entry.path().is_dir() {
-                        format!("{}/", full_path)
-                    } else {
-                        full_path
-                    };
-
-                    results.push(display);
-                }
+            // Format display: directories get trailing `/`
+            if path.is_dir() {
+                results.push(format!("{}/", clean));
+            } else {
+                results.push(clean.to_string());
             }
         }
 
-        // Sort: directories first, then alphabetically
+        // Sort: directories first, then files — both alphabetically
         results.sort_by(|a, b| {
             let a_is_dir = a.ends_with('/');
             let b_is_dir = b.ends_with('/');
@@ -155,8 +176,8 @@ impl Dropdown {
             }
         });
 
-        // Limit results
-        results.truncate(20);
+        // Cap results for performance
+        results.truncate(50);
         results
     }
 
@@ -271,19 +292,57 @@ mod tests {
     }
 
     #[test]
-    fn test_file_filter_current_dir() {
-        let dropdown = Dropdown::new(DropdownType::File, "src".to_string());
-        // Should find src/ if it exists
+    fn test_file_filter_shows_nested() {
+        // Empty query should show ALL files recursively
+        let dropdown = Dropdown::new(DropdownType::File, String::new());
         if std::path::Path::new("src").exists() {
-            assert!(dropdown.items.iter().any(|i| i.contains("src")));
+            // Should contain nested paths, not just top-level
+            let has_nested = dropdown
+                .items
+                .iter()
+                .any(|i| i.matches('/').count() >= 2 && !i.ends_with('/'));
+            assert!(has_nested, "expected nested file paths in results, got: {:?}", dropdown.items);
         }
     }
 
     #[test]
-    fn test_file_filter_nested() {
-        // This tests that nested path queries work
+    fn test_file_filter_path_prefix() {
+        // "src/" should only show files under src/
         let dropdown = Dropdown::new(DropdownType::File, "src/".to_string());
-        // Just verify it doesn't crash
-        let _ = dropdown.items;
+        for item in &dropdown.items {
+            assert!(
+                item.starts_with("src/"),
+                "expected item to start with 'src/', got: {}",
+                item
+            );
+        }
+    }
+
+    #[test]
+    fn test_file_filter_name_search() {
+        // "main" should find files with "main" in name or path
+        let dropdown = Dropdown::new(DropdownType::File, "main".to_string());
+        // Just verify it doesn't crash and filters correctly
+        for item in &dropdown.items {
+            let lower = item.to_lowercase();
+            assert!(
+                lower.contains("main"),
+                "expected item to contain 'main', got: {}",
+                item
+            );
+        }
+    }
+
+    #[test]
+    fn test_file_filter_path_and_name() {
+        // "src/ma" should find files under src/ matching "ma"
+        let dropdown = Dropdown::new(DropdownType::File, "src/ma".to_string());
+        for item in &dropdown.items {
+            assert!(
+                item.starts_with("src/"),
+                "expected item to start with 'src/', got: {}",
+                item
+            );
+        }
     }
 }

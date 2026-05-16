@@ -53,6 +53,7 @@ Ringkasan rencana pengembangan Termul — dibagi per modul.
 |--------|------|-----|
 | UI | Markdown rendering + syntax highlighting | 2-3d |
 | UI | Command palette actions | 1d |
+| UI/TUI | ~~@ file completion (recursive, .gitignore-aware)~~ ✅ Done | 1d |
 | Core | ~~Memory system enhancement~~ ✅ Done | 2d |
 | CLI | Interactive mode (REPL) improvements | 2-3d |
 | CLI | Output rendering enhancement | 2d |
@@ -93,6 +94,7 @@ Ringkasan rencana pengembangan Termul — dibagi per modul.
 - [ ] Config CLI polished
 
 ### Week 3-4
+- [x] `@` file completion rewritten (recursive, .gitignore-aware) — TUI + CLI
 - [ ] Markdown rendering in UI
 - [x] Command palette actions
 - [ ] Memory compaction in core
@@ -126,4 +128,4 @@ Ringkasan rencana pengembangan Termul — dibagi per modul.
 
 ---
 
-**Last Updated:** May 12, 2026
+**Last Updated:** May 15, 2026

@@ -24,6 +24,12 @@ export OPENAI_API_KEY="sk-your-key"
 
 # Run a task
 agentic run "list files in current directory"
+
+# Interactive REPL with @ file completion
+agentic interactive
+
+# TUI mode
+agentic tui
 ```
 
 ## Usage
@@ -33,8 +39,10 @@ agentic run "list files in current directory"
 | Command | Description |
 |---------|------------|
 | `agentic run <task>` | Run a single task |
-| `agentic interactive` | Start interactive mode |
+| `agentic interactive` | Start interactive REPL mode |
+| `agentic tui` | Start full TUI mode |
 | `agentic config show` | Display current configuration |
+| `agentic config init --interactive` | Guided config wizard |
 | `agentic version` | Show version |
 
 ### Options
@@ -43,6 +51,8 @@ agentic run "list files in current directory"
 |--------|------------|
 | `-c, --config <PATH>` | Custom config file |
 | `-v, --verbose <LEVEL>` | Verbose output (error/warn/info/debug/trace) |
+| `--debug` | Enable debug tracing |
+| `--color <auto|always|never>` | Color output control |
 
 ## Configuration
 
@@ -96,18 +106,33 @@ Use `$VAR` in config to reference environment variables:
 
 ## Interactive Mode
 
+The REPL uses [reedline](https://github.com/nushell/reedline) with rich features:
+
+- **`@` file completion** — type `@` to see all project files recursively
+  - Respects `.gitignore` (node_modules, target, .git, etc. excluded automatically)
+  - Type `@src/` to browse files under `src/`
+  - Type `@chat` to search files matching "chat"
+- **`/` command completion** — type `/` to see all slash commands with descriptions
+- **Inline hints** — fish-style autocomplete suggestions
+- **History** — file-backed history with Ctrl+R search
+- **Syntax highlighting** — `/` commands in yellow, `@` file refs in blue
+
 ```
 > agentic interactive
-=== Agentic Interactive Mode ===
-Type 'help' for commands, 'exit' to quit
+╔══════════════════════════════════════════════════╗
+║            🤖 Agentic Interactive Mode           ║
+╠══════════════════════════════════════════════════╣
+║  📂 /home/user/project                          ║
+║  ⚡ Provider: openai / Model: gpt-4o             ║
+╠══════════════════════════════════════════════════╣
+║  /help    Show commands                          ║
+║  /quit    Exit (Ctrl+D)                          ║
+╚══════════════════════════════════════════════════╝
 
-> list all rust files
-> help
-Commands:
-  help, h     - Show this help
-  clear      - Clear screen
-  exit, q    - Exit interactive mode
-> exit
+project agentic> @src/components/  ← popup with files
+project agentic> /help              ← popup with commands
+project agentic> list all rust files
+project agentic> exit
 ```
 
 ## Available Tools

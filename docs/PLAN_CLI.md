@@ -22,10 +22,18 @@ agentic-cli/
 │   ├── error.rs          ← CommandError enum + suggestion system
 │   ├── output.rs         ← Categorized output helpers (Thought/Tool/System/Error)
 │   └── tests.rs          ← Unit tests (11 tests)
+│   └── tui/
+│       ├── mod.rs               # TUI module exports
+│       ├── app.rs               # TUI app state + event loop + @ file dropdown + / command dropdown
+│       ├── dropdown.rs          # Dropdown: recursive .gitignore-aware file listing (ignore crate)
+│       ├── input.rs             # Input rendering with cursor + @ highlighting
+│       ├── ui.rs                # Full UI layout: header, messages, progress, input, dropdown overlay
+│       ├── markdown_widget.rs   # Markdown → ratatui styled lines
+│       └── progress.rs          # Spinner + progress bar state
 └── README.md
 ```
 
-> **Note:** CLI menggunakan `core-agentic` sebagai library dependency.
+**Note:** The first `└── README.md` is in the root file listing.
 > **Actual files** differ slightly from original plan — see `📦 CLI Binary Structure` below.
 
 ---
@@ -35,7 +43,7 @@ agentic-cli/
 | Feature | Status |
 |---------|--------|
 | Standalone CLI Binary | ✅ Working |
-| Interactive Mode (REPL) | ✅ Working (rustyline: history, Ctrl+R, tab completion, 12 slash commands) |
+| Interactive Mode (REPL) | ✅ Working (reedline: history, Ctrl+R, `@` file completion, `/` command completion, 12+ slash commands) |
 | Config File Support | ✅ Working |
 | Environment Variables | ✅ Working |
 | Safety Controls | ✅ Basic |
@@ -56,7 +64,9 @@ agentic-cli/
 | Execution Time Display | ✅ Working |
 | Conversation Save/Load | ✅ Working (JSON) |
 | Session History | ✅ Working (timestamped) |
-| Unit Tests | ✅ 11 tests passing |
+| `@` File Completion (recursive, .gitignore-aware) | ✅ Working (ignore crate) |
+| TUI Mode (ratatui) | ✅ Working |
+| Unit Tests | ✅ 31 tests passing |
 
 ---
 
@@ -129,13 +139,13 @@ agentic status                        # Show provider/model/status
 
 **Tasks:**
 - [ ] Multi-line input support (Shift+Enter for newline)
-- [x] Input history persistence (across sessions) — `rustyline` with file-backed history
-- [x] History search (Ctrl+R) — `rustyline` built-in
+- [x] Input history persistence (across sessions) — `reedline` with file-backed history
+- [x] History search (Ctrl+R) — `reedline` built-in
 - [x] Tab completion for:
   - [x] Commands (/help, /config, /clear, etc.) — slash command completer
-  - [x] File paths — `FilenameCompleter`
+  - [x] File paths — recursive `.gitignore`-aware completion via `ignore` crate
   - [ ] Tool names
-- [x] Upgrade to `rustyline` for proper readline support
+- [x] Upgrade to `reedline` for proper readline support
 - [x] Basic REPL loop (stdin, help/clear/exit) — `interactive.rs`
 - [x] Slash commands:
   - [x] `/help` — Show help (detailed, with tips)
@@ -301,12 +311,20 @@ agentic-cli/
 │   ├── cli.rs                    # clap CLI definitions (211 lines)
 │   ├── commands.rs               # Command handlers: run, config, status, examples (1268 lines)
 │   ├── config.rs                 # Local Config struct (legacy, used in tests) (138 lines)
-│   ├── interactive.rs            # REPL with rustyline: history, completion, slash commands (536 lines)
+│   ├── interactive.rs            # REPL with reedline: history, completion, @ file popup, slash commands (~1100 lines)
 │   ├── markdown.rs               # Markdown → colored terminal rendering (216 lines)
 │   ├── confirmation.rs           # Risk-level confirmation prompts (62 lines)
 │   ├── error.rs                  # CommandError enum + suggestion system (105 lines)
 │   ├── output.rs                 # Categorized output helpers (81 lines)
-│   └── tests.rs                  # Unit tests (11 tests) (105 lines)
+│   ├── tests.rs                  # Unit tests (105 lines)
+│   └── tui/
+│       ├── mod.rs               # TUI module exports
+│       ├── app.rs               # TUI app state + event loop + @ dropdown
+│       ├── dropdown.rs          # Dropdown: recursive .gitignore-aware file listing
+│       ├── input.rs             # Input rendering with cursor + @ highlighting
+│       ├── ui.rs                # Full UI layout: header, messages, progress, input
+│       ├── markdown_widget.rs   # Markdown → ratatui styled lines
+│       └── progress.rs          # Spinner + progress bar state
 └── README.md
 ```
 
@@ -323,12 +341,20 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 pulldown-cmark = "0.10"          # Markdown parsing
 termcolor = "1.4"                # Colored output
-indicatif = "0.17"               # Progress bars (not yet used)
-dialoguer = "0.11"               # Interactive prompts (not yet used)
-comfy-table = "7"                # Table rendering (not yet used)
+indicatif = "0.17"               # Progress bars
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
+comfy-table = "7"                # Table rendering
 chrono = "0.4"                   # Timestamps for backups
 console = "0.15"                 # Terminal utilities
 dirs = "5.0"                     # Home directory
+nu-ansi-term = "0.50"           # ANSI colors for reedline
+reedline = "0.47"               # Readline library (replaces rustyline)
+uuid = { version = "1", features = ["v4"] }
+ratatui = "0.29"                # TUI framework
+crossterm = "0.28"               # Terminal backend for ratatui
+tui-textarea = "0.7"             # Multi-line textarea widget
+syntect = "5.2"                  # Syntax highlighting
+ignore = "0.4"                   # .gitignore-aware file walking (ripgrep ecosystem)
 ```
 
 ---
@@ -355,4 +381,4 @@ dirs = "5.0"                     # Home directory
 
 ---
 
-**Last Updated:** May 5, 2026 (Phase 2 complete)
+**Last Updated:** May 15, 2026 (Phase 2 complete + @ file completion rewritten)

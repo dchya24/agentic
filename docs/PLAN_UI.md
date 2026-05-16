@@ -229,6 +229,42 @@ Testing untuk UI komponen diatur di **[PLAN_TESTING.md](./PLAN_TESTING.md)**:
 
 ---
 
+## 🖥️ TUI Mode (agentic-cli/src/tui/)
+
+The CLI also has a full TUI mode built with ratatui. The TUI shares the same
+`@` file dropdown and `/` command dropdown as the CLI interactive mode.
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `tui/mod.rs` | Module exports |
+| `tui/app.rs` | App state, event loop, `@` dropdown trigger logic |
+| `tui/dropdown.rs` | Dropdown: recursive `.gitignore`-aware file listing (uses `ignore` crate) |
+| `tui/input.rs` | Input rendering with cursor + `@` highlighting |
+| `tui/ui.rs` | Full UI layout: header, messages, progress, input, dropdown overlay |
+| `tui/markdown_widget.rs` | Markdown → ratatui styled lines |
+| `tui/progress.rs` | Spinner + progress bar state |
+
+### `@` File Dropdown Behavior
+
+Both TUI and CLI interactive modes share the same file listing logic:
+
+| Input | Behavior |
+|-------|----------|
+| `@` (empty) | All project files recursively (flat list) |
+| `@src/` | All files under `src/` recursively |
+| `@src/ma` | Files under `src/` matching "ma" |
+| `@chat` | All project files matching "chat" |
+
+- Uses `ignore` crate (ripgrep ecosystem) — automatically respects `.gitignore`
+- `node_modules`, `target`, `.git`, `dist`, `build`, etc. are excluded automatically
+- Paths normalized: Windows backslashes → forward slashes
+- Sorted: directories first (with `/`), then files, alphabetically
+- Selecting a directory in TUI auto-reopens the dropdown to browse into it
+
+---
+
 ## 📦 Dependencies yang Mungkin Dibutuhkan
 
 | Package | Purpose | Phase |
@@ -251,4 +287,4 @@ Testing untuk UI komponen diatur di **[PLAN_TESTING.md](./PLAN_TESTING.md)**:
 
 ---
 
-**Last Updated:** May 2, 2026
+**Last Updated:** May 15, 2026

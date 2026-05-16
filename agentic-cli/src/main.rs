@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod confirmation;
 mod error;
+mod file_ref;
 mod interactive;
 mod markdown;
 mod tui;
@@ -95,15 +96,25 @@ async fn main() -> Result<()> {
         loaded
     } else {
         match &cli.command {
-            Some(Command::Run { .. }) | Some(Command::Interactive) => {
-                eprintln!("⚠ Config file not found at: {}", Config::config_path().display());
+            Some(Command::Run { .. }) | Some(Command::Interactive) | Some(Command::Tui) | None => {
+                eprintln!("\x1b[33m⚠ Config file not found.\x1b[0m Creating default config at:");
+                eprintln!("  {}\n", Config::config_path().display());
+
+                let new_config = Config::fallback();
+                if let Err(e) = new_config.save() {
+                    eprintln!("\x1b[31m✗ Failed to create config: {}\x1b[0m", e);
+                    std::process::exit(1);
+                }
+
+                eprintln!("\x1b[32m✓ Default config created.\x1b[0m");
+                eprintln!("\x1b[33m⚠ No providers or models configured yet.\x1b[0m");
+                eprintln!("  Set up a provider with:");
+                eprintln!("    \x1b[1magentic config init --interactive\x1b[0m    # Guided wizard");
+                eprintln!("    \x1b[1magentic config init --provider zai\x1b[0m  # Quick setup");
+                eprintln!("    \x1b[1magentic config edit\x1b[0m             # Edit manually");
                 eprintln!();
-                eprintln!("To get started:");
-                eprintln!("  agentic config init                  # Default config");
-                eprintln!("  agentic config init --interactive    # Guided wizard");
-                eprintln!("  agentic config init --provider zai   # Quick setup");
-                eprintln!();
-                std::process::exit(1);
+
+                new_config
             }
             _ => Config::fallback(),
         }
@@ -137,7 +148,7 @@ async fn main() -> Result<()> {
             println!("agentic {}", env!("CARGO_PKG_VERSION"));
         }
         None => {
-            Cli::parse_from(["agentic", "--help"]);
+            interactive::run(commands).await?;
         }
     }
 

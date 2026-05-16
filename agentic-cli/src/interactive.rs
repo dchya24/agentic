@@ -18,7 +18,6 @@ use reedline::{
 };
 use std::borrow::Cow;
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -231,91 +230,114 @@ fn complete_slash_command_suggestions(partial: &str) -> Vec<Suggestion> {
 }
 
 /// Complete file paths and return Suggestions.
+///
+/// Uses `ignore` crate for `.gitignore`-aware recursive file listing.
+///
+/// Behavior:
+/// - `@` (empty query) → all project files recursively (flat list)
+/// - `@src/` → all files under src/ recursively
+/// - `@src/ma` → files under src/ matching "ma"
+/// - `@chat` → all project files matching "chat"
 fn complete_file_path_suggestions(query: &str, at_pos: usize) -> Vec<Suggestion> {
     let mut results = Vec::new();
 
-    let (base_path, search_pattern) = if query.contains('/') {
-        let path = PathBuf::from(query);
-        if query.ends_with('/') {
-            (path, String::new())
-        } else {
-            let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-            let file_part = path
-                .file_name()
-                .and_then(|f| f.to_str())
-                .unwrap_or("")
-                .to_string();
-            (parent, file_part)
-        }
+    // Parse query into (path_prefix, name_filter)
+    let (path_prefix, name_filter) = if query.is_empty() {
+        (String::new(), String::new())
+    } else if query.ends_with('/') {
+        (query.to_string(), String::new())
+    } else if query.contains('/') {
+        let last_slash = query.rfind('/').unwrap();
+        (
+            query[..=last_slash].to_string(),
+            query[last_slash + 1..].to_string(),
+        )
     } else {
-        (PathBuf::from("."), query.to_string())
+        (String::new(), query.to_string())
     };
 
-    if let Ok(entries) = std::fs::read_dir(&base_path) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let file_name = entry.file_name().to_string_lossy().to_string();
+    let filter_lower = name_filter.to_lowercase();
 
-            if file_name.starts_with('.') && !search_pattern.starts_with('.') {
-                continue;
-            }
+    // Walk the project recursively, respecting .gitignore
+    let mut builder = ignore::WalkBuilder::new(".");
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .require_git(false);
 
-            if matches!(file_name.as_str(), "target" | "node_modules" | ".git")
-                && !search_pattern.starts_with(&file_name[..2.min(file_name.len())])
+    for entry in builder.build().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let path_str = path.to_string_lossy();
+
+        // Skip `.` itself
+        if path_str == "." || path_str == "./" {
+            continue;
+        }
+
+        // Normalize: backslashes → forward slashes, strip leading "./"
+        let normalized = path_str.replace('\\', "/");
+        let clean = normalized.strip_prefix("./").unwrap_or(&normalized);
+
+        // If a path prefix was given, only include files under that prefix
+        if !path_prefix.is_empty() {
+            if !clean.starts_with(&path_prefix)
+                && !clean.starts_with(path_prefix.trim_end_matches('/'))
             {
                 continue;
             }
+        }
 
-            let matches = if search_pattern.is_empty() {
-                true
-            } else {
-                let fl = file_name.to_lowercase();
-                let pl = search_pattern.to_lowercase();
-                fl.starts_with(&pl) || fl.contains(&pl)
-            };
+        // If a name filter was given, match against filename and full path
+        if !filter_lower.is_empty() {
+            let fname = std::path::Path::new(clean)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let fname_lower = fname.to_lowercase();
+            let clean_lower = clean.to_lowercase();
 
-            if matches {
-                let base_str = base_path.to_string_lossy();
-                let full_path = if base_str == "." {
-                    file_name.clone()
-                } else {
-                    let clean = base_str.trim_end_matches('/');
-                    format!("{}/{}", clean, file_name)
-                };
-
-                let is_dir = entry.path().is_dir();
-                let display = if is_dir {
-                    format!("{}/", full_path)
-                } else {
-                    full_path.clone()
-                };
-
-                let icon = if is_dir { "📁" } else { "📄" };
-
-                results.push(Suggestion {
-                    value: display.clone(),
-                    display_override: Some(format!("{} {}", icon, display)),
-                    description: Some(if is_dir {
-                        "Directory".to_string()
-                    } else {
-                        let ext_str = entry
-                            .path()
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let ext_ref = ext_str.as_str();
-                        format!("File ({})", if ext_str.is_empty() { "?" } else { ext_ref })
-                    }),
-                    style: None,
-                    extra: None,
-                    span: Span::new(at_pos, at_pos + 1 + query.len()),
-                    append_whitespace: !is_dir,
-                    match_indices: None,
-                });
+            if !fname_lower.starts_with(&filter_lower)
+                && !fname_lower.contains(&filter_lower)
+                && !clean_lower.contains(&filter_lower)
+            {
+                continue;
             }
         }
+
+        let is_dir = path.is_dir();
+        let display = if is_dir {
+            format!("{}/", clean)
+        } else {
+            clean.to_string()
+        };
+
+        let icon = if is_dir { "📁" } else { "📄" };
+
+        let description = if is_dir {
+            "Directory".to_string()
+        } else {
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("?");
+            format!("File ({})", ext)
+        };
+
+        results.push(Suggestion {
+            value: display.clone(),
+            display_override: Some(format!("{} {}", icon, display)),
+            description: Some(description),
+            style: None,
+            extra: None,
+            span: Span::new(at_pos, at_pos + 1 + query.len()),
+            append_whitespace: !is_dir,
+            match_indices: None,
+        });
     }
 
+    // Sort: directories first, then files — both alphabetically
     results.sort_by(|a, b| {
         let a_dir = a.value.ends_with('/');
         let b_dir = b.value.ends_with('/');
@@ -326,7 +348,7 @@ fn complete_file_path_suggestions(query: &str, at_pos: usize) -> Vec<Suggestion>
         }
     });
 
-    results.truncate(20);
+    results.truncate(30);
     results
 }
 

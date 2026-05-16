@@ -155,7 +155,7 @@ Rencana implementasi pengembangan selanjutnya untuk Termul Manager dan Agentic A
 
 #### 5. Polish Agentic UI (1-2 days)
 
-**Status:** Basic UI exists, needs polish
+**Status:** Basic UI exists, needs polish. TUI `@` file dropdown rewritten (May 15, 2026).
 
 **Tasks:**
 - [ ] Add markdown rendering to AI responses
@@ -168,6 +168,9 @@ Rencana implementasi pengembangan selanjutnya untuk Termul Manager dan Agentic A
 - [ ] Add empty state
 - [ ] Add message input validation
 - [ ] Add message history sidebar (collapsible)
+- [x] `@` file dropdown — recursive `.gitignore`-aware file listing (ignore crate)
+- [x] Auto-reopen dropdown when selecting directories in TUI
+- [x] Same completion logic in CLI interactive mode and TUI mode
 
 **Files:**
 - `src/renderer/components/agentic/AgenticOutput.tsx` - Improve display
@@ -565,7 +568,8 @@ Reviewer Agent:
 - [ ] Basic testing
 
 ### Sprint 2 (1 week): Polish
-- [ ] Polish Agentic UI
+- [x] `@` file completion rewritten — recursive `.gitignore`-aware (TUI + CLI)
+- [ ] Polish Agentic UI (markdown, syntax highlighting, etc.)
 - [ ] Add Command Palette Actions
 - [ ] Resolve TODO items
 - [ ] Bug fixes

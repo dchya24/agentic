@@ -264,7 +264,10 @@ impl App {
             None => None,
         };
 
+        let mut is_dir = false;
+
         if let Some(text) = selected_text {
+            is_dir = text.ends_with('/');
             if let Some(dropdown) = &self.dropdown {
                 match dropdown.dropdown_type {
                     DropdownType::Command => {
@@ -279,7 +282,7 @@ impl App {
                             let after_cursor = &self.input[self.cursor_pos..];
                             
                             // Add trailing space for files, keep slash for dirs
-                            let suffix = if text.ends_with('/') {
+                            let suffix = if is_dir {
                                 // Directory — keep it for further navigation
                                 ""
                             } else {
@@ -294,8 +297,15 @@ impl App {
                 }
             }
         }
-        // Always close dropdown after accepting
-        self.dropdown = None;
+
+        // After accepting a file dropdown:
+        // - For directories: re-trigger dropdown to show contents of selected dir
+        // - For files/commands: close dropdown
+        if is_dir {
+            self.update_dropdown();
+        } else {
+            self.dropdown = None;
+        }
     }
 
     /// Move dropdown selection up
