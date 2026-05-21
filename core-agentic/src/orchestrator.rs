@@ -28,6 +28,7 @@ pub struct Orchestrator {
     confirmation_handler:
         Mutex<Option<Box<dyn Fn(crate::safety::ConfirmationRequest) -> bool + Send + Sync>>>,
     system_prompt: Option<String>,
+    model: String,
 }
 
 impl Orchestrator {
@@ -41,7 +42,12 @@ impl Orchestrator {
             events: EventEmitter::new(),
             confirmation_handler: Mutex::new(None),
             system_prompt: None,
+            model: "glm-4.7".to_string(),
         }
+    }
+
+    pub fn set_model(&mut self, model: impl Into<String>) {
+        self.model = model.into();
     }
 
     pub fn set_confirmation_handler<F>(&mut self, handler: F)
@@ -159,7 +165,7 @@ impl Orchestrator {
 
         loop {
             let messages = self.build_messages();
-            let mut request = ChatRequest::new("glm-4.7", messages).with_tools(tool_defs.clone());
+            let mut request = ChatRequest::new(&self.model, messages).with_tools(tool_defs.clone());
             if let Some(ref prompt) = self.system_prompt {
                 request = request.with_system_prompt(prompt.clone());
             }
@@ -226,7 +232,7 @@ impl Orchestrator {
 
         loop {
             let messages = self.build_messages();
-            let mut request = ChatRequest::new("glm-4.7", messages)
+            let mut request = ChatRequest::new(&self.model, messages)
                 .with_tools(tool_defs.clone())
                 .stream();
             if let Some(ref prompt) = self.system_prompt {

@@ -1,6 +1,5 @@
 //! OpenAI-compatible provider implementation
 
-use reqwest::blocking::Client;
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +39,6 @@ impl RetryConfig {
 
 pub struct OpenAIProvider {
     config: OpenAIProviderConfig,
-    client: Client,
     async_client: reqwest::Client,
     retry: RetryConfig,
 }
@@ -139,19 +137,14 @@ struct OpenAIUsageResp {
 
 impl OpenAIProvider {
     pub fn new(config: OpenAIProviderConfig) -> Self {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .expect("Failed to build HTTP client");
-
         let async_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
-            .read_timeout(std::time::Duration::from_secs(300))
+            .timeout(std::time::Duration::from_secs(120))
             .build()
             .expect("Failed to build async HTTP client");
 
         let retry = config.retry.clone();
-        Self { config, client, async_client, retry }
+        Self { config, async_client, retry }
     }
 
     fn extract_sse_line(buffer: &mut String) -> Option<String> {
@@ -293,26 +286,27 @@ impl OpenAIProvider {
             self.config.base_url.trim_end_matches('/')
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .map_err(|e| ProviderError::new(format!("Request failed: {}", e)))?;
+        let response = futures::executor::block_on(async {
+            self.async_client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+        })
+        .map_err(|e| ProviderError::new(format!("Request failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().unwrap_or_default();
+            let text = futures::executor::block_on(response.text()).unwrap_or_default();
             return Err(ProviderError::new(format!(
                 "API error ({}): {}",
                 status, text
             )));
         }
 
-        let oai_response: OpenAIChatResponse = response
-            .json()
+        let oai_response: OpenAIChatResponse = futures::executor::block_on(response.json())
             .map_err(|e| ProviderError::new(format!("Failed to parse response: {}", e)))?;
 
         let choice = oai_response
@@ -409,72 +403,54 @@ impl LLMProvider for OpenAIProvider {
 
         let api_key = self.config.api_key.clone();
         let async_client = self.async_client.clone();
-        let retry = self.retry.clone();
 
-        let mut last_error = None;
+        let stream = async_stream::stream! {
+            let response = match async_client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(resp) => match resp.error_for_status() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        yield Err(ProviderError::new(format!("Stream API error: {}", e)));
+                        return;
+                    }
+                },
+                Err(e) => {
+                    yield Err(ProviderError::new(format!("Stream request failed: {}", e)));
+                    return;
+                }
+            };
 
-        for attempt in 0..=retry.max_retries {
-            if attempt > 0 {
-                let delay = retry.delay_for_attempt(attempt - 1);
-                log::warn!("Stream retry attempt {}/{} after {:?}", attempt, retry.max_retries, delay);
-                std::thread::sleep(delay);
-            }
+            let mut buffer = String::new();
+            let mut byte_stream = response.bytes_stream();
 
-            let result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    async_client
-                        .post(&url)
-                        .header("Authorization", format!("Bearer {}", api_key))
-                        .header("Content-Type", "application/json")
-                        .json(&body)
-                        .send()
-                        .await
-                        .map_err(|e| ProviderError::new(format!("Stream request failed: {}", e)))?
-                        .error_for_status()
-                        .map_err(|e| ProviderError::new(format!("Stream API error: {}", e)))
-                })
-            });
-
-            match result {
-                Ok(response) => {
-                    let stream = async_stream::stream! {
-                        let mut buffer = String::new();
-                        let mut stream = response.bytes_stream();
-
-                        while let Some(chunk_result) = stream.next().await {
-                            match chunk_result {
-                                Ok(bytes) => {
-                                    buffer.push_str(&String::from_utf8_lossy(&bytes));
-                                    while let Some(line) = Self::extract_sse_line(&mut buffer) {
-                                        if line == "[DONE]" {
-                                            return;
-                                        }
-                                        if let Some(chat_chunk) = Self::parse_sse_chunk(&line) {
-                                            yield Ok(chat_chunk);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    yield Err(ProviderError::new(format!("Stream read error: {}", e)));
-                                    return;
-                                }
+            while let Some(chunk_result) = byte_stream.next().await {
+                match chunk_result {
+                    Ok(bytes) => {
+                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+                        while let Some(line) = Self::extract_sse_line(&mut buffer) {
+                            if line == "[DONE]" {
+                                return;
+                            }
+                            if let Some(chat_chunk) = Self::parse_sse_chunk(&line) {
+                                yield Ok(chat_chunk);
                             }
                         }
-                    };
-
-                    return Ok(Box::pin(stream));
-                }
-                Err(e) => {
-                    let retryable = Self::is_retryable_error(&e);
-                    last_error = Some(e);
-                    if !retryable || attempt == retry.max_retries {
-                        break;
+                    }
+                    Err(e) => {
+                        yield Err(ProviderError::new(format!("Stream read error: {}", e)));
+                        return;
                     }
                 }
             }
-        }
+        };
 
-        Err(last_error.unwrap())
+        Ok(Box::pin(stream))
     }
 
     fn health_check(&self) -> super::ProviderResult<bool> {
@@ -482,11 +458,13 @@ impl LLMProvider for OpenAIProvider {
             "{}/models",
             self.config.base_url.trim_end_matches('/')
         );
-        let result = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .send();
+        let result = futures::executor::block_on(async {
+            self.async_client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .send()
+                .await
+        });
         match result {
             Ok(resp) if resp.status().is_success() => Ok(true),
             Ok(resp) => Err(super::ProviderError::new(format!(
@@ -505,12 +483,14 @@ impl LLMProvider for OpenAIProvider {
             "{}/models",
             self.config.base_url.trim_end_matches('/')
         );
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .send()
-            .map_err(|e| super::ProviderError::new(format!("List models request failed: {}", e)))?;
+        let response = futures::executor::block_on(async {
+            self.async_client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .send()
+                .await
+        })
+        .map_err(|e| super::ProviderError::new(format!("List models request failed: {}", e)))?;
 
         if !response.status().is_success() {
             return Err(super::ProviderError::new(format!(
@@ -528,8 +508,7 @@ impl LLMProvider for OpenAIProvider {
             id: String,
         }
 
-        let models: ModelsResponse = response
-            .json()
+        let models: ModelsResponse = futures::executor::block_on(response.json())
             .map_err(|e| super::ProviderError::new(format!("Failed to parse models response: {}", e)))?;
 
         Ok(models

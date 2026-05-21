@@ -101,6 +101,7 @@ impl Commands {
             .config
             .to_provider_config()
             .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
+        let model_name = provider_config.default_model.clone();
         let provider = Arc::new(core_agentic::OpenAIProvider::new(provider_config));
 
         let tools = ToolRegistry::new();
@@ -109,6 +110,7 @@ impl Commands {
         }
 
         let mut orchestrator = Orchestrator::new(provider, tools);
+        orchestrator.set_model(model_name);
 
         orchestrator.set_confirmation_handler(|request| {
             if ALWAYS_CONFIRM.load(Ordering::Relaxed) {
