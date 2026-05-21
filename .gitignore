@@ -1,0 +1,36 @@
+# Build artifacts
+/target/
+**/target/
+
+# Cargo.lock for library crates (keep for binary crates)
+# core-agentic is a library — ignore its lockfile
+/core-agentic/Cargo.lock
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.fleet/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+
+# Debug / Profiling
+*.profraw
+*.profdata
+
+# Rust-specific
+**/*.rs.bk
+*.pdb
+
+# AI agent artifacts
+.claude/
+CLAUDE.md
