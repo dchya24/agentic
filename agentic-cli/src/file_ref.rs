@@ -13,10 +13,12 @@
 
 use std::path::Path;
 
-/// Expand all `@path` references in the input string, replacing them with
-/// the actual file contents wrapped in XML-style tags.
+/// Expand all `@path` references in the input string.
 ///
-/// Returns the expanded string. If a file doesn't exist or can't be read,
+/// - `@path/to/file.rs` → `<file path="path/to/file.rs" />`
+/// - `@src/` (directory) → `<directory path="src"> listing </directory>`
+///
+/// Returns the expanded string. If a file doesn't exist,
 /// includes an error message inline instead.
 pub fn expand_file_refs(input: &str) -> String {
     let mut result = String::new();
@@ -165,155 +167,17 @@ fn read_file_ref(path_str: &str) -> String {
     let path = Path::new(path_str);
 
     if !path.exists() {
-        return format!("<file path=\"{}\">[File not found: {}]</file>", path_str, path_str);
+        return format!("<path=\"{}\" /> [Not found]", path_str);
     }
 
     if path.is_dir() {
-        read_directory(path_str, path)
+        format!("<directory path=\"{}\" />", path_str)
     } else {
-        read_single_file(path_str, path)
+        format!("<file path=\"{}\" />", path_str)
     }
 }
 
-/// Read a single file and format it.
-fn read_single_file(path_str: &str, path: &Path) -> String {
-    match std::fs::read_to_string(path) {
-        Ok(content) => {
-            let line_count = content.lines().count();
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
 
-            // Truncate very large files
-            const MAX_LINES: usize = 500;
-            if line_count > MAX_LINES {
-                let truncated: String = content.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n");
-                return format!(
-                    "<file path=\"{}\" lang=\"{}\" lines=\"{}\" truncated=\"true\">\n{}\n... ({} of {} lines shown)\n</file>",
-                    path_str, ext, line_count, truncated, MAX_LINES, line_count
-                );
-            }
-
-            format!(
-                "<file path=\"{}\" lang=\"{}\" lines=\"{}\">\n{}\n</file>",
-                path_str, ext, line_count, content
-            )
-        }
-        Err(e) => {
-            format!(
-                "<file path=\"{}\">[Error reading file: {}]</file>",
-                path_str, e
-            )
-        }
-    }
-}
-
-/// Read a directory: list all files (non-recursive, .gitignore-aware) and include their contents.
-fn read_directory(path_str: &str, path: &Path) -> String {
-    let mut parts = Vec::new();
-
-    // List directory contents
-    let mut file_count = 0;
-    let mut dir_count = 0;
-
-    // Use ignore crate for .gitignore-aware listing
-    let mut builder = ignore::WalkBuilder::new(path);
-    builder
-        .max_depth(Some(2))  // Shallow: just the dir and one level down
-        .hidden(false)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .require_git(false);
-
-    let mut entries: Vec<(String, bool)> = Vec::new(); // (path, is_dir)
-
-    for entry in builder.build().filter_map(|e| e.ok()) {
-        let entry_path = entry.path();
-        let entry_str = entry_path.to_string_lossy();
-
-        // Skip the directory itself
-        if entry_path == path {
-            continue;
-        }
-
-        // Normalize path
-        let normalized = entry_str.replace('\\', "/");
-        let is_dir = entry_path.is_dir();
-
-        if is_dir {
-            dir_count += 1;
-        } else {
-            file_count += 1;
-        }
-
-        entries.push((normalized, is_dir));
-    }
-
-    // Sort: dirs first, then files
-    entries.sort_by(|a, b| {
-        match (a.1, b.1) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.0.to_lowercase().cmp(&b.0.to_lowercase()),
-        }
-    });
-
-    // Build listing
-    parts.push(format!(
-        "<directory path=\"{}\" files=\"{}\" dirs=\"{}\">",
-        path_str, file_count, dir_count
-    ));
-
-    for (entry_path, is_dir) in &entries {
-        let icon = if *is_dir { "📁" } else { "📄" };
-        let suffix = if *is_dir { "/" } else { "" };
-        parts.push(format!("  {} {}{}", icon, entry_path, suffix));
-    }
-
-    parts.push("</directory>".to_string());
-
-    // Also include contents of files (limit to 10 files to avoid huge prompts)
-    let mut files_included = 0;
-    for (entry_path, is_dir) in &entries {
-        if *is_dir {
-            continue;
-        }
-        if files_included >= 10 {
-            parts.push(format!(
-                "\n<!-- ... and {} more files not shown -->",
-                file_count - files_included
-            ));
-            break;
-        }
-
-        if let Ok(content) = std::fs::read_to_string(entry_path) {
-            let ext = Path::new(entry_path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
-            let line_count = content.lines().count();
-
-            const MAX_LINES: usize = 200;
-            if line_count <= MAX_LINES {
-                parts.push(format!(
-                    "\n<file path=\"{}\" lang=\"{}\" lines=\"{}\">\n{}\n</file>",
-                    entry_path, ext, line_count, content
-                ));
-            } else {
-                let truncated: String = content.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n");
-                parts.push(format!(
-                    "\n<file path=\"{}\" lang=\"{}\" lines=\"{}\" truncated=\"true\">\n{}\n... ({} of {} lines shown)\n</file>",
-                    entry_path, ext, line_count, truncated, MAX_LINES, line_count
-                ));
-            }
-            files_included += 1;
-        }
-    }
-
-    parts.join("\n")
-}
 
 #[cfg(test)]
 mod tests {
@@ -363,22 +227,21 @@ mod tests {
     #[test]
     fn test_nonexistent_file() {
         let result = expand_file_refs("read @nonexistent/file.txt");
-        assert!(result.contains("[File not found:"));
         assert!(result.contains("nonexistent/file.txt"));
+        assert!(result.contains("Not found"));
     }
 
     #[test]
     fn test_existing_file() {
         // Use Cargo.toml which exists in the project
         let result = expand_file_refs("check @Cargo.toml");
-        assert!(result.contains("<file path=\"Cargo.toml\""));
-        assert!(result.contains("[package]"));
+        assert!(result.contains("<file path=\"Cargo.toml\" />"));
     }
 
     #[test]
     fn test_existing_directory() {
         let result = expand_file_refs("list @src/");
-        assert!(result.contains("<directory path=\"src\""));
+        assert!(result.contains("<directory path=\"src\" />"));
     }
 
     #[test]

@@ -326,7 +326,7 @@ fn complete_file_path_suggestions(query: &str, at_pos: usize) -> Vec<Suggestion>
         };
 
         results.push(Suggestion {
-            value: display.clone(),
+            value: format!("@{}", display),
             display_override: Some(format!("{} {}", icon, display)),
             description: Some(description),
             style: None,
@@ -542,29 +542,49 @@ impl Validator for AgenticValidator {
 
 struct AgenticPrompt {
     dir_name: String,
+    git_branch: Option<String>,
+    model: String,
+    provider: String,
 }
 
 impl AgenticPrompt {
-    fn new() -> Self {
+    fn new(model_info: &ModelInfo) -> Self {
         let cwd = std::env::current_dir().unwrap_or_default();
         let dir_name = cwd
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("?")
             .to_string();
-        Self { dir_name }
+
+        let git_branch = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    let branch = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if branch.is_empty() || branch == "HEAD" {
+                        None
+                    } else {
+                        Some(branch)
+                    }
+                } else {
+                    None
+                }
+            });
+
+        Self {
+            dir_name,
+            git_branch,
+            model: model_info.model.clone(),
+            provider: model_info.provider.clone(),
+        }
     }
 }
 
 impl Prompt for AgenticPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
-        let styled = format!(
-            "{}{}{}agentic> ",
-            AnsiColor::DarkGray.prefix(),
-            self.dir_name,
-            Style::new().prefix()
-        );
-        Cow::Owned(styled)
+        Cow::Borrowed("")
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
@@ -572,11 +592,37 @@ impl Prompt for AgenticPrompt {
     }
 
     fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'_, str> {
-        Cow::Borrowed("")
+        let branch = match &self.git_branch {
+            Some(b) => format!(" {}{}{}", AnsiColor::Green.prefix(), b, Style::new().prefix()),
+            None => String::new(),
+        };
+        let styled = format!(
+            "\n{}\u{256d}\u{2500}\u{2500} {}{}{} {}-- {}{}{} {}({}{})\n{}\u{2570}\u{2500} {}>{} ",
+            AnsiColor::DarkGray.prefix(),
+            self.dir_name,
+            branch,
+            Style::new().prefix(),
+            AnsiColor::DarkGray.prefix(),
+            AnsiColor::Yellow.prefix(),
+            self.model,
+            Style::new().prefix(),
+            AnsiColor::DarkGray.prefix(),
+            AnsiColor::DarkGray.prefix(),
+            self.provider,
+            AnsiColor::DarkGray.prefix(),
+            AnsiColor::Cyan.prefix(),
+            Style::new().prefix()
+        );
+        Cow::Owned(styled)
     }
 
     fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
-        Cow::Borrowed("... ")
+        let styled = format!(
+            "{}\u{2502}   {}",
+            AnsiColor::DarkGray.prefix(),
+            Style::new().prefix()
+        );
+        Cow::Owned(styled)
     }
 
     fn render_prompt_history_search_indicator(
@@ -613,7 +659,7 @@ pub async fn run(mut commands: Commands) -> Result<()> {
     let highlighter = Box::new(AgenticHighlighter);
     let hinter = Box::new(AgenticHinter::new());
     let validator = Box::new(AgenticValidator);
-    let prompt = AgenticPrompt::new();
+    let prompt = AgenticPrompt::new(&model_info);
 
     // File-backed history
     let history_path = dirs::home_dir()

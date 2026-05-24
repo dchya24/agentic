@@ -101,16 +101,21 @@ impl Orchestrator {
         let context = self.memory.lock().unwrap().get_context(20);
         context
             .iter()
-            .map(|m| ChatMessageRequest {
-                role: match &m.role {
-                    MessageRole::User => "user".to_string(),
-                    MessageRole::Assistant => "assistant".to_string(),
-                    MessageRole::System => "system".to_string(),
-                    MessageRole::Tool { .. } => "tool".to_string(),
-                },
-                content: m.content.clone(),
-                tool_call_id: None,
-                tool_calls: vec![],
+            .map(|m| {
+                let (role, tool_call_id) = match &m.role {
+                    MessageRole::User => ("user", None),
+                    MessageRole::Assistant => ("assistant", None),
+                    MessageRole::System => ("system", None),
+                    MessageRole::Tool { tool_call_id, .. } => {
+                        ("tool", Some(tool_call_id.clone()))
+                    }
+                };
+                ChatMessageRequest {
+                    role: role.to_string(),
+                    content: m.content.clone(),
+                    tool_call_id,
+                    tool_calls: vec![],
+                }
             })
             .collect()
     }

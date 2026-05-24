@@ -413,12 +413,18 @@ impl LLMProvider for OpenAIProvider {
                 .send()
                 .await
             {
-                Ok(resp) => match resp.error_for_status() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        yield Err(ProviderError::new(format!("Stream API error: {}", e)));
+                Ok(resp) => {
+                    let status = resp.status();
+                    if !status.is_success() {
+                        let text = resp.text().await.unwrap_or_default();
+                        log::error!("Stream request failed: {} - Body: {}", status, text);
+                        yield Err(ProviderError::new(format!(
+                            "Stream API error: HTTP status {} error ({}) for url ({})",
+                            status, text, url
+                        )));
                         return;
                     }
+                    resp
                 },
                 Err(e) => {
                     yield Err(ProviderError::new(format!("Stream request failed: {}", e)));

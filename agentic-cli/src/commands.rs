@@ -486,16 +486,7 @@ impl Commands {
     pub async fn run(&mut self, task: &str) -> Result<()> {
         // Expand @file references before sending to AI
         let expanded = crate::file_ref::expand_file_refs(task);
-        let has_refs = expanded != task;
         let task = &expanded;
-
-        if has_refs {
-            if self.color_enabled {
-                println!("\x1b[2m\u{1f4c2} Expanded file references in prompt\x1b[0m\n");
-            } else {
-                println!("  Expanded file references in prompt\n");
-            }
-        }
 
         self.ensure_orchestrator()?;
 
@@ -503,8 +494,6 @@ impl Commands {
             .orchestrator
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Orchestrator not initialized"))?;
-
-        println!("\n🤖 Running task: {}\n", task);
 
         let pb = ProgressBar::new_spinner();
         pb.set_style(
