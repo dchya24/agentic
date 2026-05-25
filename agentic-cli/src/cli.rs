@@ -37,8 +37,34 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "WHEN", default_value = "auto")]
     pub color: ColorChoice,
 
+    /// Permission mode for tool execution
+    ///
+    /// - default: ask for medium+ risk actions, allow reads (recommended)
+    /// - plan:    read-only mode; deny all writes and commands
+    /// - yolo:    auto-approve everything except hard-blocked patterns
+    #[arg(long, global = true, value_name = "MODE", default_value = "default")]
+    pub mode: PermissionModeArg,
+
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+/// CLI representation of [`core_agentic::PermissionMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PermissionModeArg {
+    Default,
+    Plan,
+    Yolo,
+}
+
+impl From<PermissionModeArg> for core_agentic::PermissionMode {
+    fn from(arg: PermissionModeArg) -> Self {
+        match arg {
+            PermissionModeArg::Default => core_agentic::PermissionMode::Default,
+            PermissionModeArg::Plan => core_agentic::PermissionMode::Plan,
+            PermissionModeArg::Yolo => core_agentic::PermissionMode::Yolo,
+        }
+    }
 }
 
 /// When to use colors

@@ -16,6 +16,10 @@ impl Tool for GlobTool {
         "glob"
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &str {
         "Fast file pattern matching tool. Supports glob patterns like **/*.js or src/**/*.ts. Returns matching file paths sorted by modification time."
     }

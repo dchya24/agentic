@@ -20,6 +20,10 @@ impl Tool for SearchFilesTool {
         "search_files"
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &str {
         "Search for text content across files in a directory. Returns matching file paths, line numbers, and matching lines."
     }

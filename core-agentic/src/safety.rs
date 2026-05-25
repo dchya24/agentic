@@ -13,6 +13,65 @@ use std::time::Instant;
 use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
+// Permission Mode
+// ---------------------------------------------------------------------------
+
+/// High-level permission mode that gates the safety engine.
+///
+/// Maps directly to the architecture doc's three modes:
+/// - `Default` — ask for writes & commands, allow reads (current behavior).
+/// - `Plan`    — read-only mode. All writes/commands are denied.
+/// - `Yolo`    — allow everything (dangerous; for trusted automation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionMode {
+    #[default]
+    Default,
+    Plan,
+    Yolo,
+}
+
+impl PermissionMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PermissionMode::Default => "default",
+            PermissionMode::Plan => "plan",
+            PermissionMode::Yolo => "yolo",
+        }
+    }
+
+    /// Parse from a free-form string (case-insensitive). Accepts a few
+    /// common synonyms so CLI users don't have to memorize exact spelling.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "default" | "normal" | "ask" => Some(PermissionMode::Default),
+            "plan" | "readonly" | "read-only" | "dry-run" => Some(PermissionMode::Plan),
+            "yolo" | "auto" | "trust" | "unsafe" => Some(PermissionMode::Yolo),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PermissionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Tool actions that mutate state. Used by Plan mode to deny writes
+/// without having to enumerate every shell command.
+fn is_state_changing_action(action: &str) -> bool {
+    matches!(
+        action,
+        "write_file"
+            | "edit_file"
+            | "delete_file"
+            | "run_command"
+            | "run_script"
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Risk Level
 // ---------------------------------------------------------------------------
 
@@ -396,6 +455,8 @@ pub struct Safety {
     config: SafetyConfig,
     rate_limit_states: Mutex<HashMap<String, RateLimitState>>,
     audit_log: Mutex<Vec<AuditEntry>>,
+    /// Active permission mode. Defaults to `Default` (ask).
+    mode: Mutex<PermissionMode>,
 }
 
 impl Default for Safety {
@@ -414,6 +475,7 @@ impl Safety {
             config: SafetyConfig::default(),
             rate_limit_states: Mutex::new(HashMap::new()),
             audit_log: Mutex::new(Vec::new()),
+            mode: Mutex::new(PermissionMode::default()),
         }
     }
 
@@ -422,6 +484,7 @@ impl Safety {
             config,
             rate_limit_states: Mutex::new(HashMap::new()),
             audit_log: Mutex::new(Vec::new()),
+            mode: Mutex::new(PermissionMode::default()),
         }
     }
 
@@ -442,6 +505,16 @@ impl Safety {
 
     pub fn set_require_confirmation(&mut self, require: bool) {
         self.config.require_confirmation = require;
+    }
+
+    /// Switch the active permission mode at runtime.
+    pub fn set_mode(&self, mode: PermissionMode) {
+        *self.mode.lock().unwrap() = mode;
+    }
+
+    /// Get the active permission mode.
+    pub fn mode(&self) -> PermissionMode {
+        *self.mode.lock().unwrap()
     }
 
     // -----------------------------------------------------------------------
@@ -606,17 +679,63 @@ impl Safety {
 
     /// Should the user be prompted for confirmation?
     pub fn needs_confirmation(&self, action: &str, target: Option<&str>) -> bool {
-        if !self.config.enabled || !self.config.require_confirmation {
-            return false;
+        let mode = *self.mode.lock().unwrap();
+        match mode {
+            // Yolo never asks.
+            PermissionMode::Yolo => false,
+            // Plan denies state-changing actions outright (no confirmation).
+            PermissionMode::Plan if is_state_changing_action(action) => false,
+            _ => {
+                if !self.config.enabled || !self.config.require_confirmation {
+                    return false;
+                }
+                let score = self.score_command(action, target);
+                score.value > self.config.auto_approve_threshold
+            }
         }
-
-        let score = self.score_command(action, target);
-        score.value > self.config.auto_approve_threshold
     }
 
     /// Full safety evaluation: returns a decision without blocking.
     /// This is the primary entry point for the orchestrator.
     pub fn evaluate(&self, action: &str, target: Option<&str>) -> SafetyDecision {
+        let mode = *self.mode.lock().unwrap();
+
+        // Plan mode: hard-deny any state-changing tool. Reads still allowed.
+        if mode == PermissionMode::Plan && is_state_changing_action(action) {
+            let score = RiskScore::new(0.5, RiskLevel::Medium);
+            self.audit(action, target, &score, AuditDecision::Blocked);
+            return SafetyDecision {
+                score,
+                allowed: false,
+                needs_confirmation: false,
+                reason: format!("Blocked by plan mode: {} is a state-changing tool", action),
+            };
+        }
+
+        // Yolo mode: allow everything except the hard blocklist (which is
+        // checked below as part of normal scoring). We bypass confirmation
+        // and rate limiting but keep critical-pattern blocking as a final
+        // safety net.
+        if mode == PermissionMode::Yolo {
+            let score = self.score_command(action, target);
+            if score.level == RiskLevel::Critical {
+                self.audit(action, target, &score, AuditDecision::Blocked);
+                return SafetyDecision {
+                    score,
+                    allowed: false,
+                    needs_confirmation: false,
+                    reason: "Action blocked: critical risk level (yolo mode still blocks blocklist)"
+                        .into(),
+                };
+            }
+            return SafetyDecision {
+                score,
+                allowed: true,
+                needs_confirmation: false,
+                reason: "yolo mode: auto-approved".into(),
+            };
+        }
+
         if !self.config.enabled {
             return SafetyDecision {
                 score: RiskScore::low(),
@@ -1222,5 +1341,90 @@ mod tests {
         let s = safety();
         let score = s.score_command("run_command", Some("RM -RF /"));
         assert_eq!(score.level, RiskLevel::Critical);
+    }
+
+    // --- Permission modes ---
+
+    #[test]
+    fn test_permission_mode_default_is_default() {
+        assert_eq!(PermissionMode::default(), PermissionMode::Default);
+    }
+
+    #[test]
+    fn test_permission_mode_parse() {
+        assert_eq!(PermissionMode::parse("default"), Some(PermissionMode::Default));
+        assert_eq!(PermissionMode::parse("PLAN"), Some(PermissionMode::Plan));
+        assert_eq!(PermissionMode::parse("yolo"), Some(PermissionMode::Yolo));
+        assert_eq!(PermissionMode::parse("readonly"), Some(PermissionMode::Plan));
+        assert_eq!(PermissionMode::parse("trust"), Some(PermissionMode::Yolo));
+        assert_eq!(PermissionMode::parse("bogus"), None);
+    }
+
+    #[test]
+    fn test_plan_mode_blocks_writes() {
+        let s = safety();
+        s.set_mode(PermissionMode::Plan);
+        assert!(!s.evaluate("write_file", Some("foo.txt")).allowed);
+        assert!(!s.evaluate("edit_file", Some("foo.txt")).allowed);
+        assert!(!s.evaluate("run_command", Some("ls")).allowed);
+    }
+
+    #[test]
+    fn test_plan_mode_allows_reads() {
+        let s = safety();
+        s.set_mode(PermissionMode::Plan);
+        assert!(s.evaluate("read_file", Some("foo.txt")).allowed);
+        assert!(s.evaluate("list_files", Some(".")).allowed);
+        assert!(s.evaluate("search_files", Some("pattern")).allowed);
+    }
+
+    #[test]
+    fn test_yolo_mode_auto_approves() {
+        let s = safety();
+        s.set_mode(PermissionMode::Yolo);
+        // sudo would normally be Medium and require confirmation.
+        let decision = s.evaluate("run_command", Some("sudo apt install foo"));
+        assert!(decision.allowed);
+        assert!(!decision.needs_confirmation);
+    }
+
+    #[test]
+    fn test_yolo_still_blocks_critical_blocklist() {
+        let s = safety();
+        s.set_mode(PermissionMode::Yolo);
+        let decision = s.evaluate("run_command", Some("rm -rf /"));
+        assert!(!decision.allowed); // safety net stays
+    }
+
+    #[test]
+    fn test_default_mode_unchanged_behavior() {
+        let s = safety();
+        // Default mode preserves the original gating behavior.
+        let decision = s.evaluate("run_command", Some("sudo apt install foo"));
+        assert!(decision.allowed);
+        assert!(decision.needs_confirmation);
+    }
+
+    #[test]
+    fn test_mode_setter_and_getter() {
+        let s = safety();
+        assert_eq!(s.mode(), PermissionMode::Default);
+        s.set_mode(PermissionMode::Yolo);
+        assert_eq!(s.mode(), PermissionMode::Yolo);
+    }
+
+    #[test]
+    fn test_needs_confirmation_yolo() {
+        let s = safety();
+        s.set_mode(PermissionMode::Yolo);
+        assert!(!s.needs_confirmation("run_command", Some("sudo apt install foo")));
+    }
+
+    #[test]
+    fn test_needs_confirmation_plan_writes() {
+        let s = safety();
+        s.set_mode(PermissionMode::Plan);
+        // Plan mode denies outright — no confirmation needed (or possible).
+        assert!(!s.needs_confirmation("write_file", Some("foo.txt")));
     }
 }

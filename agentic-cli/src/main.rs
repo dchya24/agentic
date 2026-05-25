@@ -16,7 +16,21 @@ use clap::Parser;
 use cli::{Cli, ColorChoice, Command, ConfigAction};
 use commands::Commands;
 use core_agentic::Config;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::OnceLock;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+/// Shared cancel flag. The signal handler flips this on the first Ctrl+C;
+/// the orchestrator's loop boundary picks it up and returns gracefully.
+/// A second Ctrl+C escalates to a hard exit.
+static CANCEL_FLAG: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+
+pub(crate) fn cancel_flag() -> Arc<AtomicBool> {
+    CANCEL_FLAG
+        .get_or_init(|| Arc::new(AtomicBool::new(false)))
+        .clone()
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -59,9 +73,22 @@ async fn main() -> Result<()> {
     };
 
     // ── Ctrl+C graceful shutdown (background task) ─────────
-    tokio::spawn(async {
+    // First Ctrl+C: cooperative cancel. The agent loop checks this flag at
+    // every turn boundary and returns AgenticError::Cancelled.
+    // Second Ctrl+C: force-exit (we may be stuck in a tool that doesn't
+    // observe the flag).
+    let cancel = cancel_flag();
+    tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        eprintln!("\n⚠ Interrupted.");
+        if cancel.swap(true, Ordering::SeqCst) {
+            // Already cancelled once — hard exit on second Ctrl+C.
+            eprintln!("\n⚠ Force-exiting on second Ctrl+C.");
+            std::process::exit(130);
+        }
+        eprintln!("\n⚠ Cancel requested (press Ctrl+C again to force-exit).");
+        // Wait for a possible second Ctrl+C.
+        tokio::signal::ctrl_c().await.ok();
+        eprintln!("\n⚠ Force-exiting on second Ctrl+C.");
         std::process::exit(130);
     });
 
@@ -122,7 +149,8 @@ async fn main() -> Result<()> {
 
     let mut commands = Commands::new(config)
         .with_color(color_enabled)
-        .with_debug(cli.debug);
+        .with_debug(cli.debug)
+        .with_permission_mode(cli.mode.into());
 
     // ── Command dispatch ───────────────────────────────────
     match &cli.command {

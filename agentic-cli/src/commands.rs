@@ -67,6 +67,7 @@ pub struct Commands {
     orchestrator: Option<Orchestrator>,
     color_enabled: bool,
     debug_enabled: bool,
+    permission_mode: core_agentic::PermissionMode,
 }
 
 impl Commands {
@@ -77,6 +78,7 @@ impl Commands {
             orchestrator: None,
             color_enabled: true,
             debug_enabled: false,
+            permission_mode: core_agentic::PermissionMode::Default,
         }
     }
 
@@ -88,6 +90,11 @@ impl Commands {
 
     pub fn with_debug(mut self, enabled: bool) -> Self {
         self.debug_enabled = enabled;
+        self
+    }
+
+    pub fn with_permission_mode(mut self, mode: core_agentic::PermissionMode) -> Self {
+        self.permission_mode = mode;
         self
     }
 
@@ -112,6 +119,10 @@ impl Commands {
         let mut orchestrator = Orchestrator::new(provider, tools);
         orchestrator.set_model(model_name);
 
+        // Wire the process-global cancel flag so Ctrl+C in main.rs flips
+        // the same atomic the orchestrator polls between turns.
+        orchestrator.set_cancel_handle(crate::cancel_flag());
+
         // Assemble effective system prompt:
         //   default baseline  +  AGENT.md from cwd  +  config-provided override
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -131,6 +142,15 @@ impl Commands {
             self.config.system_prompt.as_deref(),
         );
         orchestrator.set_system_prompt(assembled);
+
+        // Apply permission mode (Default / Plan / Yolo).
+        orchestrator.set_permission_mode(self.permission_mode);
+        if self.permission_mode != core_agentic::PermissionMode::Default {
+            tracing::info!(
+                mode = %self.permission_mode,
+                "Permission mode active"
+            );
+        }
 
         orchestrator.set_confirmation_handler(|request| {
             if ALWAYS_CONFIRM.load(Ordering::Relaxed) {
@@ -515,6 +535,9 @@ impl Commands {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Orchestrator not initialized"))?;
 
+        // Fresh run: clear any pending cancel from a previous invocation.
+        orchestrator.reset_cancel();
+
         let pb = ProgressBar::new_spinner();
         pb.set_style(
             ProgressStyle::default_spinner()
@@ -569,6 +592,7 @@ impl Commands {
             .orchestrator
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Orchestrator not initialized"))?;
+        orchestrator.reset_cancel();
 
         let result = orchestrator
             .run_stream(task, |chunk| {

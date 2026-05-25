@@ -59,6 +59,16 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn schema(&self) -> ToolSchema;
     fn execute(&self, args: serde_json::Value) -> ToolResult<serde_json::Value>;
+
+    /// Whether this tool only reads state (no filesystem writes, no shell
+    /// commands, no network mutations). Read-only tools may be executed
+    /// concurrently with other read-only tools by the orchestrator.
+    ///
+    /// Defaults to `false` (assume mutating). Override in tools that are
+    /// known to be safe for parallel execution.
+    fn is_read_only(&self) -> bool {
+        false
+    }
 }
 
 impl ToolSchema {

@@ -30,6 +30,10 @@ impl Tool for ReadFileTool {
         "read_file"
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &str {
         "Read the contents of a file"
     }
