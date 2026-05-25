@@ -112,6 +112,26 @@ impl Commands {
         let mut orchestrator = Orchestrator::new(provider, tools);
         orchestrator.set_model(model_name);
 
+        // Assemble effective system prompt:
+        //   default baseline  +  AGENT.md from cwd  +  config-provided override
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let project_instructions =
+            core_agentic::load_project_instructions(&cwd).map(|(path, content)| {
+                tracing::info!(
+                    path = %path.display(),
+                    bytes = content.len(),
+                    "Loaded project instructions"
+                );
+                content
+            });
+
+        let assembled = core_agentic::assemble_system_prompt(
+            None, // use DEFAULT_SYSTEM_PROMPT
+            project_instructions.as_deref(),
+            self.config.system_prompt.as_deref(),
+        );
+        orchestrator.set_system_prompt(assembled);
+
         orchestrator.set_confirmation_handler(|request| {
             if ALWAYS_CONFIRM.load(Ordering::Relaxed) {
                 return true;

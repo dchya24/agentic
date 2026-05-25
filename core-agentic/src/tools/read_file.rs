@@ -2,14 +2,26 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
+use crate::file_tracker::FileTracker;
 use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 
-pub struct ReadFileTool;
+pub struct ReadFileTool {
+    tracker: Option<Arc<FileTracker>>,
+}
 
 impl ReadFileTool {
     pub fn new() -> Self {
-        Self
+        Self { tracker: None }
+    }
+
+    /// Build a [`ReadFileTool`] that records mtimes into a shared
+    /// [`FileTracker`] for staleness detection in edit_file.
+    pub fn with_tracker(tracker: Arc<FileTracker>) -> Self {
+        Self {
+            tracker: Some(tracker),
+        }
     }
 }
 
@@ -113,6 +125,11 @@ impl Tool for ReadFileTool {
 
         let content = std::fs::read_to_string(path)
             .map_err(|e| ToolError::new(format!("Failed to read file: {}", e)))?;
+
+        // Record mtime so edit_file can detect external modifications.
+        if let Some(t) = &self.tracker {
+            t.mark_read(path);
+        }
 
         let total_lines = content.lines().count();
 

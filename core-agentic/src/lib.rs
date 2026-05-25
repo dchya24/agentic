@@ -18,6 +18,8 @@ pub mod tool_registry;
 pub mod mcp;
 pub mod tools;
 pub mod planner;
+pub mod prompts;
+pub mod file_tracker;
 
 // Re-export main types for public API
 pub use agent::{Agent, AgentConfig};
@@ -35,6 +37,11 @@ pub use mcp::{
 };
 pub use planner::{PlannerAgent, PlannerConfig, Plan, Step, PlanStatus, StepStatus, PlanResult};
 pub use tool_registry::ToolRegistry;
+pub use prompts::{
+    assemble_system_prompt, find_project_instructions, load_project_instructions,
+    DEFAULT_SYSTEM_PROMPT, PROJECT_INSTRUCTION_FILES,
+};
+pub use file_tracker::{FileTracker, Freshness};
 
 // Re-export tool implementations
 pub use tools::{
