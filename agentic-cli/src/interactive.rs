@@ -131,12 +131,31 @@ fn start_spinner(message: &str) -> ProgressBar {
     pb.set_style(
         ProgressStyle::default_spinner()
             .tick_strings(SPINNER_FRAMES)
-            .template("{spinner:.cyan} {msg:.dim}")
+            .template("  {spinner:.cyan} {msg:.dim}")
             .unwrap(),
     );
     pb.set_message(message.to_string());
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
     pb
+}
+
+// ── Layout helpers ──────────────────────────────────────────
+
+/// Detect terminal width, falling back to 80 cols.
+fn term_width() -> usize {
+    crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(80)
+        .max(40)
+}
+
+/// Full-width horizontal rule.
+fn rule(ch: char) -> String {
+    let mut s = String::with_capacity(term_width() * 3);
+    for _ in 0..term_width() {
+        s.push(ch);
+    }
+    s
 }
 
 // ── Agentic Completer ───────────────────────────────────────
@@ -580,49 +599,96 @@ impl AgenticPrompt {
             provider: model_info.provider.clone(),
         }
     }
+
+    /// Build the prompt right-side info string, truncating to fit
+    /// within `max_width` visible characters.
+    fn build_right_info(&self, max_width: usize) -> String {
+        let branch_part = match &self.git_branch {
+            Some(b) => format!(" \u{1f4cc}{}", b),
+            None => String::new(),
+        };
+        let info = format!(
+            "{} {}{}",
+            self.provider, self.model, branch_part
+        );
+
+        if info.len() > max_width {
+            // Progressive truncation: drop branch, then truncate model
+            let no_branch = format!("{} {}", self.provider, self.model);
+            if no_branch.len() <= max_width {
+                no_branch
+            } else if self.model.len() + 3 <= max_width {
+                format!("...{}", &self.model[self.model.len() - (max_width - 3)..])
+            } else {
+                format!("{:.w$}", info, w = max_width)
+            }
+        } else {
+            info
+        }
+    }
 }
 
 impl Prompt for AgenticPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
-        Cow::Borrowed("")
+        let dim = AnsiColor::DarkGray.prefix().to_string();
+        let reset = Style::new().prefix().to_string();
+        let cyan = AnsiColor::Cyan.prefix().to_string();
+
+        // Single-line prompt: dirname>
+        // Responsive: uses current terminal width to decide how much to show.
+        let w = term_width();
+        // Reserve ~40 chars for the right-side info + input area
+        let max_dir = w.saturating_sub(40).max(10).min(self.dir_name.len());
+        let dir_display = if self.dir_name.len() > max_dir {
+            format!("...{}", &self.dir_name[self.dir_name.len() - max_dir + 3..])
+        } else {
+            self.dir_name.clone()
+        };
+
+        let left = format!(
+            "{}{}{}{}>{} ",
+            dim, dir_display, reset, cyan, reset
+        );
+        Cow::Owned(left)
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
-        Cow::Borrowed("")
+        let w = term_width();
+        // Reserve space for left prompt + some input area
+        let left_len = self.dir_name.len().min(w.saturating_sub(40).max(10)) + 3; // "dir> "
+        let max_right = w.saturating_sub(left_len).saturating_sub(2).max(0);
+
+        let info = self.build_right_info(max_right);
+        if info.is_empty() {
+            return Cow::Borrowed("");
+        }
+
+        let dim = AnsiColor::DarkGray.prefix().to_string();
+        let reset = Style::new().prefix().to_string();
+
+        let right = format!(
+            "{}{}{}",
+            dim, info, reset
+        );
+        Cow::Owned(right)
     }
 
     fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'_, str> {
-        let branch = match &self.git_branch {
-            Some(b) => format!(" {}{}{}", AnsiColor::Green.prefix(), b, Style::new().prefix()),
-            None => String::new(),
-        };
-        let styled = format!(
-            "\n{}\u{256d}\u{2500}\u{2500} {}{}{} {}-- {}{}{} {}({}{})\n{}\u{2570}\u{2500} {}>{} ",
-            AnsiColor::DarkGray.prefix(),
-            self.dir_name,
-            branch,
-            Style::new().prefix(),
-            AnsiColor::DarkGray.prefix(),
-            AnsiColor::Yellow.prefix(),
-            self.model,
-            Style::new().prefix(),
-            AnsiColor::DarkGray.prefix(),
-            AnsiColor::DarkGray.prefix(),
-            self.provider,
-            AnsiColor::DarkGray.prefix(),
-            AnsiColor::Cyan.prefix(),
-            Style::new().prefix()
-        );
-        Cow::Owned(styled)
+        // Left empty so that left + right layout is used instead.
+        Cow::Borrowed("")
     }
 
     fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
         let styled = format!(
-            "{}\u{2502}   {}",
+            "{}   {}",
             AnsiColor::DarkGray.prefix(),
             Style::new().prefix()
         );
         Cow::Owned(styled)
+    }
+
+    fn right_prompt_on_last_line(&self) -> bool {
+        true
     }
 
     fn render_prompt_history_search_indicator(
@@ -840,6 +906,7 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                 });
                                 stats.increment_messages();
 
+                                print_turn_separator();
                                 let pb = start_spinner("Planning...");
                                 let start = Instant::now();
                                 if let Err(e) =
@@ -882,6 +949,10 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                             timestamp: chrono::Local::now(),
                         });
                         stats.increment_messages();
+
+                        // Visual break between user input (drawn by reedline)
+                        // and the assistant turn.
+                        print_turn_separator();
 
                         let pb = start_spinner("Thinking...");
                         let start = Instant::now();
@@ -1022,51 +1093,62 @@ fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
         .display()
         .to_string();
 
+    let dim = "\x1b[2m";
+    let cyan = "\x1b[1;36m";
+    let yellow = "\x1b[33m";
+    let reset = "\x1b[0m";
+
     println!();
-    println!("  \x1b[1m\x1b[36m\u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}\x1b[0m");
-    println!("  \x1b[1m\x1b[36m\u{2551}            \u{1f916} Agentic Interactive Mode               \u{2551}\x1b[0m");
-    println!("  \x1b[1m\x1b[36m\u{2560}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2563}\x1b[0m");
+    println!("{cyan}{}{reset}", rule('\u{2501}'));
     println!(
-        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  \x1b[2m\u{1f4c2} {}\x1b[0m",
-        pad_str(&cwd, 52)
+        "  {cyan}\u{1f916} Agentic{reset}  {dim}interactive mode \u{2014} type {reset}{yellow}/help{reset}{dim} for commands, {reset}{yellow}@{reset}{dim} to reference files{reset}"
     );
+    println!("{cyan}{}{reset}", rule('\u{2501}'));
+    println!("  {dim}\u{1f4c2} {}{reset}", cwd);
     println!(
-        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  \x1b[33m\u{26a1} {} \x1b[2m/ {}\x1b[0m",
-        pad_str(&format!("Provider: {}", model_info.provider), 25),
-        pad_str(&format!("Model: {}", model_info.model), 25)
+        "  {yellow}\u{26a1} {}{reset}{dim} / {reset}{yellow}{}{reset}",
+        model_info.provider, model_info.model
     );
-    println!("  \x1b[1m\x1b[36m\u{2560}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2563}\x1b[0m");
-    println!(
-        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  /help    Show commands                              \x1b[1m\x1b[36m\u{2551}\x1b[0m"
-    );
-    println!(
-        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  /tools   List available tools                        \x1b[1m\x1b[36m\u{2551}\x1b[0m"
-    );
-    println!(
-        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  /stats   Show session statistics                     \x1b[1m\x1b[36m\u{2551}\x1b[0m"
-    );
-    println!(
-        "  \x1b[1m\x1b[36m\u{2551}\x1b[0m  /quit    Exit (Ctrl+D)                               \x1b[1m\x1b[36m\u{2551}\x1b[0m"
-    );
-    println!("  \x1b[1m\x1b[36m\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}\x1b[0m");
+    println!("{dim}{}{reset}", rule('\u{2500}'));
     println!();
 
     print_status_bar(model_info, stats);
+}
+
+/// Light separator drawn between a user turn and the assistant response.
+fn print_turn_separator() {
+    let dim = "\x1b[2m";
+    let reset = "\x1b[0m";
+    println!();
+    println!("{dim}{}{reset}", rule('\u{2500}'));
+    println!();
 }
 
 fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
+    let dim = "\x1b[2m";
+    let yellow = "\x1b[33m";
+    let cyan = "\x1b[36m";
+    let magenta = "\x1b[35m";
+    let green = "\x1b[32m";
+    let reset = "\x1b[0m";
+    let sep = format!("{dim} \u{2502} {reset}");
+
     println!(
-        "  \x1b[2m\u{250c}\u{2500} \x1b[33m\u{26a1} {} {}\x1b[2m \u{2500}\u{2500}\u{2500} \x1b[36m\u{1f4ac} {} msgs\x1b[2m \u{2500}\u{2500}\u{2500} \x1b[35m\u{1f4ca} tokens: {} in / {} out\x1b[2m \u{2500}\u{2500}\u{2500} \x1b[32m\u{23f1} {}\x1b[2m \u{2500}\u{2510}\x1b[0m",
+        "  {yellow}\u{26a1} {} {}{reset}{}{cyan}\u{1f4ac} {} msgs{reset}{}{magenta}\u{1f4ca} {} in / {} out{reset}{}{green}\u{23f1} {}{reset}",
         model_info.provider,
         model_info.model,
+        sep,
         stats.messages_sent(),
+        sep,
         in_tok,
         out_tok,
+        sep,
         stats.elapsed_str(),
     );
+    println!("{dim}{}{reset}", rule('\u{2500}'));
     println!();
 }
 
@@ -1074,18 +1156,30 @@ fn print_response_summary(stats: &SessionStats, ms: u128) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
+    let dim = "\x1b[2m";
+    let green = "\x1b[32m";
+    let reset = "\x1b[0m";
+    let sep = format!("{dim} \u{2502} {reset}");
+
     println!();
+    println!("{dim}{}{reset}", rule('\u{2500}'));
     println!(
-        "  \x1b[2m\u{250c}\u{2500} \x1b[32m\u{2713} Done\x1b[2m \u{2500}\u{2500}\u{2500} \u{23f1} {}.{:03}s \u{2500}\u{2500}\u{2500} \u{1f4ac} {} msgs \u{2500}\u{2500}\u{2500} \u{1f4ca} {} in / {} out \u{2500}\u{2500}\u{2500} \u{23f1} session: {} \u{2500}\u{2510}\x1b[0m",
+        "  {green}\u{2713} Done{reset}{}{dim}\u{23f1} {}.{:03}s{reset}{}{dim}\u{1f4ac} {} msgs{reset}{}{dim}\u{1f4ca} {} in / {} out{reset}{}{dim}session: {}{reset}",
+        sep,
         ms / 1000,
         ms % 1000,
+        sep,
         stats.messages_sent(),
+        sep,
         in_tok,
         out_tok,
+        sep,
         stats.elapsed_str(),
     );
+    println!("{dim}{}{reset}", rule('\u{2500}'));
     println!();
 }
+
 
 fn print_help() {
     println!();
@@ -1228,27 +1322,23 @@ fn print_goodbye(stats: &SessionStats) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
+    let dim = "\x1b[2m";
+    let cyan = "\x1b[1;36m";
+    let reset = "\x1b[0m";
+
     println!();
-    println!("  \x1b[1m\x1b[36m\u{1f4ca} Session Summary:\x1b[0m");
-    println!("  \x1b[2m\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\x1b[0m");
+    println!("{dim}{}{reset}", rule('\u{2500}'));
+    println!("  {cyan}\u{1f4ca} Session Summary{reset}");
     println!(
-        "  \u{1f4ac} Messages: {}  \u{2502}  \u{23f1} Duration: {}  \u{2502}  \u{1f4ca} Tokens: {} in / {} out",
+        "  {dim}\u{1f4ac} {} msgs  \u{2502}  \u{23f1} {}  \u{2502}  \u{1f4ca} {} in / {} out{reset}",
         stats.messages_sent(),
         stats.elapsed_str(),
         in_tok,
         out_tok,
     );
-    println!("  \x1b[2m\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\x1b[0m");
+    println!("{dim}{}{reset}", rule('\u{2500}'));
     println!();
-    println!("  \x1b[36m\u{1f44b} Goodbye!\x1b[0m\n");
-}
-
-fn pad_str(s: &str, max: usize) -> String {
-    if s.len() > max {
-        format!("...{}", &s[s.len() - max + 3..])
-    } else {
-        format!("{}{}", s, " ".repeat(max - s.len()))
-    }
+    println!("  {cyan}\u{1f44b} Goodbye!{reset}\n");
 }
 
 // ── Save/Load conversation ──────────────────────────────────
