@@ -109,12 +109,25 @@ impl Commands {
             .to_provider_config()
             .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
         let model_name = provider_config.default_model.clone();
-        let provider = Arc::new(core_agentic::OpenAIProvider::new(provider_config));
+        let provider: Arc<dyn core_agentic::LLMProvider> =
+            Arc::new(core_agentic::OpenAIProvider::new(provider_config));
 
         let tools = ToolRegistry::new();
         for tool in core_agentic::tools::builtin_tools() {
             tools.register(tool);
         }
+
+        // Register the subagent tool. It needs the provider + tool registry
+        // (so subagents inherit the same toolset) and the parent's cancel
+        // flag (so a Ctrl+C kills children too).
+        let subagent = core_agentic::SpawnSubagentTool::new(
+            provider.clone(),
+            tools.clone(),
+            model_name.clone(),
+        )
+        .with_mode(self.permission_mode)
+        .with_cancel(crate::cancel_flag());
+        tools.register(Box::new(subagent));
 
         let mut orchestrator = Orchestrator::new(provider, tools);
         orchestrator.set_model(model_name);
@@ -141,7 +154,14 @@ impl Commands {
             project_instructions.as_deref(),
             self.config.system_prompt.as_deref(),
         );
-        orchestrator.set_system_prompt(assembled);
+
+        // Append cross-session memory (user-global + project-local) if present.
+        let memory_section = core_agentic::assemble_memory_section(&cwd);
+        let final_prompt = match memory_section {
+            Some(mem) => format!("{}\n\n---\n# Persistent Memory\n\n{}", assembled, mem),
+            None => assembled,
+        };
+        orchestrator.set_system_prompt(final_prompt);
 
         // Apply permission mode (Default / Plan / Yolo).
         orchestrator.set_permission_mode(self.permission_mode);

@@ -58,6 +58,13 @@ pub struct Orchestrator {
     /// batch boundary returns `AgenticError::Cancelled`. Shared via Arc so
     /// callers (CLI signal handlers) can flip it asynchronously.
     cancel: Arc<AtomicBool>,
+    /// When `true`, autocompact will ask the LLM to summarize older
+    /// messages instead of using the heuristic string truncation.
+    /// Falls back to the heuristic on provider error.
+    auto_compact_with_llm: bool,
+    /// Optional model name used for summarization calls. Defaults to the
+    /// orchestrator's main `model` when unset.
+    summarizer_model: Option<String>,
 }
 
 impl Orchestrator {
@@ -77,6 +84,8 @@ impl Orchestrator {
             auto_compact: true,
             keep_recent_tool_results: DEFAULT_KEEP_RECENT_TOOL_RESULTS,
             cancel: Arc::new(AtomicBool::new(false)),
+            auto_compact_with_llm: false,
+            summarizer_model: None,
         }
     }
 
@@ -127,6 +136,19 @@ impl Orchestrator {
     /// multiple orchestrator instances.
     pub fn set_cancel_handle(&mut self, cancel: Arc<AtomicBool>) {
         self.cancel = cancel;
+    }
+
+    /// Enable LLM-based summarization for autocompact. When enabled, the
+    /// orchestrator asks the provider to summarize older messages on
+    /// compaction; on provider error it falls back to the heuristic.
+    pub fn set_auto_compact_with_llm(&mut self, enabled: bool) {
+        self.auto_compact_with_llm = enabled;
+    }
+
+    /// Override the model used for summarization. Defaults to the main
+    /// model. Setting a cheaper/faster model here is recommended.
+    pub fn set_summarizer_model(&mut self, model: impl Into<String>) {
+        self.summarizer_model = Some(model.into());
     }
 
     /// Reset the cancel flag (e.g. between REPL inputs).
@@ -206,12 +228,51 @@ impl Orchestrator {
     }
 
     /// Run autocompact if configured and memory is over threshold.
-    /// This is Layer 3 of context compression (currently a heuristic; LLM-based
-    /// summarization can be wired in later).
+    /// This is Layer 3 of context compression.
+    ///
+    /// When `auto_compact_with_llm` is set, asks the LLM provider for a
+    /// real summary; on provider error falls back to the heuristic
+    /// `Memory::compact()` so the loop never blocks on summarization.
     fn maybe_autocompact(&self) {
         if !self.auto_compact {
             return;
         }
+        // Cheap check first to avoid prompt construction work.
+        {
+            let mem = self.memory.lock().unwrap();
+            if !mem.needs_compaction() {
+                return;
+            }
+        }
+
+        if self.auto_compact_with_llm {
+            // Build the prompt before calling the LLM (no lock held during
+            // the network call).
+            let prompt = {
+                let mem = self.memory.lock().unwrap();
+                mem.build_summarization_prompt()
+            };
+            if let Some(prompt) = prompt {
+                match self.summarize_via_provider(&prompt) {
+                    Ok(summary) => {
+                        let mut mem = self.memory.lock().unwrap();
+                        let r = mem.compact_with_summary(&summary);
+                        tracing::info!(
+                            summarized = r.summarized_count,
+                            tokens_before = r.tokens_before,
+                            tokens_after = r.tokens_after,
+                            "Memory autocompacted via LLM"
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "LLM summarization failed; falling back to heuristic");
+                    }
+                }
+            }
+        }
+
+        // Heuristic path (default and fallback).
         let mut mem = self.memory.lock().unwrap();
         if mem.needs_compaction() {
             let result = mem.compact();
@@ -219,9 +280,30 @@ impl Orchestrator {
                 summarized = result.summarized_count,
                 tokens_before = result.tokens_before,
                 tokens_after = result.tokens_after,
-                "Memory autocompacted"
+                "Memory autocompacted (heuristic)"
             );
         }
+    }
+
+    /// Issue a one-shot LLM call to summarize older context. Uses the
+    /// summarizer model if set, otherwise the main model.
+    fn summarize_via_provider(&self, prompt: &str) -> Result<String, AgenticError> {
+        let model = self
+            .summarizer_model
+            .clone()
+            .unwrap_or_else(|| self.model.clone());
+        let messages = vec![ChatMessageRequest {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+        }];
+        let request = ChatRequest::new(&model, messages);
+        let response = self
+            .provider
+            .chat(request)
+            .map_err(|e| AgenticError::Provider(e.to_string()))?;
+        Ok(response.message.content.unwrap_or_default())
     }
 
     fn build_messages(&self) -> Vec<ChatMessageRequest> {

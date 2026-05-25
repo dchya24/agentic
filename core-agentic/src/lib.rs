@@ -20,6 +20,7 @@ pub mod tools;
 pub mod planner;
 pub mod prompts;
 pub mod file_tracker;
+pub mod memory_file;
 
 // Re-export main types for public API
 pub use agent::{Agent, AgentConfig};
@@ -42,11 +43,15 @@ pub use prompts::{
     DEFAULT_SYSTEM_PROMPT, PROJECT_INSTRUCTION_FILES,
 };
 pub use file_tracker::{FileTracker, Freshness};
+pub use memory_file::{
+    append_project_memory, append_user_memory, assemble_memory_section, find_project_memory,
+    load_project_memory, load_user_memory, user_memory_path, PROJECT_MEMORY_FILE,
+};
 
 // Re-export tool implementations
 pub use tools::{
-    EditFileTool, GlobTool, GrepTool, ListFilesTool, ReadFileTool, RunCommandTool,
-    WriteFileTool, SearchFilesTool, RunScriptTool,
+    EditFileTool, FetchTool, GlobTool, GrepTool, ListFilesTool, ReadFileTool, RunCommandTool,
+    WriteFileTool, SearchFilesTool, RunScriptTool, UpdateMemoryTool, SpawnSubagentTool,
 };
 
 // Re-export provider implementations
