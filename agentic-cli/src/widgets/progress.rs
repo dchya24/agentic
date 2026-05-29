@@ -1,4 +1,6 @@
-//! Progress indicator with animation
+//! Shared progress state for animations.
+//!
+//! Used by both TUI (rendered as a widget) and CLI (rendered inline).
 
 use std::time::Instant;
 
@@ -88,7 +90,7 @@ impl ProgressState {
         }
     }
 
-    /// Render progress bar (for determinate progress)
+    /// Render progress bar string (for determinate progress)
     pub fn progress_bar(&self, width: usize) -> String {
         if let Some(pct) = self.percentage {
             let filled = (width as f32 * pct as f32 / 100.0) as usize;
@@ -106,7 +108,7 @@ impl ProgressState {
             } else {
                 pos
             };
-            
+
             let mut bar = PROGRESS_EMPTY.repeat(width);
             if actual_pos < width {
                 let bytes_per_char = PROGRESS_EMPTY.len();
@@ -120,7 +122,7 @@ impl ProgressState {
         }
     }
 
-    /// Get full progress display string
+    /// Get full progress display string (plain text, for non-widget usage)
     pub fn display(&self) -> String {
         if !self.active {
             return String::new();
@@ -136,12 +138,10 @@ impl ProgressState {
 
         if let Some(pct) = self.percentage {
             format!("{} {} [{}] {}%", spinner, msg, self.progress_bar(20), pct)
+        } else if elapsed.is_empty() {
+            format!("{} {}", spinner, msg)
         } else {
-            if elapsed.is_empty() {
-                format!("{} {}", spinner, msg)
-            } else {
-                format!("{} {} ({})", spinner, msg, elapsed)
-            }
+            format!("{} {} ({})", spinner, msg, elapsed)
         }
     }
 }
@@ -160,11 +160,11 @@ mod tests {
     fn test_spinner_cycle() {
         let mut progress = ProgressState::new();
         progress.start();
-        
+
         let first = progress.spinner();
         progress.tick();
         let second = progress.spinner();
-        
+
         assert_ne!(first, second);
     }
 
@@ -173,7 +173,7 @@ mod tests {
         let mut progress = ProgressState::new();
         progress.start();
         progress.set_percentage(50);
-        
+
         let bar = progress.progress_bar(10);
         assert!(bar.contains(PROGRESS_FILLED));
         assert!(bar.contains(PROGRESS_EMPTY));
@@ -184,8 +184,18 @@ mod tests {
         let mut progress = ProgressState::new();
         progress.start();
         progress.set_message("Loading...".to_string());
-        
+
         let display = progress.display();
         assert!(display.contains("Loading..."));
+    }
+
+    #[test]
+    fn test_progress_bar_indeterminate() {
+        let mut progress = ProgressState::new();
+        progress.start();
+
+        let bar = progress.progress_bar(20);
+        // Should contain exactly one filled block
+        assert!(bar.contains(PROGRESS_FILLED));
     }
 }

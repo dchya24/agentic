@@ -11,7 +11,7 @@ use ratatui::{
 use super::app::{App, MessageRole};
 use super::dropdown::DropdownType;
 use super::input::{render_input, render_placeholder};
-use super::markdown_widget::{MarkdownContent, role_prefix};
+use crate::widgets::markdown::{MarkdownContent, role_prefix};
 
 /// Padding configuration
 const PADDING_HORIZONTAL: u16 = 2;

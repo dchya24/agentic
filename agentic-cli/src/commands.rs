@@ -544,6 +544,9 @@ impl Commands {
     // ── Run task ────────────────────────────────────────────
 
     pub async fn run(&mut self, task: &str) -> Result<()> {
+        use crate::widgets::{components, inline, markdown as md_widget};
+        use ratatui::style::Color as RColor;
+
         // Expand @file references before sending to AI
         let expanded = crate::file_ref::expand_file_refs(task);
         let task = &expanded;
@@ -558,39 +561,46 @@ impl Commands {
         // Fresh run: clear any pending cancel from a previous invocation.
         orchestrator.reset_cancel();
 
+        // Simple spinner during streaming. We accumulate chunks and render
+        // the full markdown response once when done — no live preview.
         let pb = ProgressBar::new_spinner();
         pb.set_style(
             ProgressStyle::default_spinner()
                 .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-                .template("{spinner:.dim} {msg}")
+                .template("  {spinner:.cyan} {msg}")
                 .unwrap(),
         );
-        pb.set_message("Thinking...");
-
-        let start = std::time::Instant::now();
+        pb.set_message("Thinking…");
+        pb.enable_steady_tick(std::time::Duration::from_millis(80));
 
         let result = orchestrator
-            .run_stream(task, |chunk| {
-                if !pb.is_finished() {
-                    pb.finish_and_clear();
-                }
-                print_chunk(&chunk, self.color_enabled);
+            .run_stream(task, |_chunk| {
+                // Discard chunks; we render the final result once at the end.
             })
             .await;
 
-        let elapsed = start.elapsed();
+        pb.finish_and_clear();
 
         match result {
             Ok(final_result) => {
-                println!("\n");
-                print_markdown_header("Final Result");
-                render_markdown(&final_result).ok();
-                print_response_stats(elapsed.as_millis());
+                // Section header for the response
+                inline::print_blank();
+                inline::print_line(&components::section_header(
+                    "🤖",
+                    "Response",
+                    RColor::Rgb(64, 224, 208),
+                ));
+                inline::print_blank();
+
+                // Render the final markdown beautifully via shared widgets
+                let parsed = md_widget::MarkdownContent::parse(&final_result);
+                inline::print_lines(&parsed.lines);
+                inline::print_blank();
             }
             Err(e) => {
-                pb.finish_and_clear();
-                print_error(&format!("Error: {}", e), self.color_enabled);
-                print_response_stats(elapsed.as_millis());
+                inline::print_blank();
+                inline::print_line(&components::error_badge(&e.to_string()));
+                inline::print_blank();
             }
         }
 

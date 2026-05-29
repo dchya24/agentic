@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::events::EventEmitter;
 use crate::memory::{Memory, Message, MessageRole};
-use crate::providers::{ChatMessageRequest, ChatRequest, LLMProvider};
+use crate::providers::{ChatMessageRequest, ChatRequest, LLMProvider, ToolCallFunction, ToolCallResponse};
 use crate::safety::{ConfirmationRequest, Safety};
 use crate::tool_registry::ToolRegistry;
 use crate::AgenticError;
@@ -312,10 +312,11 @@ impl Orchestrator {
     }
 
     fn handle_tool_calls(&self, content: &str, tool_calls: &[(String, String, String)]) {
+        let tool_call_responses = build_tool_call_responses(tool_calls);
         self.memory
             .lock()
             .unwrap()
-            .add_message(Message::assistant(content));
+            .add_message(Message::assistant_with_tool_calls(content, tool_call_responses));
 
         for (tc_id, tc_name, tc_args_str) in tool_calls {
             let args: serde_json::Value =
@@ -385,10 +386,11 @@ impl Orchestrator {
         content: &str,
         tool_calls: &[(String, String, String)],
     ) {
+        let tool_call_responses = build_tool_call_responses(tool_calls);
         self.memory
             .lock()
             .unwrap()
-            .add_message(Message::assistant(content));
+            .add_message(Message::assistant_with_tool_calls(content, tool_call_responses));
 
         // Outcome of the safety+confirmation pre-pass for a single call.
         enum Slot {
@@ -780,12 +782,38 @@ pub(crate) fn build_request_messages(
                 m.content.clone()
             };
 
+            // Reattach tool_calls on assistant messages so tool results
+            // that follow can be matched by id (per OpenAI spec).
+            let tool_calls = if matches!(m.role, MessageRole::Assistant) {
+                m.metadata.tool_calls.clone()
+            } else {
+                vec![]
+            };
+
             ChatMessageRequest {
                 role: role.to_string(),
                 content,
                 tool_call_id,
-                tool_calls: vec![],
+                tool_calls,
             }
+        })
+        .collect()
+}
+
+/// Convert a list of `(id, name, arguments_json_string)` triples into
+/// `ToolCallResponse`s suitable for storing on an assistant message.
+pub(crate) fn build_tool_call_responses(
+    tool_calls: &[(String, String, String)],
+) -> Vec<ToolCallResponse> {
+    tool_calls
+        .iter()
+        .map(|(id, name, args)| ToolCallResponse {
+            id: id.clone(),
+            call_type: "function".to_string(),
+            function: ToolCallFunction {
+                name: name.clone(),
+                arguments: args.clone(),
+            },
         })
         .collect()
 }

@@ -10,6 +10,10 @@
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use nu_ansi_term::{Color as AnsiColor, Style};
+use ratatui::{
+    style::{Color, Modifier, Style as RStyle},
+    text::{Line, Span as RSpan},
+};
 use reedline::{
     default_emacs_keybindings, Completer, DescriptionMenu, EditCommand, Emacs, FileBackedHistory,
     Highlighter, Hinter, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
@@ -17,12 +21,14 @@ use reedline::{
     Span, StyledText, Suggestion, ValidationResult, Validator,
 };
 use std::borrow::Cow;
-use std::io::Write;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::commands::Commands;
+use crate::widgets::inline;
+use crate::widgets::components;
+use crate::widgets::spinner;
 
 // ── Session statistics ──────────────────────────────────────
 
@@ -147,15 +153,6 @@ fn term_width() -> usize {
         .map(|(w, _)| w as usize)
         .unwrap_or(80)
         .max(40)
-}
-
-/// Full-width horizontal rule.
-fn rule(ch: char) -> String {
-    let mut s = String::with_capacity(term_width() * 3);
-    for _ in 0..term_width() {
-        s.push(ch);
-    }
-    s
 }
 
 // ── Agentic Completer ───────────────────────────────────────
@@ -832,14 +829,19 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                         match action {
                             ReplAction::Quit => break,
                             ReplAction::Clear => {
-                                print!("\x1b[2J\x1b[H");
-                                std::io::stdout().flush()?;
+                                crossterm::execute!(
+                                    std::io::stdout(),
+                                    crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                                    crossterm::cursor::MoveTo(0, 0)
+                                ).ok();
                                 print_status_bar(&model_info, &stats);
                             }
                             ReplAction::ClearHistory => {
                                 conversation.clear();
                                 commands.clear_memory();
-                                println!("\n  \x1b[32m\u{2713} Conversation cleared.\x1b[0m\n");
+                                inline::print_blank();
+                                inline::print_line(&components::success_badge("Conversation cleared."));
+                                inline::print_blank();
                                 print_status_bar(&model_info, &stats);
                             }
                             ReplAction::Config => {
@@ -860,38 +862,59 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                             ReplAction::Load(file) => {
                                 if let Ok(entries) = load_conversation(&file) {
                                     conversation = entries;
-                                    println!(
-                                        "\n  \x1b[32m\u{2713} Conversation loaded from: {}\x1b[0m\n",
-                                        file
-                                    );
+                                    inline::print_blank();
+                                    inline::print_line(&components::success_badge(
+                                        &format!("Conversation loaded from: {}", file),
+                                    ));
+                                    inline::print_blank();
                                 }
                             }
                             ReplAction::Provider(name) => {
-                                println!(
-                                    "\n  \x1b[33m\u{26a0} Provider switching not yet supported in REPL.\x1b[0m"
-                                );
-                                println!("  Use: agentic config edit to change providers.\n");
+                                inline::print_blank();
+                                inline::print_line(&components::warning_badge(
+                                    "Provider switching not yet supported in REPL.",
+                                ));
+                                inline::print_line(&Line::from(vec![
+                                    RSpan::raw("  Use: "),
+                                    RSpan::styled(
+                                        "agentic config edit",
+                                        RStyle::default().add_modifier(Modifier::BOLD),
+                                    ),
+                                    RSpan::raw(" to change providers."),
+                                ]));
+                                inline::print_blank();
                                 let _ = &name;
                             }
                             ReplAction::Models => {
                                 if let Some((provider, model)) = commands.pick_model_interactive() {
-                                    println!(
-                                        "\n  \x1b[32m\u{2713} Switched to {} / {}\x1b[0m\n",
-                                        provider, model
-                                    );
+                                    inline::print_blank();
+                                    inline::print_line(&components::success_badge(
+                                        &format!("Switched to {} / {}", provider, model),
+                                    ));
+                                    inline::print_blank();
                                 }
                             }
                             ReplAction::ModelsSwitch(name) => {
                                 match commands.switch_model(&name) {
                                     Ok((provider, model)) => {
-                                        println!(
-                                            "\n  \x1b[32m\u{2713} Switched to {} / {}\x1b[0m\n",
-                                            provider, model
-                                        );
+                                        inline::print_blank();
+                                        inline::print_line(&components::success_badge(
+                                            &format!("Switched to {} / {}", provider, model),
+                                        ));
+                                        inline::print_blank();
                                     }
                                     Err(e) => {
-                                        println!("\n  \x1b[31m\u{2717} {}\x1b[0m", e);
-                                        println!("  Use \x1b[1m/models\x1b[0m to see available models.\n");
+                                        inline::print_blank();
+                                        inline::print_line(&components::error_badge(&e.to_string()));
+                                        inline::print_line(&Line::from(vec![
+                                            RSpan::raw("  Use "),
+                                            RSpan::styled(
+                                                "/models",
+                                                RStyle::default().add_modifier(Modifier::BOLD),
+                                            ),
+                                            RSpan::raw(" to see available models."),
+                                        ]));
+                                        inline::print_blank();
                                     }
                                 }
                             }
@@ -913,7 +936,9 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                     commands.run(&format!("Create a plan for: {}", goal)).await
                                 {
                                     pb.finish_and_clear();
-                                    eprintln!("\n  \x1b[31m\u{2717} Error: {}\x1b[0m\n", e);
+                                    inline::print_blank();
+                                    inline::print_line(&components::error_badge(&e.to_string()));
+                                    inline::print_blank();
                                 } else {
                                     pb.finish_and_clear();
                                     let elapsed = start.elapsed();
@@ -938,8 +963,11 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                     "exit" | "quit" | "q" => break,
                     "help" | "h" => print_help(),
                     "clear" => {
-                        print!("\x1b[2J\x1b[H");
-                        std::io::stdout().flush()?;
+                        crossterm::execute!(
+                            std::io::stdout(),
+                            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                            crossterm::cursor::MoveTo(0, 0)
+                        ).ok();
                         print_status_bar(&model_info, &stats);
                     }
                     _ => {
@@ -959,7 +987,9 @@ pub async fn run(mut commands: Commands) -> Result<()> {
 
                         if let Err(e) = commands.run(&input).await {
                             pb.finish_and_clear();
-                            eprintln!("\n  \x1b[31m\u{2717} Error: {}\x1b[0m\n", e);
+                            inline::print_blank();
+                            inline::print_line(&components::error_badge(&e.to_string()));
+                            inline::print_blank();
                         } else {
                             pb.finish_and_clear();
                             let elapsed = start.elapsed();
@@ -981,7 +1011,9 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                 }
             }
             Ok(Signal::CtrlC) => {
-                println!("\n  \x1b[33mUse /quit or Ctrl+D to exit.\x1b[0m\n");
+                inline::print_blank();
+                inline::print_line(&components::info_badge("Use /quit or Ctrl+D to exit."));
+                inline::print_blank();
                 continue;
             }
             Ok(Signal::CtrlD) => {
@@ -1057,35 +1089,56 @@ fn handle_slash_command(input: &str) -> Option<ReplAction> {
         "/mcp" => Some(ReplAction::Mcp),
         "/save" if !arg.is_empty() => Some(ReplAction::Save(arg)),
         "/save" => {
-            println!("\n  \x1b[33mUsage: /save <file>\x1b[0m\n");
+            inline::print_blank();
+            inline::print_line(&components::warning_badge("Usage: /save <file>"));
+            inline::print_blank();
             None
         }
         "/load" if !arg.is_empty() => Some(ReplAction::Load(arg)),
         "/load" => {
-            println!("\n  \x1b[33mUsage: /load <file>\x1b[0m\n");
+            inline::print_blank();
+            inline::print_line(&components::warning_badge("Usage: /load <file>"));
+            inline::print_blank();
             None
         }
         "/provider" if !arg.is_empty() => Some(ReplAction::Provider(arg)),
         "/provider" => {
-            println!("\n  \x1b[33mUsage: /provider <name>\x1b[0m\n");
+            inline::print_blank();
+            inline::print_line(&components::warning_badge("Usage: /provider <name>"));
+            inline::print_blank();
             None
         }
         "/models" | "/m" if !arg.is_empty() => Some(ReplAction::ModelsSwitch(arg)),
         "/models" | "/m" => Some(ReplAction::Models),
         "/plan" if !arg.is_empty() => Some(ReplAction::Plan(arg)),
         "/plan" => {
-            println!("\n  \x1b[33mUsage: /plan <goal>\x1b[0m\n");
+            inline::print_blank();
+            inline::print_line(&components::warning_badge("Usage: /plan <goal>"));
+            inline::print_blank();
             None
         }
         _ => {
-            println!("\n  \x1b[33mUnknown command: {}\x1b[0m", cmd);
-            println!("  Type \x1b[1m/help\x1b[0m for available commands.\n");
+            inline::print_blank();
+            inline::print_line(&components::error_badge(
+                &format!("Unknown command: {}", cmd),
+            ));
+            inline::print_line(&Line::from(vec![
+                RSpan::raw("  Type "),
+                RSpan::styled(
+                    "/help",
+                    RStyle::default()
+                        .fg(Color::Rgb(255, 215, 0))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                RSpan::raw(" for available commands."),
+            ]));
+            inline::print_blank();
             None
         }
     }
 }
 
-// ── Print helpers ───────────────────────────────────────────
+// ── Print helpers (using shared widgets) ────────────────────
 
 fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
     let cwd = std::env::current_dir()
@@ -1093,133 +1146,212 @@ fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
         .display()
         .to_string();
 
-    let dim = "\x1b[2m";
-    let cyan = "\x1b[1;36m";
-    let yellow = "\x1b[33m";
-    let reset = "\x1b[0m";
+    inline::print_blank();
 
-    println!();
-    println!("{cyan}{}{reset}", rule('\u{2501}'));
-    println!(
-        "  {cyan}\u{1f916} Agentic{reset}  {dim}interactive mode \u{2014} type {reset}{yellow}/help{reset}{dim} for commands, {reset}{yellow}@{reset}{dim} to reference files{reset}"
+    // Gradient banner title
+    let title = components::banner_title(
+        "  █▀▀█ █▀▀ █▀▀█ █▀█ ▀█▀ █ █▀▀   ▇ ▅ ▃",
+        Color::Rgb(255, 105, 180),
+        Color::Rgb(64, 224, 208),
     );
-    println!("{cyan}{}{reset}", rule('\u{2501}'));
-    println!("  {dim}\u{1f4c2} {}{reset}", cwd);
-    println!(
-        "  {yellow}\u{26a1} {}{reset}{dim} / {reset}{yellow}{}{reset}",
-        model_info.provider, model_info.model
+    inline::print_line(&title);
+    let subtitle = components::banner_title(
+        "  █▒░█ █▀▀ █▀▀█ █ █  █  █ █   ▉ ▅ ▁",
+        Color::Rgb(255, 105, 180),
+        Color::Rgb(64, 224, 208),
     );
-    println!("{dim}{}{reset}", rule('\u{2500}'));
-    println!();
+    inline::print_line(&subtitle);
+    inline::print_blank();
+
+    // Info panel
+    let info_lines = vec![
+        Line::from(vec![
+            RSpan::styled("📂 ", RStyle::default()),
+            RSpan::styled("cwd  ", RStyle::default().add_modifier(Modifier::DIM)),
+            RSpan::styled(cwd, RStyle::default().fg(Color::Rgb(180, 180, 200))),
+        ]),
+        Line::from(vec![
+            RSpan::styled("⚡ ", RStyle::default()),
+            RSpan::styled("model", RStyle::default().add_modifier(Modifier::DIM)),
+            RSpan::raw("  "),
+            RSpan::styled(
+                model_info.provider.clone(),
+                RStyle::default().fg(Color::Rgb(64, 224, 208)).add_modifier(Modifier::BOLD),
+            ),
+            RSpan::styled(" / ", RStyle::default().add_modifier(Modifier::DIM)),
+            RSpan::styled(
+                model_info.model.clone(),
+                RStyle::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            RSpan::styled("💡 ", RStyle::default()),
+            RSpan::styled("tip  ", RStyle::default().add_modifier(Modifier::DIM)),
+            RSpan::styled("type ", RStyle::default()),
+            RSpan::styled(
+                "/help",
+                RStyle::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD),
+            ),
+            RSpan::styled(" for commands, ", RStyle::default()),
+            RSpan::styled(
+                "@",
+                RStyle::default().fg(Color::Rgb(135, 206, 250)).add_modifier(Modifier::BOLD),
+            ),
+            RSpan::styled(" to reference files", RStyle::default()),
+        ]),
+    ];
+
+    let panel_lines = components::panel(
+        "Welcome",
+        &info_lines,
+        components::BoxStyle::Rounded,
+        Color::Rgb(100, 100, 140),
+    );
+    inline::print_lines(&panel_lines);
+    inline::print_blank();
 
     print_status_bar(model_info, stats);
 }
 
 /// Light separator drawn between a user turn and the assistant response.
 fn print_turn_separator() {
-    let dim = "\x1b[2m";
-    let reset = "\x1b[0m";
-    println!();
-    println!("{dim}{}{reset}", rule('\u{2500}'));
-    println!();
+    inline::print_blank();
+    inline::print_line(&components::dotted_separator(Color::Rgb(80, 80, 100)));
+    inline::print_blank();
 }
 
 fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
-    let dim = "\x1b[2m";
-    let yellow = "\x1b[33m";
-    let cyan = "\x1b[36m";
-    let magenta = "\x1b[35m";
-    let green = "\x1b[32m";
-    let reset = "\x1b[0m";
-    let sep = format!("{dim} \u{2502} {reset}");
-
-    println!(
-        "  {yellow}\u{26a1} {} {}{reset}{}{cyan}\u{1f4ac} {} msgs{reset}{}{magenta}\u{1f4ca} {} in / {} out{reset}{}{green}\u{23f1} {}{reset}",
-        model_info.provider,
-        model_info.model,
-        sep,
-        stats.messages_sent(),
-        sep,
-        in_tok,
-        out_tok,
-        sep,
-        stats.elapsed_str(),
+    let sep = RSpan::styled(
+        "  │  ",
+        RStyle::default().fg(Color::Rgb(60, 60, 80)),
     );
-    println!("{dim}{}{reset}", rule('\u{2500}'));
-    println!();
+
+    inline::print_line(&Line::from(vec![
+        RSpan::raw("  "),
+        RSpan::styled(
+            format!("⚡ {}", model_info.provider),
+            RStyle::default().fg(Color::Rgb(255, 215, 0)),
+        ),
+        RSpan::styled(
+            format!("/{}", model_info.model),
+            RStyle::default().fg(Color::Rgb(241, 196, 15)).add_modifier(Modifier::DIM),
+        ),
+        sep.clone(),
+        RSpan::styled(
+            format!("💬 {} msgs", stats.messages_sent()),
+            RStyle::default().fg(Color::Rgb(135, 206, 250)),
+        ),
+        sep.clone(),
+        RSpan::styled(
+            format!("📊 {} ↑ / {} ↓", in_tok, out_tok),
+            RStyle::default().fg(Color::Rgb(186, 85, 211)),
+        ),
+        sep,
+        RSpan::styled(
+            format!("⏱ {}", stats.elapsed_str()),
+            RStyle::default().fg(Color::Rgb(46, 204, 113)),
+        ),
+    ]));
+    inline::print_line(&components::dashed_separator(Color::Rgb(60, 60, 80)));
+    inline::print_blank();
 }
 
 fn print_response_summary(stats: &SessionStats, ms: u128) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
-    let dim = "\x1b[2m";
-    let green = "\x1b[32m";
-    let reset = "\x1b[0m";
-    let sep = format!("{dim} \u{2502} {reset}");
-
-    println!();
-    println!("{dim}{}{reset}", rule('\u{2500}'));
-    println!(
-        "  {green}\u{2713} Done{reset}{}{dim}\u{23f1} {}.{:03}s{reset}{}{dim}\u{1f4ac} {} msgs{reset}{}{dim}\u{1f4ca} {} in / {} out{reset}{}{dim}session: {}{reset}",
-        sep,
-        ms / 1000,
-        ms % 1000,
-        sep,
-        stats.messages_sent(),
-        sep,
-        in_tok,
-        out_tok,
-        sep,
-        stats.elapsed_str(),
+    let sep = RSpan::styled(
+        "  │  ",
+        RStyle::default().fg(Color::Rgb(60, 60, 80)),
     );
-    println!("{dim}{}{reset}", rule('\u{2500}'));
-    println!();
+
+    inline::print_blank();
+    inline::print_line(&components::dashed_separator(Color::Rgb(60, 60, 80)));
+    inline::print_line(&Line::from(vec![
+        RSpan::raw("  "),
+        RSpan::styled(
+            " ✓ done ",
+            RStyle::default()
+                .fg(Color::Rgb(255, 255, 255))
+                .bg(Color::Rgb(39, 174, 96))
+                .add_modifier(Modifier::BOLD),
+        ),
+        sep.clone(),
+        RSpan::styled(
+            format!("⏱ {}.{:03}s", ms / 1000, ms % 1000),
+            RStyle::default().fg(Color::Rgb(180, 180, 200)),
+        ),
+        sep.clone(),
+        RSpan::styled(
+            format!("💬 {} msgs", stats.messages_sent()),
+            RStyle::default().fg(Color::Rgb(180, 180, 200)),
+        ),
+        sep.clone(),
+        RSpan::styled(
+            format!("📊 {} ↑ / {} ↓", in_tok, out_tok),
+            RStyle::default().fg(Color::Rgb(180, 180, 200)),
+        ),
+        sep,
+        RSpan::styled(
+            format!("session {}", stats.elapsed_str()),
+            RStyle::default().fg(Color::Rgb(180, 180, 200)),
+        ),
+    ]));
+    inline::print_line(&components::dashed_separator(Color::Rgb(60, 60, 80)));
+    inline::print_blank();
 }
 
 
 fn print_help() {
-    println!();
-    println!("  \x1b[1m\x1b[36m\u{1f4d6} Commands:\x1b[0m");
-    println!();
-    println!("  \x1b[33mSlash commands:\x1b[0m");
-    println!("  /help              Show this help");
-    println!("  /clear             Clear screen");
-    println!("  /config            Show current configuration");
-    println!("  /history           Show conversation history");
-    println!("  /tools             List available tools");
-    println!("  /stats             Show session statistics");
-    println!("  /mcp               Show MCP server status");
-    println!("  /save <file>       Export conversation to file");
-    println!("  /load <file>       Load conversation from file");
-    println!("  /plan <goal>       Create a plan for a goal");
-    println!("  /provider <name>   Switch provider (not yet supported)");
-    println!("  /models            List & switch models (interactive picker)");
-    println!("  /models <name>     Switch to model by name (partial match ok)");
-    println!("  /quit              Exit interactive mode");
-    println!();
-    println!("  \x1b[33mShortcuts:\x1b[0m");
-    println!("  help, h            Show help");
-    println!("  clear              Clear screen");
-    println!("  exit, q            Exit");
-    println!();
-    println!("  \x1b[33mCompletion & Hints:\x1b[0m");
-    println!("  \x1b[1;33m/\x1b[0m                Popup with command list + descriptions");
-    println!("  \x1b[1;34m@\x1b[0m                Popup with file list + icons");
-    println!("  Tab               Navigate/open completion menu");
-    println!("  \u{2192} (Right Arrow)   Accept inline hint");
-    println!("  \u{2022} Type \x1b[1;33m/\x1b[0m \u{2192} popup shows all commands with descriptions");
-    println!("  \u{2022} Type \x1b[1;34m@src/\x1b[0m \u{2192} popup shows files in src/");
-    println!("  \u{2022} Arrow keys \u{2191}\u{2193} to navigate, Enter to select");
-    println!();
-    println!("  \x1b[33mTips:\x1b[0m");
-    println!("  \u{2022} Type any text to send as a task to the AI agent");
-    println!("  \u{2022} Ctrl+R to search command history");
-    println!("  \u{2022} Ctrl+C to cancel, Ctrl+D to exit");
-    println!();
+    let help_md = r#"## 📖 Commands
+
+**Slash commands:**
+- `/help`              Show this help
+- `/clear`             Clear screen
+- `/config`            Show current configuration
+- `/history`           Show conversation history
+- `/tools`             List available tools
+- `/stats`             Show session statistics
+- `/mcp`               Show MCP server status
+- `/save <file>`       Export conversation to file
+- `/load <file>`       Load conversation from file
+- `/plan <goal>`       Create a plan for a goal
+- `/provider <name>`   Switch provider (not yet supported)
+- `/models`            List & switch models (interactive picker)
+- `/models <name>`     Switch to model by name (partial match ok)
+- `/quit`              Exit interactive mode
+
+**Shortcuts:**
+- `help`, `h`          Show help
+- `clear`              Clear screen
+- `exit`, `q`          Exit
+
+**Completion & Hints:**
+- `/` → Popup with command list + descriptions
+- `@` → Popup with file list + icons
+- Tab → Navigate/open completion menu
+- → (Right Arrow) Accept inline hint
+
+**Tips:**
+- Type any text to send as a task to the AI agent
+- Ctrl+R to search command history
+- Ctrl+C to cancel, Ctrl+D to exit
+"#;
+
+    inline::print_blank();
+    inline::print_line(&components::section_header(
+        "📖",
+        "Help",
+        Color::Rgb(64, 224, 208),
+    ));
+    inline::print_blank();
+
+    let md = crate::widgets::markdown::MarkdownContent::parse(help_md);
+    inline::print_lines(&md.lines);
+    inline::print_blank();
 }
 
 fn show_stats(stats: &SessionStats, model_info: &ModelInfo) {
@@ -1228,117 +1360,237 @@ fn show_stats(stats: &SessionStats, model_info: &ModelInfo) {
         .display()
         .to_string();
 
-    println!();
-    println!("  \x1b[1m\x1b[36m\u{1f4ca} Session Statistics:\x1b[0m");
-    println!();
-    println!("  \x1b[2m\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\x1b[0m");
-    println!();
-
-    println!("  \x1b[1mSession:\x1b[0m");
-    println!("    Duration:     \x1b[32m{}\x1b[0m", stats.elapsed_str());
-    println!("    Messages:     \x1b[33m{}\x1b[0m", stats.messages_sent());
-    println!("    Tool calls:   \x1b[36m{}\x1b[0m", stats.tool_calls());
-    println!();
-
-    println!("  \x1b[1mModel:\x1b[0m");
-    println!("    Provider:     \x1b[33m{}\x1b[0m", model_info.provider);
-    println!("    Model:        \x1b[33m{}\x1b[0m", model_info.model);
-    println!("    API Base:     \x1b[2m{}\x1b[0m", model_info.api_base);
-    println!();
-
     let in_tok = stats.total_input_tokens();
     let out_tok = stats.total_output_tokens();
     let total_tok = in_tok + out_tok;
 
-    println!("  \x1b[1mToken Usage:\x1b[0m");
+    inline::print_blank();
+    inline::print_line(&components::section_header(
+        "📊",
+        "Session Statistics",
+        Color::Rgb(64, 224, 208),
+    ));
+    inline::print_blank();
 
-    let bar_width = 30;
+    // Session subsection
+    inline::print_line(&components::subsection_header(
+        "Session",
+        Color::Rgb(255, 215, 0),
+    ));
+    inline::print_line(&components::kv_line(
+        "Duration",
+        &stats.elapsed_str(),
+        12,
+        Color::Rgb(46, 204, 113),
+    ));
+    inline::print_line(&components::kv_line(
+        "Messages",
+        &format!("{}", stats.messages_sent()),
+        12,
+        Color::Rgb(255, 215, 0),
+    ));
+    inline::print_line(&components::kv_line(
+        "Tool calls",
+        &format!("{}", stats.tool_calls()),
+        12,
+        Color::Rgb(135, 206, 250),
+    ));
+    inline::print_blank();
+
+    // Model subsection
+    inline::print_line(&components::subsection_header(
+        "Model",
+        Color::Rgb(255, 215, 0),
+    ));
+    inline::print_line(&components::kv_badge(
+        "Provider",
+        &model_info.provider,
+        12,
+        Color::Rgb(255, 255, 255),
+        Color::Rgb(155, 89, 182),
+    ));
+    inline::print_line(&components::kv_badge(
+        "Model",
+        &model_info.model,
+        12,
+        Color::Rgb(255, 255, 255),
+        Color::Rgb(52, 152, 219),
+    ));
+    inline::print_line(&components::kv_line(
+        "API Base",
+        &model_info.api_base,
+        12,
+        Color::Rgb(180, 180, 200),
+    ));
+    inline::print_blank();
+
+    // Token usage subsection
+    inline::print_line(&components::subsection_header(
+        "Token Usage",
+        Color::Rgb(255, 215, 0),
+    ));
+
     if total_tok > 0 {
-        let in_ratio = (in_tok as f32 / total_tok as f32 * bar_width as f32) as usize;
-        let out_ratio = bar_width - in_ratio;
-        println!(
-            "    Input:        \x1b[32m{}\x1b[31m{}\x1b[0m {} tokens",
-            "\u{2588}".repeat(in_ratio),
-            "\u{2588}".repeat(out_ratio),
-            stats.format_tokens(in_tok)
-        );
-        println!(
-            "    Output:       \x1b[31m{}\x1b[0m {} tokens",
-            "\u{2588}".repeat(
-                bar_width.min(out_tok as usize / (total_tok as usize / bar_width + 1))
-            ),
-            stats.format_tokens(out_tok)
-        );
+        let in_ratio = in_tok as f32 / total_tok as f32;
+        let out_ratio = out_tok as f32 / total_tok as f32;
+        inline::print_line(&components::labeled_bar(
+            "Input",
+            in_ratio,
+            30,
+            Color::Rgb(46, 204, 113),
+            Color::Rgb(50, 50, 60),
+        ));
+        inline::print_line(&components::labeled_bar(
+            "Output",
+            out_ratio,
+            30,
+            Color::Rgb(231, 76, 60),
+            Color::Rgb(50, 50, 60),
+        ));
     } else {
-        println!("    Input:        \x1b[2m0\x1b[0m");
-        println!("    Output:       \x1b[2m0\x1b[0m");
+        inline::print_line(&Line::from(vec![
+            RSpan::styled(
+                "  Input:        ",
+                RStyle::default().add_modifier(Modifier::DIM),
+            ),
+            RSpan::styled("— no data yet —", RStyle::default().add_modifier(Modifier::DIM)),
+        ]));
     }
-    println!(
-        "    Total:        \x1b[1m{}\x1b[0m tokens",
-        stats.format_tokens(total_tok)
-    );
-    println!();
+    inline::print_line(&Line::from(vec![
+        RSpan::styled(
+            "  Total:        ",
+            RStyle::default().add_modifier(Modifier::DIM),
+        ),
+        RSpan::styled(
+            format!("{} tokens", stats.format_tokens(total_tok)),
+            RStyle::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    inline::print_blank();
 
-    println!("  \x1b[1mEnvironment:\x1b[0m");
-    println!("    Working dir:  \x1b[2m{}\x1b[0m", cwd);
-    println!();
-
-    println!("  \x1b[2m\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\x1b[0m");
-    println!();
+    // Environment subsection
+    inline::print_line(&components::subsection_header(
+        "Environment",
+        Color::Rgb(255, 215, 0),
+    ));
+    inline::print_line(&components::kv_line(
+        "Working dir",
+        &cwd,
+        12,
+        Color::Rgb(180, 180, 200),
+    ));
+    inline::print_blank();
+    inline::print_line(&components::dashed_separator(Color::Rgb(60, 60, 80)));
+    inline::print_blank();
 }
 
 fn show_history(conversation: &[ConversationEntry]) {
-    println!();
+    inline::print_blank();
     if conversation.is_empty() {
-        println!("  \x1b[33mNo messages in this session yet.\x1b[0m\n");
+        inline::print_line(&components::warning_badge("No messages in this session yet."));
+        inline::print_blank();
         return;
     }
 
-    println!(
-        "  \x1b[1m\x1b[36m\u{1f4dc} Conversation History ({} messages):\x1b[0m\n",
-        conversation.len()
-    );
+    inline::print_line(&components::section_header(
+        "📜",
+        &format!("Conversation History ({} messages)", conversation.len()),
+        Color::Rgb(64, 224, 208),
+    ));
+    inline::print_blank();
+
     for (i, entry) in conversation.iter().enumerate() {
         let time = entry.timestamp.format("%H:%M:%S");
-        let icon = match entry.role.as_str() {
-            "user" => "\x1b[1;34m\u{1f464}\x1b[0m",
-            "assistant" => "\x1b[1;32m\u{1f916}\x1b[0m",
-            _ => "\x1b[1;33m\u{1f4ac}\x1b[0m",
+        let (icon, badge_bg) = match entry.role.as_str() {
+            "user" => ("👤", Color::Rgb(52, 152, 219)),
+            "assistant" => ("🤖", Color::Rgb(46, 204, 113)),
+            _ => ("💬", Color::Rgb(241, 196, 15)),
         };
         let content_preview = if entry.content.len() > 120 {
             format!("{}...", &entry.content[..117])
         } else {
             entry.content.clone()
         };
-        println!(
-            "  {} \x1b[2m[{}] #{}\x1b[0m {}",
-            icon, time, i + 1, content_preview
-        );
+        inline::print_line(&Line::from(vec![
+            RSpan::raw("  "),
+            RSpan::styled(
+                format!(" {} ", icon),
+                RStyle::default()
+                    .fg(Color::Rgb(255, 255, 255))
+                    .bg(badge_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            RSpan::raw(" "),
+            RSpan::styled(
+                format!("#{:02}", i + 1),
+                RStyle::default().fg(Color::Rgb(180, 180, 200)).add_modifier(Modifier::BOLD),
+            ),
+            RSpan::raw(" "),
+            RSpan::styled(
+                format!("[{}]", time),
+                RStyle::default().add_modifier(Modifier::DIM),
+            ),
+            RSpan::raw("  "),
+            RSpan::raw(content_preview),
+        ]));
     }
-    println!();
+    inline::print_blank();
 }
 
 fn print_goodbye(stats: &SessionStats) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
-    let dim = "\x1b[2m";
-    let cyan = "\x1b[1;36m";
-    let reset = "\x1b[0m";
+    inline::print_blank();
 
-    println!();
-    println!("{dim}{}{reset}", rule('\u{2500}'));
-    println!("  {cyan}\u{1f4ca} Session Summary{reset}");
-    println!(
-        "  {dim}\u{1f4ac} {} msgs  \u{2502}  \u{23f1} {}  \u{2502}  \u{1f4ca} {} in / {} out{reset}",
-        stats.messages_sent(),
-        stats.elapsed_str(),
-        in_tok,
-        out_tok,
+    let summary_lines = vec![
+        Line::from(vec![
+            RSpan::styled("💬 ", RStyle::default()),
+            RSpan::styled("Messages ", RStyle::default().add_modifier(Modifier::DIM)),
+            RSpan::styled(
+                format!("{}", stats.messages_sent()),
+                RStyle::default().fg(Color::Rgb(135, 206, 250)).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            RSpan::styled("⏱ ", RStyle::default()),
+            RSpan::styled("Duration ", RStyle::default().add_modifier(Modifier::DIM)),
+            RSpan::styled(
+                stats.elapsed_str(),
+                RStyle::default().fg(Color::Rgb(46, 204, 113)).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            RSpan::styled("📊 ", RStyle::default()),
+            RSpan::styled("Tokens   ", RStyle::default().add_modifier(Modifier::DIM)),
+            RSpan::styled(
+                format!("{} ↑", in_tok),
+                RStyle::default().fg(Color::Rgb(46, 204, 113)),
+            ),
+            RSpan::raw(" / "),
+            RSpan::styled(
+                format!("{} ↓", out_tok),
+                RStyle::default().fg(Color::Rgb(231, 76, 60)),
+            ),
+        ]),
+    ];
+
+    let panel_lines = components::panel(
+        "Session Summary",
+        &summary_lines,
+        components::BoxStyle::Rounded,
+        Color::Rgb(100, 100, 140),
     );
-    println!("{dim}{}{reset}", rule('\u{2500}'));
-    println!();
-    println!("  {cyan}\u{1f44b} Goodbye!{reset}\n");
+    inline::print_lines(&panel_lines);
+    inline::print_blank();
+
+    let goodbye = components::gradient_text(
+        "  👋 See you next time!",
+        Color::Rgb(255, 105, 180),
+        Color::Rgb(64, 224, 208),
+    );
+    inline::print_line(&goodbye);
+    inline::print_blank();
 }
 
 // ── Save/Load conversation ──────────────────────────────────
@@ -1360,21 +1612,27 @@ fn save_conversation(conversation: &[ConversationEntry], file: &str) {
     let content = match serde_json::to_string_pretty(&data) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("\n  \x1b[31m\u{2717} Failed to serialize: {}\x1b[0m\n", e);
+            inline::print_blank();
+            inline::print_line(&components::error_badge(&format!("Failed to serialize: {}", e)));
+            inline::print_blank();
             return;
         }
     };
 
     match std::fs::write(file, content) {
         Ok(_) => {
-            println!(
-                "\n  \x1b[32m\u{2713} Conversation saved to: {} ({} messages)\x1b[0m\n",
+            inline::print_blank();
+            inline::print_line(&components::success_badge(&format!(
+                "Conversation saved to: {} ({} messages)",
                 file,
                 conversation.len()
-            );
+            )));
+            inline::print_blank();
         }
         Err(e) => {
-            eprintln!("\n  \x1b[31m\u{2717} Failed to save: {}\x1b[0m\n", e);
+            inline::print_blank();
+            inline::print_line(&components::error_badge(&format!("Failed to save: {}", e)));
+            inline::print_blank();
         }
     }
 }

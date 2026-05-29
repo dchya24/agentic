@@ -10,6 +10,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::providers::ToolCallResponse;
 use crate::tool::{ToolCall, ToolResultValue};
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,11 @@ pub struct MessageMetadata {
     /// Tool call ID if this is a tool result message.
     #[serde(default)]
     pub tool_call_id: Option<String>,
+    /// Tool calls emitted by this assistant message.
+    /// Required for the next request so tool results can be matched
+    /// to their parent assistant call (per OpenAI spec).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallResponse>,
 }
 
 impl Message {
@@ -66,6 +72,27 @@ impl Message {
             timestamp: Utc::now(),
             pinned: false,
             metadata: MessageMetadata::default(),
+        }
+    }
+
+    /// Assistant message that emitted tool calls.
+    /// The tool calls are stored in metadata so the next request can
+    /// reattach them on the assistant `ChatMessageRequest` — required
+    /// for tool results to be valid per OpenAI spec.
+    pub fn assistant_with_tool_calls(
+        content: impl Into<String>,
+        tool_calls: Vec<ToolCallResponse>,
+    ) -> Self {
+        Self {
+            id: new_id(),
+            role: MessageRole::Assistant,
+            content: content.into(),
+            timestamp: Utc::now(),
+            pinned: false,
+            metadata: MessageMetadata {
+                tool_calls,
+                ..MessageMetadata::default()
+            },
         }
     }
 

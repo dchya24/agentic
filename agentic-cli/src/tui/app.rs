@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::commands::Commands;
+use crate::widgets::progress::ProgressState;
 use super::dropdown::{Dropdown, DropdownType};
-use super::progress::ProgressState;
 use super::ui;
 
 /// Messages from async tasks to the UI

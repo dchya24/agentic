@@ -10,6 +10,7 @@ mod file_ref;
 mod interactive;
 mod markdown;
 mod tui;
+mod widgets;
 
 use anyhow::Result;
 use clap::Parser;

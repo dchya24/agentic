@@ -1,6 +1,10 @@
-//! Markdown rendering widget for TUI
+//! Shared markdown renderer — produces ratatui `Line`s from markdown text.
+//!
+//! Used by both:
+//! - TUI mode (rendered into ratatui widgets)
+//! - CLI mode (rendered inline via `widgets::inline`)
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, CodeBlockKind};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -66,16 +70,15 @@ impl MarkdownRenderer {
 
     fn push_span(&mut self, text: &str) {
         if !text.is_empty() {
-            self.current_line.push(Span::styled(
-                text.to_string(),
-                self.current_style(),
-            ));
+            self.current_line
+                .push(Span::styled(text.to_string(), self.current_style()));
         }
     }
 
     fn finish_line(&mut self) {
         if !self.current_line.is_empty() {
-            self.lines.push(Line::from(std::mem::take(&mut self.current_line)));
+            self.lines
+                .push(Line::from(std::mem::take(&mut self.current_line)));
         } else {
             self.lines.push(Line::default());
         }
@@ -158,7 +161,7 @@ impl MarkdownRenderer {
                     CodeBlockKind::Fenced(lang) => lang.to_string(),
                     CodeBlockKind::Indented => String::new(),
                 };
-                
+
                 // Code block header
                 let lang_display = if self.code_lang.is_empty() {
                     "code".to_string()
@@ -174,7 +177,7 @@ impl MarkdownRenderer {
                     Style::default().fg(Color::Rgb(46, 204, 113)),
                 ));
                 self.finish_line();
-                
+
                 self.push_style(Style::default().fg(Color::Rgb(200, 200, 200)));
             }
             Tag::Link { dest_url, .. } => {
@@ -183,7 +186,6 @@ impl MarkdownRenderer {
                         .fg(Color::Rgb(52, 152, 219))
                         .add_modifier(Modifier::UNDERLINED),
                 );
-                // Store URL for later (simplified: just style the text)
                 let _ = dest_url;
             }
             Tag::BlockQuote => {
@@ -384,5 +386,35 @@ mod tests {
     fn test_parse_list() {
         let content = MarkdownContent::parse("- Item 1\n- Item 2\n- Item 3");
         assert!(content.lines.len() >= 3);
+    }
+
+    #[test]
+    fn test_parse_inline_code() {
+        let content = MarkdownContent::parse("Use `cargo build` to compile");
+        assert!(!content.lines.is_empty());
+        // Should contain the backtick-wrapped code
+        let all_text: String = content.lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(all_text.contains("`cargo build`"));
+    }
+
+    #[test]
+    fn test_parse_nested_list() {
+        let content = MarkdownContent::parse("- Item 1\n  - Nested\n- Item 2");
+        assert!(content.lines.len() >= 3);
+    }
+
+    #[test]
+    fn test_parse_blockquote() {
+        let content = MarkdownContent::parse("> This is a quote");
+        assert!(!content.lines.is_empty());
+        let all_text: String = content.lines.iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(all_text.contains("│"));
     }
 }
