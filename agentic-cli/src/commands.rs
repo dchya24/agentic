@@ -714,7 +714,7 @@ impl Commands {
     // ── Run task ────────────────────────────────────────────
 
     pub async fn run(&mut self, task: &str) -> Result<()> {
-        use crate::widgets::{components, inline, markdown as md_widget, progress, spinner};
+        use crate::widgets::{components, inline, markdown as md_widget, progress, spinner, tool_call};
         use ratatui::style::Color as RColor;
 
         // Expand @file references before sending to AI
@@ -730,12 +730,30 @@ impl Commands {
 
         // Fresh run: clear any pending cancel from a previous invocation.
         orchestrator.reset_cancel();
+        // Drop event handlers from any previous run so we don't accumulate
+        // subscribers across invocations.
+        orchestrator.clear_event_handlers();
+
+        // Subscribe to runtime events (tool calls, results) so we can
+        // render them between spinner ticks. Gated by config.output.show_tool_calls.
+        let show_tool_calls = self.config.output.show_tool_calls;
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        if show_tool_calls {
+            let tx = event_tx.clone();
+            orchestrator.on_event(move |event| {
+                // Best-effort send: if the receiver is dropped (run finished),
+                // silently ignore.
+                let _ = tx.send(event);
+            });
+        }
+        // Drop our local sender so the receiver shuts down once the
+        // orchestrator's handler is also gone (after `clear_event_handlers`).
+        drop(event_tx);
 
         // Live transient spinner: a background task ticks the frame and
         // redraws via `inline::print_transient` (no-op when not a TTY).
-        // We hand the orchestrator's stream the same callback to update an
-        // optional message; chunks are otherwise discarded — the final
-        // markdown is rendered once at the end.
+        // The same task drains incoming events and renders them inline,
+        // briefly clearing the spinner so the events land in scrollback.
         let progress = std::sync::Arc::new(std::sync::Mutex::new({
             let mut p = progress::ProgressState::new();
             p.start();
@@ -750,16 +768,41 @@ impl Commands {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_millis(80));
             loop {
-                interval.tick().await;
-                if tick_stop.load(Ordering::Relaxed) {
-                    break;
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if tick_stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let line = {
+                            let mut p = tick_progress.lock().unwrap();
+                            p.tick();
+                            spinner::spinner_line(&p)
+                        };
+                        inline::print_transient(&line);
+                    }
+                    maybe_event = event_rx.recv() => {
+                        match maybe_event {
+                            Some(event) => {
+                                // Pause the spinner, render the event, then
+                                // let the next tick redraw the spinner.
+                                inline::clear_transient();
+                                render_event(&event);
+                            }
+                            None => {
+                                // Channel closed and drained. Keep ticking
+                                // (or break if stop is set) without panic.
+                                if tick_stop.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
-                let line = {
-                    let mut p = tick_progress.lock().unwrap();
-                    p.tick();
-                    spinner::spinner_line(&p)
-                };
-                inline::print_transient(&line);
+            }
+            // Drain anything still queued so we don't lose late events.
+            while let Ok(event) = event_rx.try_recv() {
+                inline::clear_transient();
+                render_event(&event);
             }
         });
 
@@ -769,7 +812,10 @@ impl Commands {
             })
             .await;
 
-        // Stop ticker, drop transient line.
+        // Stop ticker. Dropping orchestrator's handler is what eventually
+        // closes the receiver — do that by clearing handlers (the sender
+        // captured by the closure goes away with the closure).
+        orchestrator.clear_event_handlers();
         stop_flag.store(true, Ordering::Relaxed);
         let _ = ticker.await;
         progress.lock().unwrap().stop();
@@ -793,6 +839,42 @@ impl Commands {
                 inline::print_blank();
                 inline::print_line(&components::error_badge(&e.to_string()));
                 inline::print_blank();
+            }
+        }
+
+        // Helper kept inside `run` so it captures the right widget imports.
+        fn render_event(event: &core_agentic::Event) {
+            const MAX_TOOL_OUTPUT_LINES: usize = 12;
+            match event {
+                core_agentic::Event::ToolCall { tool_name, arguments } => {
+                    let lines = tool_call::render_call(tool_name, arguments);
+                    inline::print_lines(&lines);
+                }
+                core_agentic::Event::ToolOutput { tool_name, output } => {
+                    let body = match output {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    let is_error = body.starts_with("Tool error")
+                        || body.starts_with("Blocked:")
+                        || body.starts_with("Skipped:");
+                    let lines = tool_call::render_result(
+                        tool_name,
+                        output,
+                        is_error,
+                        MAX_TOOL_OUTPUT_LINES,
+                    );
+                    inline::print_lines(&lines);
+                }
+                core_agentic::Event::Error { message } => {
+                    inline::print_line(&components::error_badge(message));
+                }
+                core_agentic::Event::System { message } => {
+                    inline::print_line(&components::info_badge(message));
+                }
+                // Thought / ConfirmationRequest / Completed are handled
+                // elsewhere or not surfaced inline.
+                _ => {}
             }
         }
 

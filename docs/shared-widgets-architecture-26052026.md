@@ -228,6 +228,38 @@ Rich visual components for beautiful CLI output.
 | Scrollback pollution | Be intentional — inline output stays in history |
 | Live-updating lines | Use `\r` + ANSI clear for single-line updates (spinners) |
 
+## Event Subscriptions
+
+The `Orchestrator` exposes `on_event(handler)` and `clear_event_handlers()`
+so the CLI can subscribe to runtime events without coupling rendering to
+orchestrator internals.
+
+Emitted events:
+
+| Event | Where it fires | Consumed by |
+|-------|----------------|-------------|
+| `Event::ToolCall { tool_name, arguments }` | Before each tool call (also for denied/skipped calls so the operator sees the attempt) | `widgets::tool_call::render_call` in `commands.rs::run` |
+| `Event::ToolOutput { tool_name, output }` | After each tool result, including blocked/skipped strings | `widgets::tool_call::render_result` |
+| `Event::Error { message }` | Future use | `components::error_badge` |
+| `Event::System { message }` | Future use | `components::info_badge` |
+
+Subscription is gated by `config.output.show_tool_calls`. The CLI
+subscribe-and-render flow lives in `commands.rs::run`:
+
+1. `orchestrator.clear_event_handlers()` to drop subscribers from any
+   previous run.
+2. Open a `tokio::mpsc::unbounded_channel`; register a handler that pushes
+   into the sender.
+3. The spinner ticker uses `tokio::select!` to interleave spinner ticks
+   with event drains. On each event it calls `inline::clear_transient`
+   then `inline::print_lines` of the rendered widget; the next tick
+   redraws the spinner.
+4. After `run_stream` returns, `clear_event_handlers()` releases the
+   sender, the channel closes, and the ticker loop exits.
+
+`EventEmitter` was switched from `Vec<Box<...>>` to
+`Mutex<Vec<Box<...>>>` so handlers can be registered through `&self`.
+
 ## Adding New Shared Widgets
 
 1. Create a new file in `src/widgets/` (e.g., `table.rs`)

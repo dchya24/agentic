@@ -1,5 +1,7 @@
 //! Event types for agentic runtime
 
+use std::sync::Mutex;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,27 +65,42 @@ impl Event {
 }
 
 pub struct EventEmitter {
-    handlers: Vec<Box<dyn Fn(Event) + Send + Sync>>,
+    handlers: Mutex<Vec<Box<dyn Fn(Event) + Send + Sync>>>,
 }
 
 impl EventEmitter {
     pub fn new() -> Self {
         Self {
-            handlers: Vec::new(),
+            handlers: Mutex::new(Vec::new()),
         }
     }
 
-    pub fn on<F>(&mut self, handler: F)
+    /// Register a handler. Multiple handlers may be registered; they are
+    /// called in registration order.
+    ///
+    /// Takes `&self` because handlers are stored behind a `Mutex`, so the
+    /// emitter can sit behind a shared reference (e.g. inside an `Arc` or
+    /// as a non-mut field of a longer-lived struct).
+    pub fn on<F>(&self, handler: F)
     where
         F: Fn(Event) + Send + Sync + 'static,
     {
-        self.handlers.push(Box::new(handler));
+        self.handlers.lock().unwrap().push(Box::new(handler));
     }
 
     pub fn emit(&self, event: Event) {
-        for handler in &self.handlers {
+        // Clone the event for each handler so we don't move it twice.
+        let handlers = self.handlers.lock().unwrap();
+        for handler in handlers.iter() {
             handler(event.clone());
         }
+    }
+
+    /// Drop all registered handlers. Useful between runs in long-lived
+    /// orchestrators that get re-subscribed each invocation.
+    #[allow(dead_code)]
+    pub fn clear(&self) {
+        self.handlers.lock().unwrap().clear();
     }
 }
 

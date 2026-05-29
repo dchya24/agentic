@@ -38,7 +38,6 @@ pub struct Orchestrator {
     memory: Mutex<Memory>,
     safety: Safety,
     state: Mutex<OrchestratorState>,
-    #[allow(dead_code)]
     events: EventEmitter,
     confirmation_handler:
         Mutex<Option<Box<dyn Fn(crate::safety::ConfirmationRequest) -> bool + Send + Sync>>>,
@@ -87,6 +86,22 @@ impl Orchestrator {
             auto_compact_with_llm: false,
             summarizer_model: None,
         }
+    }
+
+    /// Subscribe to runtime events (tool calls, results, errors, system
+    /// messages). Multiple subscribers are supported. Handlers must be
+    /// `Send + Sync` because emissions can happen from blocking-pool tasks.
+    pub fn on_event<F>(&self, handler: F)
+    where
+        F: Fn(crate::events::Event) + Send + Sync + 'static,
+    {
+        self.events.on(handler);
+    }
+
+    /// Drop all event handlers. Call between runs if you re-subscribe each
+    /// invocation to avoid handler accumulation.
+    pub fn clear_event_handlers(&self) {
+        self.events.clear();
     }
 
     pub fn set_model(&mut self, model: impl Into<String>) {
@@ -322,6 +337,15 @@ impl Orchestrator {
             let args: serde_json::Value =
                 serde_json::from_str(tc_args_str).unwrap_or(serde_json::json!({}));
 
+            // Surface the call to subscribers before running it. This lets
+            // CLIs render a tool-call panel even when execution will be
+            // denied or skipped — the operator still gets to see what was
+            // attempted.
+            self.events.emit(crate::events::Event::ToolCall {
+                tool_name: tc_name.clone(),
+                arguments: args.clone(),
+            });
+
             let target = Self::extract_target(&args);
             let decision = self.safety.evaluate(tc_name, target);
 
@@ -333,6 +357,10 @@ impl Orchestrator {
                     decision.reason.clone()
                 };
                 println!("  -> [DENIED: {}]", reason);
+                self.events.emit(crate::events::Event::ToolOutput {
+                    tool_name: tc_name.clone(),
+                    output: serde_json::Value::String(format!("Blocked: {}", reason)),
+                });
                 self.memory.lock().unwrap().add_message(Message::tool(
                     tc_name.clone(),
                     tc_id.clone(),
@@ -348,6 +376,12 @@ impl Orchestrator {
                     .create_request(tc_name, &format!("{:?}", args));
                 if !self.require_confirmation(request) {
                     println!("  -> [SKIPPED - Confirmation denied]");
+                    self.events.emit(crate::events::Event::ToolOutput {
+                        tool_name: tc_name.clone(),
+                        output: serde_json::Value::String(
+                            "Skipped: Confirmation denied".to_string(),
+                        ),
+                    });
                     self.memory.lock().unwrap().add_message(Message::tool(
                         tc_name.clone(),
                         tc_id.clone(),
@@ -360,6 +394,14 @@ impl Orchestrator {
             }
 
             let result = self.execute_tool(tc_name, &args);
+
+            // Emit the result as a structured event. We pass the truncated
+            // string verbatim so subscribers see exactly what the model
+            // will see in the next turn.
+            self.events.emit(crate::events::Event::ToolOutput {
+                tool_name: tc_name.clone(),
+                output: serde_json::Value::String(result.clone()),
+            });
 
             self.memory.lock().unwrap().add_message(Message::tool(
                 tc_name.clone(),
@@ -413,6 +455,14 @@ impl Orchestrator {
         for (tc_id, tc_name, tc_args_str) in tool_calls {
             let args: serde_json::Value =
                 serde_json::from_str(tc_args_str).unwrap_or(serde_json::json!({}));
+
+            // Surface the call before safety evaluation so subscribers see
+            // even denied calls.
+            self.events.emit(crate::events::Event::ToolCall {
+                tool_name: tc_name.clone(),
+                arguments: args.clone(),
+            });
+
             let target = Self::extract_target(&args);
             let decision = self.safety.evaluate(tc_name, target);
 
@@ -423,6 +473,10 @@ impl Orchestrator {
                     decision.reason.clone()
                 };
                 println!("  -> [DENIED: {}]", reason);
+                self.events.emit(crate::events::Event::ToolOutput {
+                    tool_name: tc_name.clone(),
+                    output: serde_json::Value::String(format!("Blocked: {}", reason)),
+                });
                 slots.push(Slot::PreResolved {
                     name: tc_name.clone(),
                     id: tc_id.clone(),
@@ -437,6 +491,12 @@ impl Orchestrator {
                     .create_request(tc_name, &format!("{:?}", args));
                 if !self.require_confirmation(request) {
                     println!("  -> [SKIPPED - Confirmation denied]");
+                    self.events.emit(crate::events::Event::ToolOutput {
+                        tool_name: tc_name.clone(),
+                        output: serde_json::Value::String(
+                            "Skipped: Confirmation denied".to_string(),
+                        ),
+                    });
                     slots.push(Slot::PreResolved {
                         name: tc_name.clone(),
                         id: tc_id.clone(),
@@ -530,11 +590,22 @@ impl Orchestrator {
         }
 
         // Push results in the original order so the model sees a coherent
-        // tool/assistant/tool/assistant interleaving.
+        // tool/assistant/tool/assistant interleaving. Also emit ToolOutput
+        // events for any executed (Pending) slots; PreResolved slots
+        // already emitted their outcome above.
         let mut mem = self.memory.lock().unwrap();
-        for entry in results.into_iter().flatten() {
-            let (name, id, output) = entry;
-            mem.add_message(Message::tool(name, id, output));
+        for (idx, entry) in results.into_iter().enumerate() {
+            if let Some((name, id, output)) = entry {
+                // Only Pending slots produce real tool output; PreResolved
+                // already emitted theirs.
+                if matches!(slots[idx], Slot::Pending { .. }) {
+                    self.events.emit(crate::events::Event::ToolOutput {
+                        tool_name: name.clone(),
+                        output: serde_json::Value::String(output.clone()),
+                    });
+                }
+                mem.add_message(Message::tool(name, id, output));
+            }
         }
     }
 
