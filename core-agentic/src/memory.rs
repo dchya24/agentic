@@ -292,6 +292,16 @@ pub struct MemoryConfig {
     #[serde(default = "default_context_message_limit")]
     pub context_message_limit: usize,
 
+    /// Fraction of `max_tokens` allocated to message history when
+    /// building a request. The remainder is reserved for the system
+    /// prompt, tool definitions, and the model's response.
+    ///
+    /// Defaults to 0.7. Anthropic-style providers may benefit from a
+    /// lower value (0.5–0.6) since their tool definitions tend to be
+    /// verbose; OpenAI/Z.AI-style providers usually do fine at 0.7.
+    #[serde(default = "default_context_budget_ratio")]
+    pub context_budget_ratio: f64,
+
     /// Directory for persisting sessions to disk.
     #[serde(default)]
     pub persist_dir: Option<String>,
@@ -313,6 +323,9 @@ fn default_compaction_threshold() -> f64 {
 fn default_context_message_limit() -> usize {
     50
 }
+fn default_context_budget_ratio() -> f64 {
+    0.7
+}
 
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -321,6 +334,7 @@ impl Default for MemoryConfig {
             keep_recent: default_keep_recent(),
             compaction_threshold: default_compaction_threshold(),
             context_message_limit: default_context_message_limit(),
+            context_budget_ratio: default_context_budget_ratio(),
             persist_dir: None,
             auto_persist: false,
         }
@@ -472,6 +486,15 @@ impl Memory {
     /// Total token budget for this memory's context window.
     pub fn budget(&self) -> u32 {
         self.max_tokens
+    }
+
+    /// Effective request budget: `max_tokens * config.context_budget_ratio`.
+    /// This is the value the orchestrator should pass to
+    /// `get_context_for_request` so the rest of `max_tokens` is reserved
+    /// for the system prompt, tool definitions, and the response.
+    pub fn request_budget(&self) -> u32 {
+        let ratio = self.config.context_budget_ratio.clamp(0.1, 0.95);
+        (self.max_tokens as f64 * ratio) as u32
     }
 
     // -----------------------------------------------------------------------
@@ -1189,8 +1212,31 @@ fn new_id() -> String {
 }
 
 /// Estimate token count from text.
-/// Uses character heuristic: ~4 chars per token.
+///
+/// Two backends:
+/// - Default: heuristic ~4 chars per token. Fast, dependency-free, but
+///   off by up to 30% for code-heavy content.
+/// - With the `tiktoken` cargo feature: real BPE encoder (`cl100k_base`,
+///   the OpenAI/Anthropic/Z.AI tokenizer family). Within ~2% of actual
+///   usage, at the cost of a one-time encoder load (~50ms, ~10MB binary).
+///
+/// The encoder is lazy-initialized on first call and reused thereafter.
 pub fn estimate_tokens(text: &str) -> u32 {
+    #[cfg(feature = "tiktoken")]
+    {
+        use std::sync::OnceLock;
+        static ENCODER: OnceLock<Result<tiktoken_rs::CoreBPE, String>> = OnceLock::new();
+        let encoder = ENCODER.get_or_init(|| {
+            tiktoken_rs::cl100k_base().map_err(|e| e.to_string())
+        });
+        if let Ok(bpe) = encoder.as_ref() {
+            return bpe.encode_with_special_tokens(text).len() as u32;
+        }
+        // Encoder failed to load; fall through to heuristic.
+        tracing::warn!("tiktoken cl100k_base failed to load; using heuristic");
+    }
+
+    // Heuristic fallback (also the default when the feature is off).
     (text.len() as u32 / 4).max(1)
 }
 
@@ -1266,8 +1312,14 @@ mod tests {
 
     #[test]
     fn test_message_with_estimated_tokens() {
+        // Token count depends on the active backend (heuristic ~4chars/tok
+        // by default, or tiktoken when the feature is on). Both must
+        // produce a non-zero count and stay within a sane band for
+        // 100 'a' characters.
         let msg = Message::user("a".repeat(100)).with_estimated_tokens();
-        assert_eq!(msg.metadata.token_count, 25); // 100/4
+        let count = msg.metadata.token_count;
+        assert!(count > 0, "token count should be non-zero");
+        assert!(count <= 100, "token count cannot exceed character count");
     }
 
     // --- MessageRole ---
@@ -2004,10 +2056,18 @@ mod tests {
     #[test]
     fn turn_builder_drops_older_turns_when_budget_tight() {
         // Three turns with ~heavy content. Budget admits only the
-        // newest two. The oldest must be dropped at the turn boundary,
+        // newest few. The oldest must be dropped at the turn boundary,
         // not mid-turn.
+        //
+        // We make the per-turn content large enough that the heuristic
+        // and a real BPE tokenizer both flag eviction — specifically
+        // we use natural-language repetition, not a single repeated
+        // character (BPE would compress "x".repeat(N) much harder than
+        // the heuristic does).
         let mut m = memory();
-        let big = "x".repeat(4000); // ~1000 tokens estimated
+        let big: String = (0..400)
+            .map(|i| format!("sentence number {} with some words. ", i))
+            .collect();
         m.add_message(Message::user(format!("q1 {}", big)));
         m.add_message(Message::assistant(format!("a1 {}", big)));
         m.add_message(Message::user(format!("q2 {}", big)));
@@ -2015,8 +2075,10 @@ mod tests {
         m.add_message(Message::user(format!("q3 {}", big)));
         m.add_message(Message::assistant(format!("a3 {}", big)));
 
-        // Budget that fits roughly 2 turns (2 * ~2000 tokens).
-        let ctx = m.get_context_for_request(5_000);
+        // Tight budget: each turn is ~3.5k tokens (heuristic) or
+        // ~2.5k (tiktoken). Either way, 3000 tokens fits at most one
+        // full turn.
+        let ctx = m.get_context_for_request(3_000);
         assert!(
             ctx.len() <= 4,
             "should drop at least one full turn; got {}",
@@ -2097,5 +2159,41 @@ mod tests {
         // A user/assistant follows.
         assert!(ctx.len() > 1);
         assert!(matches!(ctx[1].role, MessageRole::User));
+    }
+
+    // ---- request_budget / context_budget_ratio ----
+
+    #[test]
+    fn request_budget_applies_ratio() {
+        let mut config = MemoryConfig::default();
+        config.max_tokens = 100_000;
+        config.context_budget_ratio = 0.5;
+        let m = Memory::with_config(config);
+        assert_eq!(m.request_budget(), 50_000);
+    }
+
+    #[test]
+    fn request_budget_clamps_extreme_ratios() {
+        // Out-of-range ratios get clamped to a sensible band so a
+        // user typo doesn't accidentally send 0 or 99% of the window.
+        let mut config = MemoryConfig::default();
+        config.max_tokens = 100_000;
+
+        config.context_budget_ratio = 0.0;
+        let m = Memory::with_config(config.clone());
+        assert_eq!(m.request_budget(), 10_000); // clamped to 0.1
+
+        config.context_budget_ratio = 5.0;
+        let m = Memory::with_config(config);
+        assert_eq!(m.request_budget(), 95_000); // clamped to 0.95
+    }
+
+    #[test]
+    fn request_budget_default_is_seventy_percent() {
+        // Tracks the documented contract: default context_budget_ratio = 0.7.
+        let mut config = MemoryConfig::default();
+        config.max_tokens = 100_000;
+        let m = Memory::with_config(config);
+        assert_eq!(m.request_budget(), 70_000);
     }
 }

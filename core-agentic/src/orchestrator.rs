@@ -322,16 +322,16 @@ impl Orchestrator {
     }
 
     fn build_messages(&self) -> Vec<ChatMessageRequest> {
-        // Token-budget context builder. We aim for ~70% of the model's
-        // context window so there's headroom for the system prompt,
-        // tool definitions, and the response itself.
+        // Token-budget context builder. Memory::request_budget() applies
+        // the configured context_budget_ratio (default 70%) so we leave
+        // headroom for the system prompt, tool definitions, and the
+        // response itself.
         //
         // The builder walks complete user-turns (user + assistant + tool
         // group) so a tool_call/result pair is never split, eliminating
         // the orphan-tool / dangling-tool_calls / no-user-anchor cases
         // that previously produced HTTP 400 from the provider.
-        let max_tokens = self.memory.lock().unwrap().budget();
-        let token_budget = (max_tokens as f64 * 0.70) as u32;
+        let token_budget = self.memory.lock().unwrap().request_budget();
         let context = self
             .memory
             .lock()
