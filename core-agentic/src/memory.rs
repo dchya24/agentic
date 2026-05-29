@@ -551,6 +551,57 @@ impl Memory {
         self.messages[start..].to_vec()
     }
 
+    /// Get the conversation tail anchored to a user message.
+    ///
+    /// `max_messages` is a soft floor: if the last `max_messages` don't
+    /// include any user message (because the agent ran a long chain of
+    /// tool calls between user turns), the window is extended backwards
+    /// to include the most recent user message. This avoids producing a
+    /// slice that's purely assistant/tool turns, which providers reject
+    /// with HTTP 400 "messages parameter is illegal".
+    ///
+    /// `hard_cap` bounds how far we'll look back. When set to `None` we
+    /// search all the way to the start of memory; when set we never
+    /// return more than `hard_cap` messages even if the latest user
+    /// turn is older than that.
+    pub fn get_context_with_user_anchor(
+        &self,
+        max_messages: usize,
+        hard_cap: Option<usize>,
+    ) -> Vec<Message> {
+        let total = self.messages.len();
+        if total == 0 {
+            return Vec::new();
+        }
+
+        let mut start = total.saturating_sub(max_messages);
+
+        // Does the candidate slice already contain a user message?
+        let has_user = self.messages[start..]
+            .iter()
+            .any(|m| matches!(m.role, MessageRole::User));
+
+        if !has_user {
+            // Walk backwards to find the most recent user message.
+            if let Some(user_idx) = self.messages[..start]
+                .iter()
+                .rposition(|m| matches!(m.role, MessageRole::User))
+            {
+                start = user_idx;
+            }
+        }
+
+        // Apply hard_cap if set.
+        if let Some(cap) = hard_cap {
+            let earliest = total.saturating_sub(cap);
+            if start < earliest {
+                start = earliest;
+            }
+        }
+
+        self.messages[start..].to_vec()
+    }
+
     /// Get all messages.
     pub fn get_messages(&self) -> &[Message] {
         &self.messages
@@ -1717,5 +1768,84 @@ mod tests {
         m.add_message(Message::user(&long));
         assert_eq!(m.get_messages().len(), 1);
         assert!(m.token_count() > 0);
+    }
+
+    // ---- get_context_with_user_anchor ----
+
+    #[test]
+    fn anchor_extends_to_include_user_when_window_too_small() {
+        // Simulate an agent run with one user message followed by a long
+        // chain of assistant + tool turns. A naive last-N slice would
+        // contain no user message, which providers reject.
+        let mut m = memory();
+        m.add_message(Message::user("original prompt"));
+        for i in 0..30 {
+            m.add_message(Message::assistant(format!("thinking {}", i)));
+            m.add_message(Message::tool("read_file", &format!("call-{}", i), "result"));
+        }
+
+        let ctx = m.get_context_with_user_anchor(20, None);
+        assert!(
+            ctx.iter().any(|msg| matches!(msg.role, MessageRole::User)),
+            "slice must contain at least one user message"
+        );
+        // First message of the slice should be the user prompt.
+        assert!(matches!(ctx[0].role, MessageRole::User));
+        assert_eq!(ctx[0].content, "original prompt");
+    }
+
+    #[test]
+    fn anchor_keeps_short_slice_when_window_already_has_user() {
+        // The anchor only extends; if the window already contains a
+        // user, leave it alone.
+        let mut m = memory();
+        for i in 0..5 {
+            m.add_message(Message::user(format!("q{}", i)));
+            m.add_message(Message::assistant(format!("a{}", i)));
+        }
+        let ctx = m.get_context_with_user_anchor(4, None);
+        assert_eq!(ctx.len(), 4);
+        // Last 4 of 10: q3, a3, q4, a4.
+        assert_eq!(ctx[0].content, "q3");
+    }
+
+    #[test]
+    fn anchor_respects_hard_cap() {
+        // Even if the user message is far back, hard_cap caps the slice.
+        let mut m = memory();
+        m.add_message(Message::user("way back"));
+        for _ in 0..50 {
+            m.add_message(Message::assistant("more"));
+        }
+        let ctx = m.get_context_with_user_anchor(5, Some(10));
+        assert!(ctx.len() <= 10);
+        // The user message is older than the hard cap, so it WON'T be
+        // included — sanitize_for_provider in the orchestrator will then
+        // strip leading non-user messages and drop everything. That's
+        // acceptable: the alternative is sending an unbounded payload.
+    }
+
+    #[test]
+    fn anchor_handles_empty_memory() {
+        let m = memory();
+        let ctx = m.get_context_with_user_anchor(20, None);
+        assert!(ctx.is_empty());
+    }
+
+    #[test]
+    fn anchor_picks_most_recent_user_when_multiple_exist() {
+        // Multi-turn conversation. Latest user turn becomes the anchor,
+        // not the first one ever.
+        let mut m = memory();
+        m.add_message(Message::user("first prompt"));
+        m.add_message(Message::assistant("first answer"));
+        m.add_message(Message::user("second prompt"));
+        for i in 0..30 {
+            m.add_message(Message::assistant(format!("thinking {}", i)));
+        }
+        let ctx = m.get_context_with_user_anchor(5, None);
+        // The slice must start at the second user prompt, not the first.
+        assert!(matches!(ctx[0].role, MessageRole::User));
+        assert_eq!(ctx[0].content, "second prompt");
     }
 }

@@ -322,7 +322,15 @@ impl Orchestrator {
     }
 
     fn build_messages(&self) -> Vec<ChatMessageRequest> {
-        let context = self.memory.lock().unwrap().get_context(20);
+        // Anchor the slice to a user message so we never send a payload
+        // that's purely assistant/tool turns. Cap the lookback at 200
+        // messages to keep the request size sane even when the agent
+        // ran a very long tool chain between user prompts.
+        let context = self
+            .memory
+            .lock()
+            .unwrap()
+            .get_context_with_user_anchor(20, Some(200));
         build_request_messages(&context, self.keep_recent_tool_results)
     }
 
