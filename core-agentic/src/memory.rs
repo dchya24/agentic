@@ -469,6 +469,11 @@ impl Memory {
         &self.pinned_ids
     }
 
+    /// Total token budget for this memory's context window.
+    pub fn budget(&self) -> u32 {
+        self.max_tokens
+    }
+
     // -----------------------------------------------------------------------
     // Context Window
     // -----------------------------------------------------------------------
@@ -600,6 +605,119 @@ impl Memory {
         }
 
         self.messages[start..].to_vec()
+    }
+
+    /// Production-grade context builder for the LLM main loop.
+    ///
+    /// Strategy (closer to what Claude Code, Aider, and Continue.dev do):
+    ///
+    /// 1. **Walk turns, not messages.** A "turn" is a self-contained
+    ///    group: `user` followed by zero or more `assistant`/`tool`
+    ///    pairs until the next `user`. We never cut a turn in half,
+    ///    which means we never split an assistant's `tool_calls` from
+    ///    its `tool` results.
+    ///
+    /// 2. **Token budget, not message count.** Walk turns from newest
+    ///    to oldest, accumulating estimated tokens, and stop just
+    ///    before exceeding `token_budget`. The most recent turn is
+    ///    always included even if it alone exceeds budget — the model
+    ///    will then truncate, but at least we send a valid request
+    ///    rather than nothing.
+    ///
+    /// 3. **Anchored to user.** Because we walk turn boundaries, the
+    ///    result always starts with a `user` message (or system + user
+    ///    if a summary is present), satisfying provider requirements.
+    ///
+    /// 4. **Summary prepended.** If a compaction summary exists
+    ///    (`Memory::summary`), it's prepended as a system message at
+    ///    the start of the slice so the model has high-level context
+    ///    even after older turns are evicted.
+    ///
+    /// `token_budget` should typically be ~70% of the model's context
+    /// window to leave headroom for the system prompt, tool definitions,
+    /// and the response itself.
+    pub fn get_context_for_request(&self, token_budget: u32) -> Vec<Message> {
+        if self.messages.is_empty() {
+            return Vec::new();
+        }
+
+        // Walk backwards finding turn boundaries (each `user` message
+        // starts a new turn). Collect (start_idx, end_idx_exclusive)
+        // ranges for each turn.
+        let mut turn_starts: Vec<usize> = Vec::new();
+        for (i, msg) in self.messages.iter().enumerate() {
+            if matches!(msg.role, MessageRole::User) {
+                turn_starts.push(i);
+            }
+        }
+
+        if turn_starts.is_empty() {
+            // No user messages exist (shouldn't happen in practice;
+            // means orchestrator was misused). Fall back to anchor.
+            return self.get_context_with_user_anchor(20, Some(200));
+        }
+
+        let total = self.messages.len();
+        let mut turns: Vec<(usize, usize)> = Vec::with_capacity(turn_starts.len());
+        for (idx, &start) in turn_starts.iter().enumerate() {
+            let end = turn_starts.get(idx + 1).copied().unwrap_or(total);
+            turns.push((start, end));
+        }
+
+        // Walk turns newest-first, accumulating tokens.
+        let mut earliest_kept: usize = turns.last().map(|(s, _)| *s).unwrap_or(0);
+        let mut used: u32 = 0;
+        // Reserve space for an optional summary at the head.
+        let summary_tokens: u32 = self
+            .summary
+            .as_deref()
+            .map(estimate_tokens)
+            .unwrap_or(0);
+        let effective_budget = token_budget.saturating_sub(summary_tokens);
+
+        for (start, end) in turns.iter().rev() {
+            let turn_tokens: u32 = self.messages[*start..*end]
+                .iter()
+                .map(|m| {
+                    if m.metadata.token_count > 0 {
+                        m.metadata.token_count
+                    } else {
+                        estimate_tokens(&m.content)
+                    }
+                })
+                .sum();
+
+            // Always include the most recent turn, even if it alone
+            // blows the budget. Otherwise we'd send an empty request.
+            let is_most_recent = *start == turns.last().unwrap().0;
+
+            if !is_most_recent && used + turn_tokens > effective_budget {
+                // This turn would overflow; stop and use the previous
+                // (newer) earliest_kept.
+                break;
+            }
+
+            used += turn_tokens;
+            earliest_kept = *start;
+        }
+
+        // Build the output: optional summary + kept turns in chronological order.
+        let mut out: Vec<Message> = Vec::with_capacity(total - earliest_kept + 1);
+        if let Some(ref summary) = self.summary {
+            out.push(Message {
+                id: "__summary__".to_string(),
+                role: MessageRole::System,
+                content: summary.clone(),
+                timestamp: Utc::now(),
+                pinned: true,
+                metadata: MessageMetadata {
+                    token_count: summary_tokens,
+                    ..Default::default()
+                },
+            });
+        }
+        out.extend(self.messages[earliest_kept..].iter().cloned());
+        out
     }
 
     /// Get all messages.
@@ -1847,5 +1965,137 @@ mod tests {
         // The slice must start at the second user prompt, not the first.
         assert!(matches!(ctx[0].role, MessageRole::User));
         assert_eq!(ctx[0].content, "second prompt");
+    }
+
+    // ---- get_context_for_request (production turn-aware builder) ----
+
+    #[test]
+    fn turn_builder_starts_with_user_message() {
+        let mut m = memory();
+        m.add_message(Message::user("first"));
+        m.add_message(Message::assistant("a"));
+        m.add_message(Message::user("second"));
+        for i in 0..50 {
+            m.add_message(Message::assistant(format!("t{}", i)));
+            m.add_message(Message::tool("read_file", &format!("c-{}", i), "r"));
+        }
+
+        let ctx = m.get_context_for_request(100_000);
+        assert!(matches!(ctx[0].role, MessageRole::User));
+    }
+
+    #[test]
+    fn turn_builder_keeps_complete_turns_under_budget() {
+        // Three small turns. With a generous budget all should fit.
+        let mut m = memory();
+        m.add_message(Message::user("q1"));
+        m.add_message(Message::assistant("a1"));
+        m.add_message(Message::user("q2"));
+        m.add_message(Message::assistant("a2"));
+        m.add_message(Message::user("q3"));
+        m.add_message(Message::assistant("a3"));
+
+        let ctx = m.get_context_for_request(100_000);
+        assert_eq!(ctx.len(), 6);
+        assert_eq!(ctx[0].content, "q1");
+        assert_eq!(ctx[5].content, "a3");
+    }
+
+    #[test]
+    fn turn_builder_drops_older_turns_when_budget_tight() {
+        // Three turns with ~heavy content. Budget admits only the
+        // newest two. The oldest must be dropped at the turn boundary,
+        // not mid-turn.
+        let mut m = memory();
+        let big = "x".repeat(4000); // ~1000 tokens estimated
+        m.add_message(Message::user(format!("q1 {}", big)));
+        m.add_message(Message::assistant(format!("a1 {}", big)));
+        m.add_message(Message::user(format!("q2 {}", big)));
+        m.add_message(Message::assistant(format!("a2 {}", big)));
+        m.add_message(Message::user(format!("q3 {}", big)));
+        m.add_message(Message::assistant(format!("a3 {}", big)));
+
+        // Budget that fits roughly 2 turns (2 * ~2000 tokens).
+        let ctx = m.get_context_for_request(5_000);
+        assert!(
+            ctx.len() <= 4,
+            "should drop at least one full turn; got {}",
+            ctx.len()
+        );
+        // Whatever survives must start with a user message.
+        assert!(matches!(ctx[0].role, MessageRole::User));
+    }
+
+    #[test]
+    fn turn_builder_never_splits_tool_pair() {
+        // Build a turn that has assistant+tool_call+tool_result.
+        // Even if the budget is tight, the splitter must keep them
+        // together (or drop them together), never one without the other.
+        use crate::providers::{ToolCallFunction, ToolCallResponse};
+
+        let mut m = memory();
+        m.add_message(Message::user("please look"));
+        m.add_message(Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCallResponse {
+                id: "call-1".into(),
+                call_type: "function".into(),
+                function: ToolCallFunction {
+                    name: "read_file".into(),
+                    arguments: "{}".into(),
+                },
+            }],
+        ));
+        m.add_message(Message::tool("read_file", "call-1", "result"));
+        m.add_message(Message::assistant("final answer"));
+
+        let ctx = m.get_context_for_request(100_000);
+        // Find the assistant_with_tool_calls and verify the matching
+        // tool message is also present.
+        let assistant_idx = ctx
+            .iter()
+            .position(|m| !m.metadata.tool_calls.is_empty())
+            .expect("assistant tool_call should be in context");
+        let tool_id = &ctx[assistant_idx].metadata.tool_calls[0].id;
+        let tool_present = ctx.iter().any(|m| {
+            matches!(
+                &m.role,
+                MessageRole::Tool { tool_call_id, .. } if tool_call_id == tool_id
+            )
+        });
+        assert!(tool_present, "tool result must accompany tool_call");
+    }
+
+    #[test]
+    fn turn_builder_always_includes_most_recent_turn() {
+        // Even if the most recent turn alone exceeds budget, include it.
+        // The model will surface the truncation; sending nothing would
+        // be worse.
+        let mut m = memory();
+        let huge = "x".repeat(40_000); // ~10k tokens
+        m.add_message(Message::user(huge.clone()));
+
+        let ctx = m.get_context_for_request(1_000);
+        assert_eq!(ctx.len(), 1);
+        assert!(matches!(ctx[0].role, MessageRole::User));
+    }
+
+    #[test]
+    fn turn_builder_prepends_summary_when_present() {
+        let mut m = memory();
+        // Need enough messages for compact_with_summary to actually run
+        // (default keep_recent=4 — anything beyond that gets summarized).
+        for i in 0..6 {
+            m.add_message(Message::user(format!("q{}", i)));
+            m.add_message(Message::assistant(format!("a{}", i)));
+        }
+        m.compact_with_summary("Earlier we discussed X and Y.");
+
+        let ctx = m.get_context_for_request(100_000);
+        assert!(matches!(ctx[0].role, MessageRole::System));
+        assert!(ctx[0].content.contains("discussed X and Y"));
+        // A user/assistant follows.
+        assert!(ctx.len() > 1);
+        assert!(matches!(ctx[1].role, MessageRole::User));
     }
 }

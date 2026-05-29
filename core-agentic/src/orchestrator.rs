@@ -322,15 +322,21 @@ impl Orchestrator {
     }
 
     fn build_messages(&self) -> Vec<ChatMessageRequest> {
-        // Anchor the slice to a user message so we never send a payload
-        // that's purely assistant/tool turns. Cap the lookback at 200
-        // messages to keep the request size sane even when the agent
-        // ran a very long tool chain between user prompts.
+        // Token-budget context builder. We aim for ~70% of the model's
+        // context window so there's headroom for the system prompt,
+        // tool definitions, and the response itself.
+        //
+        // The builder walks complete user-turns (user + assistant + tool
+        // group) so a tool_call/result pair is never split, eliminating
+        // the orphan-tool / dangling-tool_calls / no-user-anchor cases
+        // that previously produced HTTP 400 from the provider.
+        let max_tokens = self.memory.lock().unwrap().budget();
+        let token_budget = (max_tokens as f64 * 0.70) as u32;
         let context = self
             .memory
             .lock()
             .unwrap()
-            .get_context_with_user_anchor(20, Some(200));
+            .get_context_for_request(token_budget);
         build_request_messages(&context, self.keep_recent_tool_results)
     }
 
