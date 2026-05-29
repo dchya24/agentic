@@ -10,6 +10,7 @@ use crossterm::style::{
     SetForegroundColor,
 };
 use crossterm::terminal::{Clear, ClearType};
+use crossterm::Command;
 use crossterm::ExecutableCommand;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -110,6 +111,62 @@ pub fn terminal_width() -> usize {
         .max(40)
 }
 
+/// Render a `Line` to an ANSI-encoded `String`. Useful when a third-party
+/// library (dialoguer's `Select`/`FuzzySelect`, indicatif templates, etc.)
+/// expects a raw styled string but we still want widget-driven styling.
+///
+/// Honors [`should_use_color`] — when color is disabled, returns plain
+/// text with all styling stripped.
+pub fn line_to_ansi(line: &Line<'_>) -> String {
+    let styled = should_use_color();
+    // Most lines are short; pre-allocate a reasonable lower bound.
+    let mut out = String::with_capacity(
+        line.spans.iter().map(|s| s.content.len()).sum::<usize>() + 16,
+    );
+    for span in &line.spans {
+        if styled {
+            write_style_ansi(&mut out, &span.style);
+        }
+        out.push_str(&span.content);
+        if styled {
+            // Reset after each span so adjacent spans don't bleed styling.
+            let _ = SetAttribute(Attribute::Reset).write_ansi(&mut out);
+            let _ = ResetColor.write_ansi(&mut out);
+        }
+    }
+    out
+}
+
+/// Write SGR escapes for `style` into `out`. Used by [`line_to_ansi`].
+fn write_style_ansi(out: &mut String, style: &Style) {
+    if let Some(fg) = style.fg {
+        if let Some(ct) = to_crossterm_color(fg) {
+            let _ = SetForegroundColor(ct).write_ansi(out);
+        }
+    }
+    if let Some(bg) = style.bg {
+        if let Some(ct) = to_crossterm_color(bg) {
+            let _ = SetBackgroundColor(ct).write_ansi(out);
+        }
+    }
+    let mods = style.add_modifier;
+    if mods.contains(Modifier::BOLD) {
+        let _ = SetAttribute(Attribute::Bold).write_ansi(out);
+    }
+    if mods.contains(Modifier::DIM) {
+        let _ = SetAttribute(Attribute::Dim).write_ansi(out);
+    }
+    if mods.contains(Modifier::ITALIC) {
+        let _ = SetAttribute(Attribute::Italic).write_ansi(out);
+    }
+    if mods.contains(Modifier::UNDERLINED) {
+        let _ = SetAttribute(Attribute::Underlined).write_ansi(out);
+    }
+    if mods.contains(Modifier::CROSSED_OUT) {
+        let _ = SetAttribute(Attribute::CrossedOut).write_ansi(out);
+    }
+}
+
 /// Apply a ratatui `Style` to stdout using crossterm commands.
 fn apply_style(stdout: &mut io::Stdout, style: &Style) {
     if let Some(fg) = style.fg {
@@ -189,5 +246,37 @@ mod tests {
         // The width helper enforces a 40-col floor so layout math stays sane
         // even on tiny or unmeasurable terminals.
         assert!(terminal_width() >= 40);
+    }
+
+    #[test]
+    fn line_to_ansi_emits_styling_when_color_on() {
+        use super::super::capabilities::set_color_enabled;
+        set_color_enabled(Some(true));
+        let line = Line::from(vec![
+            Span::styled("red", Style::default().fg(Color::Red)),
+            Span::raw(" plain"),
+            Span::styled("bold", Style::default().add_modifier(Modifier::BOLD)),
+        ]);
+        let ansi = line_to_ansi(&line);
+        assert!(ansi.contains("red"));
+        assert!(ansi.contains(" plain"));
+        assert!(ansi.contains("bold"));
+        // Should contain at least one SGR escape ([).
+        assert!(ansi.contains('\u{1b}'));
+        set_color_enabled(None);
+    }
+
+    #[test]
+    fn line_to_ansi_strips_styling_when_color_off() {
+        use super::super::capabilities::set_color_enabled;
+        set_color_enabled(Some(false));
+        let line = Line::from(vec![
+            Span::styled("red", Style::default().fg(Color::Red)),
+            Span::raw(" plain"),
+        ]);
+        let ansi = line_to_ansi(&line);
+        assert_eq!(ansi, "red plain");
+        assert!(!ansi.contains('\u{1b}'));
+        set_color_enabled(None);
     }
 }

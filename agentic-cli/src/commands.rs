@@ -533,36 +533,44 @@ impl Commands {
     /// Interactive model picker using dialoguer.
     /// Returns (provider_name, model_name) if switched, None if cancelled.
     pub fn pick_model_interactive(&mut self) -> Option<(String, String)> {
-        use dialoguer::{FuzzySelect, theme::ColorfulTheme};
+        use dialoguer::{theme::ColorfulTheme, FuzzySelect};
 
-        // Build flat list of (display_label, provider_idx, model_idx)
-        let mut items: Vec<(String, usize, usize)> = Vec::new();
+        // Build flat list of (rendered_label, provider_idx, model_idx, is_active).
+        //
+        // Each label is composed as a ratatui `Line<Span>` so styling stays
+        // consistent with the rest of the CLI, then converted to an ANSI
+        // string for dialoguer (which only accepts `&str`). `line_to_ansi`
+        // honors capability detection, so labels stay plain when stdout
+        // isn't a TTY or `--color=never` was passed.
+        let mut items: Vec<(String, usize, usize, bool)> = Vec::new();
         let active_provider = self.config.active_provider().map(|p| p.name.clone());
         let active_model = self.config.active_model().map(|m| m.model.clone());
+
+        let active_marker_style = RStyle::default()
+            .fg(RColor::Green)
+            .add_modifier(RModifier::BOLD);
+        let dim = RStyle::default().add_modifier(RModifier::DIM);
 
         for (pi, provider) in self.config.providers.iter().enumerate() {
             for (mi, model) in provider.models.iter().enumerate() {
                 let display = model.display_name.as_deref().unwrap_or(&model.model);
                 let is_active = active_provider.as_deref() == Some(&provider.name)
                     && active_model.as_deref() == Some(&model.model);
-                // dialoguer's FuzzySelect renders raw strings, so we keep ANSI here.
-                // The capability check ensures we drop styling when not a TTY.
-                let label = if capabilities::should_use_color() {
-                    format!(
-                        "{}{} \x1b[2m[{}]\x1b[0m",
-                        if is_active { "✓ " } else { "  " },
-                        display,
-                        provider.name,
-                    )
+
+                let marker = if is_active {
+                    RSpan::styled("✓ ", active_marker_style)
                 } else {
-                    format!(
-                        "{}{} [{}]",
-                        if is_active { "✓ " } else { "  " },
-                        display,
-                        provider.name,
-                    )
+                    RSpan::raw("  ")
                 };
-                items.push((label, pi, mi));
+
+                let line = RLine::from(vec![
+                    marker,
+                    RSpan::raw(display.to_string()),
+                    RSpan::raw(" "),
+                    RSpan::styled(format!("[{}]", provider.name), dim),
+                ]);
+
+                items.push((inline::line_to_ansi(&line), pi, mi, is_active));
             }
         }
 
@@ -573,20 +581,23 @@ impl Commands {
             return None;
         }
 
-        // Find current selection index
-        let default = items.iter().position(|(label, _, _)| label.starts_with('✓')).unwrap_or(0);
+        // Default to the active model's row — by structured flag, not by
+        // string scanning the (possibly ANSI-prefixed) label.
+        let default = items
+            .iter()
+            .position(|(_, _, _, is_active)| *is_active)
+            .unwrap_or(0);
 
-        let labels: Vec<&str> = items.iter().map(|(l, _, _)| l.as_str()).collect();
+        let labels: Vec<&str> = items.iter().map(|(l, _, _, _)| l.as_str()).collect();
 
         let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
             .with_prompt("Select model")
             .default(default)
             .items(&labels)
             .interact_opt()
-            .ok()??
-            ;
+            .ok()??;
 
-        let (_, pi, mi) = &items[selection];
+        let (_, pi, mi, _) = &items[selection];
         let name = self.config.providers[*pi].models[*mi].model.clone();
         match self.switch_model(&name) {
             Ok(result) => Some(result),
