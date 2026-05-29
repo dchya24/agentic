@@ -28,7 +28,6 @@ use std::time::Instant;
 use crate::commands::Commands;
 use crate::widgets::inline;
 use crate::widgets::components;
-use crate::widgets::spinner;
 
 // ── Session statistics ──────────────────────────────────────
 

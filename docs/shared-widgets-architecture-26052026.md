@@ -1,6 +1,6 @@
 # Shared Widgets Architecture
 
-> Date: 2026-05-26
+> Date: 2026-05-26 (last update: 2026-05-29)
 > Status: Implemented
 
 ## Current Integration Status
@@ -9,7 +9,9 @@
 |--------|--------------------|---------|
 | `tui/app.rs` | ✓ `widgets::progress::ProgressState` | Full-screen mode |
 | `tui/ui.rs` | ✓ `widgets::markdown::MarkdownContent` | Full-screen mode |
-| `interactive.rs` | ✓ `widgets::inline`, `widgets::spinner`, `widgets::markdown` | All output uses shared widgets, zero raw ANSI |
+| `interactive.rs` | ✓ `widgets::inline`, `widgets::components`, `widgets::markdown` | All output uses shared widgets, zero raw ANSI |
+| `commands.rs` | ✓ `widgets::inline`, `widgets::components`, `widgets::markdown`, `widgets::capabilities` | All `println!`-based ANSI replaced with shared widgets (one ANSI escape kept inside a dialoguer label, gated by capability detection) |
+| `main.rs` | ✓ `widgets::inline`, `widgets::components`, `widgets::capabilities` | Bootstrap messages use badges; `--color` flag drives `capabilities::set_color_enabled` |
 
 ## Overview
 
@@ -26,6 +28,7 @@ Both modes share a common `widgets` module that produces ratatui primitives (`Li
 src/
 ├── widgets/              # Shared components (ratatui primitives)
 │   ├── mod.rs            # Module root
+│   ├── capabilities.rs   # Color/TTY detection (NO_COLOR, TERM=dumb, isatty, --color override)
 │   ├── inline.rs         # Inline renderer: Line/Text → stdout (no raw mode)
 │   ├── markdown.rs       # Markdown parser → Vec<Line<'static>>
 │   ├── progress.rs       # Progress state (spinner frames, bars, elapsed time)
@@ -37,7 +40,7 @@ src/
 │   ├── dropdown.rs       # Dropdown widget (TUI-specific)
 │   └── input.rs          # Input rendering (TUI-specific)
 ├── interactive.rs        # Reedline REPL (uses all widgets for output)
-└── main.rs              # Registers `mod widgets`
+└── main.rs              # Registers `mod widgets`, drives capability override
 ```
 
 ## How It Works
@@ -88,6 +91,23 @@ inline::print_rule('─', Style::default().fg(Color::DarkGray));
 ```
 
 ## API Reference
+
+### `widgets::capabilities`
+
+Centralizes color/TTY decisions so widgets and helpers don't each re-check
+environment state.
+
+| Function | Description |
+|----------|-------------|
+| `set_color_enabled(Option<bool>)` | Force color on/off; `None` = auto-detect |
+| `should_use_color()` | Master decision: override > NO_COLOR > TERM=dumb > stdout TTY |
+| `is_stdout_tty()` | Cached `std::io::stdout().is_terminal()` check |
+
+Precedence:
+1. Explicit override from `--color always|never` (set in `main.rs`).
+2. `NO_COLOR` env var (any non-empty value disables color).
+3. `TERM=dumb` disables color.
+4. Falls back to TTY check on stdout (so piped output is plain).
 
 ### `widgets::inline`
 
@@ -177,10 +197,10 @@ Rich visual components for beautiful CLI output.
 
 | Concern | Mitigation |
 |---------|------------|
-| Color support detection | Check `NO_COLOR`, `TERM=dumb`, `!is_terminal()` before styling |
+| Color support detection | ✓ Implemented in `widgets::capabilities` (NO_COLOR, TERM=dumb, isatty, --color override). `inline::print_line` strips styling automatically when disabled. |
 | Terminal width changes | Query `crossterm::terminal::size()` at render time, not cached |
 | Unicode display width | Emoji/CJK chars have variable width; use `unicode-width` if needed |
-| Piped output | Strip styling when stdout is not a TTY |
+| Piped output | ✓ Auto-stripped via `capabilities::is_stdout_tty()` check in `should_use_color()` |
 | Scrollback pollution | Be intentional — inline output stays in history |
 | Live-updating lines | Use `\r` + ANSI clear for single-line updates (spinners) |
 

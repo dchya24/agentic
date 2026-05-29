@@ -3,6 +3,8 @@ use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color
 use core_agentic::{Config, Orchestrator, ToolRegistry};
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use indicatif::{ProgressBar, ProgressStyle};
+use ratatui::style::{Color as RColor, Modifier as RModifier, Style as RStyle};
+use ratatui::text::{Line as RLine, Span as RSpan};
 use std::io::{self, Write};
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,6 +15,8 @@ use crate::cli::{ConfigAction, OutputFormat};
 use crate::confirmation::{prompt_confirmation, ConfirmationResponse};
 use crate::error::CommandError;
 use crate::markdown::render_markdown;
+use crate::widgets::capabilities;
+use crate::widgets::{components, inline};
 
 static ALWAYS_CONFIRM: AtomicBool = AtomicBool::new(false);
 static COLOR_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -252,32 +256,67 @@ impl Commands {
     // ── Inline config display (for REPL /config) ──────────
 
     pub fn config_show_inline(&self) {
-        println!();
+        inline::print_blank();
+        let key_w = 10;
         if let Some(p) = self.config.active_provider() {
-            println!("  \x1b[1mProvider:\x1b[0m  {} ({})", p.name, p.provider_type);
-            println!("  \x1b[1mAPI Base:\x1b[0m {}", p.api_base);
+            inline::print_line(&components::kv_line(
+                "Provider",
+                &format!("{} ({})", p.name, p.provider_type),
+                key_w,
+                RColor::Reset,
+            ));
+            inline::print_line(&components::kv_line(
+                "API Base",
+                &p.api_base,
+                key_w,
+                RColor::Reset,
+            ));
             if p.api_key.is_empty() {
-                println!("  \x1b[1mAPI Key:\x1b[0m  \x1b[31mnot set\x1b[0m");
+                inline::print_line(&components::kv_line(
+                    "API Key",
+                    "not set",
+                    key_w,
+                    RColor::Red,
+                ));
             } else {
-                println!("  \x1b[1mAPI Key:\x1b[0m  {}...{}",
+                let masked = format!(
+                    "{}...{}",
                     &p.api_key[..4.min(p.api_key.len())],
-                    &p.api_key[p.api_key.len().saturating_sub(4)..]);
+                    &p.api_key[p.api_key.len().saturating_sub(4)..]
+                );
+                inline::print_line(&components::kv_line(
+                    "API Key",
+                    &masked,
+                    key_w,
+                    RColor::Green,
+                ));
             }
             if let Some(m) = p.models.first() {
-                println!("  \x1b[1mModel:\x1b[0m    {} (temp: {}, max_tokens: {})",
-                    m.model, m.temperature, m.max_tokens);
+                inline::print_line(&components::kv_line(
+                    "Model",
+                    &format!(
+                        "{} (temp: {}, max_tokens: {})",
+                        m.model, m.temperature, m.max_tokens
+                    ),
+                    key_w,
+                    RColor::Reset,
+                ));
             }
         } else {
-            println!("  \x1b[33mNo provider configured.\x1b[0m");
+            inline::print_line(&components::warning_badge("No provider configured."));
         }
-        println!("  \x1b[1mConfig:\x1b[0m    {}", Config::config_path().display());
-        println!();
+        inline::print_line(&components::kv_line(
+            "Config",
+            &Config::config_path().display().to_string(),
+            key_w,
+            RColor::Reset,
+        ));
+        inline::print_blank();
     }
 
     // ── List tools (for REPL /tools) ────────────────────────
 
     pub fn list_tools(&self) {
-        // Build a temporary tool registry to list tools
         let tools = core_agentic::ToolRegistry::new();
         for tool in core_agentic::tools::builtin_tools() {
             tools.register(tool);
@@ -285,24 +324,50 @@ impl Commands {
 
         let tool_list = tools.list();
 
-        println!();
-        println!("  \x1b[1m\x1b[36m🔧 Available Tools ({}):\x1b[0m\n", tool_list.len());
+        inline::print_blank();
+        inline::print_line(&components::section_header(
+            "🔧",
+            &format!("Available Tools ({})", tool_list.len()),
+            RColor::Cyan,
+        ));
+        inline::print_blank();
+
         for t in &tool_list {
-            println!("  \x1b[1m{}\x1b[0m", t.name);
-            println!("    {}", t.description);
+            inline::print_line(&RLine::from(vec![
+                RSpan::raw("  "),
+                RSpan::styled(
+                    t.name.to_string(),
+                    RStyle::default().add_modifier(RModifier::BOLD),
+                ),
+            ]));
+            inline::print_line(&RLine::from(vec![
+                RSpan::raw("    "),
+                RSpan::raw(t.description.to_string()),
+            ]));
             if !t.parameters.is_empty() {
-                let params: Vec<String> = t.parameters.keys()
+                let params: Vec<String> = t
+                    .parameters
+                    .keys()
                     .map(|p| {
                         let is_required = t.required.contains(p);
-                        format!("{}{}{}",
+                        format!(
+                            "{}{}{}",
                             p,
                             if is_required { "*" } else { "" },
-                            if is_required { " (required)" } else { " (optional)" })
+                            if is_required { " (required)" } else { " (optional)" }
+                        )
                     })
                     .collect();
-                println!("    Params: {}", params.join(", "));
+                inline::print_line(&RLine::from(vec![
+                    RSpan::raw("    "),
+                    RSpan::styled(
+                        "Params: ",
+                        RStyle::default().add_modifier(RModifier::DIM),
+                    ),
+                    RSpan::raw(params.join(", ")),
+                ]));
             }
-            println!();
+            inline::print_blank();
         }
     }
 
@@ -311,63 +376,110 @@ impl Commands {
     pub fn list_models(&self) {
         let providers = &self.config.providers;
 
-        println!();
-        println!("  \x1b[1m\x1b[36m🤖 Available Models:\x1b[0m\n");
+        inline::print_blank();
+        inline::print_line(&components::section_header(
+            "🤖",
+            "Available Models",
+            RColor::Cyan,
+        ));
+        inline::print_blank();
 
         if providers.is_empty() {
-            println!("  \x1b[33mNo providers configured.\x1b[0m");
-            println!("  Run \x1b[1magentic init\x1b[0m to set up a provider.\n");
+            inline::print_line(&components::warning_badge("No providers configured."));
+            inline::print_line(&RLine::from(vec![
+                RSpan::raw("  Run "),
+                RSpan::styled(
+                    "agentic init",
+                    RStyle::default().add_modifier(RModifier::BOLD),
+                ),
+                RSpan::raw(" to set up a provider."),
+            ]));
+            inline::print_blank();
             return;
         }
 
         let active_provider = self.config.active_provider();
         let active_model = self.config.active_model();
 
-        for provider in providers {
-            let is_active_provider = active_provider.map(|p| p.name == provider.name).unwrap_or(false);
-            let provider_marker = if is_active_provider { "\x1b[32m● \x1b[0m" } else { "  " };
+        let bold = RStyle::default().add_modifier(RModifier::BOLD);
+        let dim = RStyle::default().add_modifier(RModifier::DIM);
+        let active_marker = RStyle::default().fg(RColor::Green);
 
-            println!(
-                "  {}\x1b[1m{}\x1b[0m \x1b[2m({})\x1b[0m",
-                provider_marker, provider.name, provider.provider_type
-            );
-            println!("  \x1b[2m  {}\x1b[0m", provider.api_base);
-            println!();
+        for provider in providers {
+            let is_active_provider = active_provider
+                .map(|p| p.name == provider.name)
+                .unwrap_or(false);
+
+            // Provider header line: marker + name + (type)
+            let mut spans = vec![RSpan::raw("  ")];
+            if is_active_provider {
+                spans.push(RSpan::styled("● ", active_marker));
+            } else {
+                spans.push(RSpan::raw("  "));
+            }
+            spans.push(RSpan::styled(provider.name.to_string(), bold));
+            spans.push(RSpan::styled(
+                format!(" ({})", provider.provider_type),
+                dim,
+            ));
+            inline::print_line(&RLine::from(spans));
+
+            inline::print_line(&RLine::from(vec![
+                RSpan::raw("    "),
+                RSpan::styled(provider.api_base.clone(), dim),
+            ]));
+            inline::print_blank();
 
             if provider.models.is_empty() {
-                println!("    \x1b[33mNo models configured for this provider.\x1b[0m");
+                inline::print_line(&RLine::from(vec![
+                    RSpan::raw("    "),
+                    RSpan::styled(
+                        "No models configured for this provider.",
+                        RStyle::default().fg(RColor::Yellow),
+                    ),
+                ]));
             } else {
                 for model in &provider.models {
                     let is_active_model = is_active_provider
                         && active_model.map(|m| m.model == model.model).unwrap_or(false);
 
-                    let marker = if is_active_model {
-                        "\x1b[32m  ✓ \x1b[0m"
-                    } else {
-                        "    "
-                    };
-
                     let display = model.display_name.as_deref().unwrap_or(&model.model);
-                    let name_style = if is_active_model {
-                        format!("\x1b[1;32m{}\x1b[0m", display)
+                    let (marker, name_style) = if is_active_model {
+                        (
+                            RSpan::styled("  ✓ ", active_marker),
+                            RStyle::default().fg(RColor::Green).add_modifier(RModifier::BOLD),
+                        )
                     } else {
-                        format!("\x1b[1m{}\x1b[0m", display)
+                        (RSpan::raw("    "), bold)
                     };
 
-                    println!(
-                        "  {}{}  \x1b[2m{}\x1b[0m",
-                        marker, name_style, model.model
-                    );
-                    println!(
-                        "       \x1b[2mtemp: {}  max_tokens: {}\x1b[0m",
-                        model.temperature, model.max_tokens
-                    );
+                    inline::print_line(&RLine::from(vec![
+                        RSpan::raw("  "),
+                        marker,
+                        RSpan::styled(display.to_string(), name_style),
+                        RSpan::raw("  "),
+                        RSpan::styled(model.model.clone(), dim),
+                    ]));
+                    inline::print_line(&RLine::from(vec![
+                        RSpan::raw("       "),
+                        RSpan::styled(
+                            format!(
+                                "temp: {}  max_tokens: {}",
+                                model.temperature, model.max_tokens
+                            ),
+                            dim,
+                        ),
+                    ]));
                 }
             }
-            println!();
+            inline::print_blank();
         }
 
-        println!("  \x1b[2m● = active provider   ✓ = active model\x1b[0m\n");
+        inline::print_line(&RLine::from(RSpan::styled(
+            "  ● = active provider   ✓ = active model",
+            dim,
+        )));
+        inline::print_blank();
     }
 
     // ── Switch model ────────────────────────────────────────
@@ -434,18 +546,31 @@ impl Commands {
                 let display = model.display_name.as_deref().unwrap_or(&model.model);
                 let is_active = active_provider.as_deref() == Some(&provider.name)
                     && active_model.as_deref() == Some(&model.model);
-                let label = format!(
-                    "{}{} \x1b[2m[{}]\x1b[0m",
-                    if is_active { "✓ " } else { "  " },
-                    display,
-                    provider.name,
-                );
+                // dialoguer's FuzzySelect renders raw strings, so we keep ANSI here.
+                // The capability check ensures we drop styling when not a TTY.
+                let label = if capabilities::should_use_color() {
+                    format!(
+                        "{}{} \x1b[2m[{}]\x1b[0m",
+                        if is_active { "✓ " } else { "  " },
+                        display,
+                        provider.name,
+                    )
+                } else {
+                    format!(
+                        "{}{} [{}]",
+                        if is_active { "✓ " } else { "  " },
+                        display,
+                        provider.name,
+                    )
+                };
                 items.push((label, pi, mi));
             }
         }
 
         if items.is_empty() {
-            println!("\n  \x1b[33mNo models configured.\x1b[0m\n");
+            inline::print_blank();
+            inline::print_line(&components::warning_badge("No models configured."));
+            inline::print_blank();
             return None;
         }
 
@@ -467,7 +592,9 @@ impl Commands {
         match self.switch_model(&name) {
             Ok(result) => Some(result),
             Err(e) => {
-                println!("\n  \x1b[31m✗ {}\x1b[0m\n", e);
+                inline::print_blank();
+                inline::print_line(&components::error_badge(&e));
+                inline::print_blank();
                 None
             }
         }
@@ -476,28 +603,46 @@ impl Commands {
     // ── MCP status (for REPL /mcp) ──────────────────────────
 
     pub fn show_mcp_status(&self) {
-        println!();
+        inline::print_blank();
+
         if self.config.mcp_servers.is_empty() {
-            println!("  \x1b[33mNo MCP servers configured.\x1b[0m");
-            println!("  Add servers in your config file: {}\n", Config::config_path().display());
+            inline::print_line(&components::warning_badge("No MCP servers configured."));
+            inline::print_line(&RLine::from(vec![
+                RSpan::raw("  Add servers in your config file: "),
+                RSpan::raw(Config::config_path().display().to_string()),
+            ]));
+            inline::print_blank();
             return;
         }
 
-        println!("  \x1b[1m\x1b[36m📡 MCP Servers ({}):\x1b[0m\n", self.config.mcp_servers.len());
+        inline::print_line(&components::section_header(
+            "📡",
+            &format!("MCP Servers ({})", self.config.mcp_servers.len()),
+            RColor::Cyan,
+        ));
+        inline::print_blank();
+
+        let bold = RStyle::default().add_modifier(RModifier::BOLD);
         for (name, srv) in &self.config.mcp_servers {
-            println!("  \x1b[1m{}\x1b[0m", name);
+            inline::print_line(&RLine::from(vec![
+                RSpan::raw("  "),
+                RSpan::styled(name.clone(), bold),
+            ]));
             if let Some(cmd) = &srv.command {
-                println!("    Command: {}", cmd);
+                inline::print_line(&RLine::from(format!("    Command: {}", cmd)));
             }
             if let Some(args) = &srv.args {
                 if !args.is_empty() {
-                    println!("    Args:    {}", args.join(" "));
+                    inline::print_line(&RLine::from(format!(
+                        "    Args:    {}",
+                        args.join(" ")
+                    )));
                 }
             }
             if let Some(url) = &srv.url {
-                println!("    URL:     {}", url);
+                inline::print_line(&RLine::from(format!("    URL:     {}", url)));
             }
-            println!();
+            inline::print_blank();
         }
     }
 
@@ -512,33 +657,59 @@ impl Commands {
     // ── Examples ────────────────────────────────────────────
 
     pub fn examples(&self) {
-        println!();
-        println!("  \x1b[1m\x1b[36m📖 Agentic CLI — Usage Examples\x1b[0m");
-        println!();
-        println!("  \x1b[33m# Run a single task\x1b[0m");
-        println!("  agentic run \"list all Rust files\"");
-        println!("  agentic run \"create hello.txt with 'hello world'\"");
-        println!("  agentic run \"explain the codebase structure\"");
-        println!();
-        println!("  \x1b[33m# Interactive mode\x1b[0m");
-        println!("  agentic interactive");
-        println!("  agentic i");
-        println!();
-        println!("  \x1b[33m# Config management\x1b[0m");
-        println!("  agentic config init                    # Default config");
-        println!("  agentic config init --interactive      # Guided wizard");
-        println!("  agentic config init --provider openai  # Quick setup");
-        println!("  agentic config show");
-        println!("  agentic config show --format table");
-        println!("  agentic config edit");
-        println!("  agentic config validate");
-        println!("  agentic config backup");
-        println!("  agentic config export                  # Masked secrets");
-        println!();
-        println!("  \x1b[33m# Status & info\x1b[0m");
-        println!("  agentic status");
-        println!("  agentic version");
-        println!();
+        let yellow_comment = RStyle::default().fg(RColor::Yellow);
+
+        inline::print_blank();
+        inline::print_line(&components::section_header(
+            "📖",
+            "Agentic CLI — Usage Examples",
+            RColor::Cyan,
+        ));
+        inline::print_blank();
+
+        let groups: &[(&str, &[&str])] = &[
+            (
+                "# Run a single task",
+                &[
+                    "agentic run \"list all Rust files\"",
+                    "agentic run \"create hello.txt with 'hello world'\"",
+                    "agentic run \"explain the codebase structure\"",
+                ],
+            ),
+            (
+                "# Interactive mode",
+                &["agentic interactive", "agentic i"],
+            ),
+            (
+                "# Config management",
+                &[
+                    "agentic config init                    # Default config",
+                    "agentic config init --interactive      # Guided wizard",
+                    "agentic config init --provider openai  # Quick setup",
+                    "agentic config show",
+                    "agentic config show --format table",
+                    "agentic config edit",
+                    "agentic config validate",
+                    "agentic config backup",
+                    "agentic config export                  # Masked secrets",
+                ],
+            ),
+            (
+                "# Status & info",
+                &["agentic status", "agentic version"],
+            ),
+        ];
+
+        for (heading, lines) in groups {
+            inline::print_line(&RLine::from(vec![
+                RSpan::raw("  "),
+                RSpan::styled((*heading).to_string(), yellow_comment),
+            ]));
+            for cmd in *lines {
+                inline::print_line(&RLine::from(format!("  {}", cmd)));
+            }
+            inline::print_blank();
+        }
     }
 
     // ── Run task ────────────────────────────────────────────
@@ -714,7 +885,13 @@ impl Commands {
             ]);
         }
 
-        println!("  \x1b[1mProviders:\x1b[0m");
+        inline::print_line(&RLine::from(vec![
+            RSpan::raw("  "),
+            RSpan::styled(
+                "Providers:",
+                RStyle::default().add_modifier(RModifier::BOLD),
+            ),
+        ]));
         println!("{table}");
 
         // Safety table
@@ -746,7 +923,13 @@ impl Commands {
         };
         safety_table.add_row(vec![Cell::new("Blocked commands"), Cell::new(blocked)]);
 
-        println!("  \x1b[1mSafety:\x1b[0m");
+        inline::print_line(&RLine::from(vec![
+            RSpan::raw("  "),
+            RSpan::styled(
+                "Safety:",
+                RStyle::default().add_modifier(RModifier::BOLD),
+            ),
+        ]));
         println!("{safety_table}");
 
         // Output table
@@ -788,7 +971,13 @@ impl Commands {
             }),
         ]);
 
-        println!("  \x1b[1mOutput:\x1b[0m");
+        inline::print_line(&RLine::from(vec![
+            RSpan::raw("  "),
+            RSpan::styled(
+                "Output:",
+                RStyle::default().add_modifier(RModifier::BOLD),
+            ),
+        ]));
         println!("{output_table}");
 
         // MCP servers
@@ -804,7 +993,13 @@ impl Commands {
             for (name, srv) in &self.config.mcp_servers {
                 mcp_table.add_row(vec![Cell::new(name), Cell::new(srv.command.as_deref().unwrap_or(""))]);
             }
-            println!("  \x1b[1mMCP Servers:\x1b[0m");
+            inline::print_line(&RLine::from(vec![
+                RSpan::raw("  "),
+                RSpan::styled(
+                    "MCP Servers:",
+                    RStyle::default().add_modifier(RModifier::BOLD),
+                ),
+            ]));
             println!("{mcp_table}");
         }
 
@@ -883,11 +1078,13 @@ impl Commands {
 
     /// Full interactive wizard using dialoguer
     fn config_init_wizard(&self) -> Result<Config> {
-        println!();
-        println!("  \x1b[1m\x1b[36m╔══════════════════════════════════════════╗\x1b[0m");
-        println!("  \x1b[1m\x1b[36m║      🤖 Agentic Config Wizard            ║\x1b[0m");
-        println!("  \x1b[1m\x1b[36m╚══════════════════════════════════════════╝\x1b[0m");
-        println!();
+        inline::print_blank();
+        inline::print_line(&components::banner_title(
+            "🤖 Agentic Config Wizard",
+            RColor::Cyan,
+            RColor::Magenta,
+        ));
+        inline::print_blank();
 
         // Step 1: Choose provider
         let provider_names: Vec<&str> = PROVIDER_PRESETS.iter().map(|p| p.name).collect();
@@ -1150,7 +1347,7 @@ impl Commands {
             let label = if provider.name.is_empty() {
                 format!("Provider #{}", i + 1)
             } else {
-                format!("Provider '{}{}'\x1b[0m'", "\x1b[1m", provider.name)
+                format!("Provider '{}'", provider.name)
             };
 
             if verbose {
@@ -1460,10 +1657,17 @@ impl Commands {
     }
 }
 
-// ── Print helpers ───────────────────────────────────────────
+// ── Print helpers (shared widgets) ──────────────────────────
+//
+// All visual output goes through `widgets::*` so that:
+//  - CLI and TUI share one styling vocabulary
+//  - Color/TTY decisions live in one place (`widgets::capabilities`)
+//
+// `print_chunk` still uses the streaming markdown renderer because the chunk
+// path needs partial flushes; everything else is structured Line output.
 
 fn print_chunk(chunk: &str, _color_enabled: bool) {
-    let use_color = COLOR_ENABLED.load(Ordering::Relaxed);
+    let use_color = capabilities::should_use_color();
     if chunk.starts_with('#')
         || chunk.starts_with("```")
         || chunk.starts_with('-')
@@ -1483,73 +1687,54 @@ fn print_chunk(chunk: &str, _color_enabled: bool) {
 }
 
 fn print_markdown_header(text: &str) {
-    if COLOR_ENABLED.load(Ordering::Relaxed) {
-        let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
-        let _ = stdout.set_color(
-            ColorSpec::new()
-                .set_bold(true)
-                .set_fg(Some(Color::Rgb(255, 165, 0))),
-        );
-        println!("\n╔═══════════════════════════════════════╗");
-        println!("║ {} ", text);
-        println!("╚═══════════════════════════════════════╝");
-        let _ = stdout.reset();
-    } else {
-        println!("\n[ {} ]", text);
-    }
+    inline::print_blank();
+    inline::print_line(&components::section_header(
+        "▸",
+        text,
+        RColor::Rgb(255, 165, 0),
+    ));
 }
 
 fn print_success(text: &str) {
-    if COLOR_ENABLED.load(Ordering::Relaxed) {
-        let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
-        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
-        println!("✓ {}", text);
-        let _ = stdout.reset();
-    } else {
-        println!("✓ {}", text);
-    }
+    inline::print_line(&components::success_badge(text));
 }
 
 fn print_warning(text: &str) {
-    if COLOR_ENABLED.load(Ordering::Relaxed) {
-        let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
-        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)));
-        println!("⚠ {}", text);
-        let _ = stdout.reset();
-    } else {
-        println!("⚠ {}", text);
-    }
+    inline::print_line(&components::warning_badge(text));
 }
 
 fn print_error(text: &str, _color_enabled: bool) {
-    if COLOR_ENABLED.load(Ordering::Relaxed) {
-        let mut stdout = StandardStream::stderr(termcolor::ColorChoice::Always);
-        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
-        eprintln!("✗ {}", text);
-        let _ = stdout.reset();
+    // Errors go to stderr in plain styled text. We keep a simple format here
+    // because `inline::print_line` writes to stdout; for stderr we render
+    // directly with optional ANSI based on capabilities.
+    if capabilities::should_use_color() {
+        let mut stderr = StandardStream::stderr(termcolor::ColorChoice::Always);
+        let _ = stderr.set_color(
+            ColorSpec::new()
+                .set_fg(Some(Color::White))
+                .set_bg(Some(Color::Red)),
+        );
+        eprint!("  ✗ {} ", text);
+        let _ = stderr.reset();
+        eprintln!();
     } else {
-        eprintln!("✗ {}", text);
+        eprintln!("  ✗ {}", text);
     }
 }
 
 fn print_info(text: &str) {
-    if COLOR_ENABLED.load(Ordering::Relaxed) {
-        let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
-        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(100, 149, 237))));
-        println!("ℹ {}", text);
-        let _ = stdout.reset();
-    } else {
-        println!("ℹ {}", text);
-    }
+    inline::print_line(&components::info_badge(text));
 }
 
 fn print_response_stats(ms: u128) {
-    if COLOR_ENABLED.load(Ordering::Relaxed) {
-        let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
-        let _ = stdout.set_color(ColorSpec::new().set_dimmed(true));
-        println!("  📊 Completed in {}.{:03}s", ms / 1000, ms % 1000);
-        let _ = stdout.reset();
-    } else {
-        println!("  Completed in {}.{:03}s", ms / 1000, ms % 1000);
-    }
+    let secs = ms / 1000;
+    let millis = ms % 1000;
+    inline::print_line(&RLine::from(vec![
+        RSpan::raw("  "),
+        RSpan::styled(
+            format!("📊 Completed in {}.{:03}s", secs, millis),
+            RStyle::default().add_modifier(RModifier::DIM),
+        ),
+    ]));
 }
+

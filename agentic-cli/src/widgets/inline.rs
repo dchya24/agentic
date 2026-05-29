@@ -13,14 +13,23 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use std::io::{self, Write};
 
-/// Print a single `Line` to stdout with ANSI styling, followed by a newline.
+use super::capabilities::should_use_color;
+
+/// Print a single `Line` to stdout. Styling is dropped automatically when
+/// the terminal does not support color (NO_COLOR, TERM=dumb, piped output,
+/// or `--color=never`).
 pub fn print_line(line: &Line<'_>) {
     let mut stdout = io::stdout();
+    let styled = should_use_color();
     for span in &line.spans {
-        apply_style(&mut stdout, &span.style);
+        if styled {
+            apply_style(&mut stdout, &span.style);
+        }
         let _ = stdout.execute(Print(&span.content));
-        let _ = stdout.execute(ResetColor);
-        let _ = stdout.execute(SetAttribute(Attribute::Reset));
+        if styled {
+            let _ = stdout.execute(ResetColor);
+            let _ = stdout.execute(SetAttribute(Attribute::Reset));
+        }
     }
     let _ = writeln!(stdout);
 }

@@ -67,11 +67,15 @@ async fn main() -> Result<()> {
     }
 
     // ── Color resolution ───────────────────────────────────
-    let color_enabled = match cli.color {
-        ColorChoice::Always => true,
-        ColorChoice::Never => false,
-        ColorChoice::Auto => atty_check(),
+    // Auto leaves the decision to capabilities::should_use_color() which
+    // also honors NO_COLOR, TERM=dumb, and the TTY check.
+    let color_override = match cli.color {
+        ColorChoice::Always => Some(true),
+        ColorChoice::Never => Some(false),
+        ColorChoice::Auto => None,
     };
+    widgets::capabilities::set_color_enabled(color_override);
+    let color_enabled = widgets::capabilities::should_use_color();
 
     // ── Ctrl+C graceful shutdown (background task) ─────────
     // First Ctrl+C: cooperative cancel. The agent loop checks this flag at
@@ -125,22 +129,49 @@ async fn main() -> Result<()> {
     } else {
         match &cli.command {
             Some(Command::Run { .. }) | Some(Command::Interactive) | Some(Command::Tui) | None => {
-                eprintln!("\x1b[33m⚠ Config file not found.\x1b[0m Creating default config at:");
-                eprintln!("  {}\n", Config::config_path().display());
+                use ratatui::style::{Color as RColor, Modifier, Style as RStyle};
+                use ratatui::text::{Line, Span as RSpan};
+                use widgets::{components, inline};
+
+                inline::print_line(&components::warning_badge(&format!(
+                    "Config file not found. Creating default at: {}",
+                    Config::config_path().display()
+                )));
+                inline::print_blank();
 
                 let new_config = Config::fallback();
                 if let Err(e) = new_config.save() {
-                    eprintln!("\x1b[31m✗ Failed to create config: {}\x1b[0m", e);
+                    inline::print_line(&components::error_badge(&format!(
+                        "Failed to create config: {}",
+                        e
+                    )));
                     std::process::exit(1);
                 }
 
-                eprintln!("\x1b[32m✓ Default config created.\x1b[0m");
-                eprintln!("\x1b[33m⚠ No providers or models configured yet.\x1b[0m");
-                eprintln!("  Set up a provider with:");
-                eprintln!("    \x1b[1magentic config init --interactive\x1b[0m    # Guided wizard");
-                eprintln!("    \x1b[1magentic config init --provider zai\x1b[0m  # Quick setup");
-                eprintln!("    \x1b[1magentic config edit\x1b[0m             # Edit manually");
-                eprintln!();
+                inline::print_line(&components::success_badge("Default config created."));
+                inline::print_line(&components::warning_badge(
+                    "No providers or models configured yet.",
+                ));
+                inline::print_blank();
+                inline::print_line(&Line::from(RSpan::raw("  Set up a provider with:")));
+                let bold = RStyle::default().add_modifier(Modifier::BOLD);
+                let dim = RStyle::default().fg(RColor::DarkGray);
+                inline::print_line(&Line::from(vec![
+                    RSpan::raw("    "),
+                    RSpan::styled("agentic config init --interactive", bold),
+                    RSpan::styled("   # Guided wizard", dim),
+                ]));
+                inline::print_line(&Line::from(vec![
+                    RSpan::raw("    "),
+                    RSpan::styled("agentic config init --provider zai", bold),
+                    RSpan::styled("  # Quick setup", dim),
+                ]));
+                inline::print_line(&Line::from(vec![
+                    RSpan::raw("    "),
+                    RSpan::styled("agentic config edit", bold),
+                    RSpan::styled("                  # Edit manually", dim),
+                ]));
+                inline::print_blank();
 
                 new_config
             }
@@ -184,18 +215,4 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Check if stdout is a terminal (for auto color detection)
-fn atty_check() -> bool {
-    std::io::stdout().is_terminal()
-}
 
-// Polyfill for is_terminal on older Rust
-trait IsTerminal {
-    fn is_terminal(&self) -> bool;
-}
-
-impl<T: std::io::Write> IsTerminal for T {
-    fn is_terminal(&self) -> bool {
-        std::env::var("TERM").is_ok() || std::env::var("COLORTERM").is_ok()
-    }
-}

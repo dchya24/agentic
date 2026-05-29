@@ -5,6 +5,7 @@
 //! - The full-screen TUI via `ratatui::Terminal`
 //! - The CLI via `inline::print_lines()` which writes styled output directly to stdout
 
+pub mod capabilities;
 pub mod components;
 pub mod inline;
 pub mod markdown;
