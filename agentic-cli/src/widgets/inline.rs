@@ -4,16 +4,18 @@
 //! This allows the CLI (non-TUI) mode to reuse the same styled widgets
 //! that the full-screen TUI uses.
 
+use crossterm::cursor::MoveToColumn;
 use crossterm::style::{
     Attribute, Color as CtColor, Print, ResetColor, SetAttribute, SetBackgroundColor,
     SetForegroundColor,
 };
+use crossterm::terminal::{Clear, ClearType};
 use crossterm::ExecutableCommand;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use std::io::{self, Write};
 
-use super::capabilities::should_use_color;
+use super::capabilities::{is_stdout_tty, should_use_color};
 
 /// Print a single `Line` to stdout. Styling is dropped automatically when
 /// the terminal does not support color (NO_COLOR, TERM=dumb, piped output,
@@ -57,6 +59,47 @@ pub fn print_rule(ch: char, style: Style) {
 /// Print an empty line.
 pub fn print_blank() {
     println!();
+}
+
+/// Print a `Line` as a transient status line that overwrites itself on each
+/// update. Uses `\r` + clear-line so the cursor stays parked at the start of
+/// the line, ready to be overwritten by the next call or finalized by
+/// [`clear_transient`] / [`print_line`].
+///
+/// When stdout is not a TTY (piped output, dumb terminal), this is a no-op so
+/// progress noise doesn't pollute logs. Callers should still emit a final
+/// `print_line` for the completed state in that case.
+pub fn print_transient(line: &Line<'_>) {
+    if !is_stdout_tty() {
+        return;
+    }
+    let mut stdout = io::stdout();
+    let _ = stdout.execute(MoveToColumn(0));
+    let _ = stdout.execute(Clear(ClearType::CurrentLine));
+    let styled = should_use_color();
+    for span in &line.spans {
+        if styled {
+            apply_style(&mut stdout, &span.style);
+        }
+        let _ = stdout.execute(Print(&span.content));
+        if styled {
+            let _ = stdout.execute(ResetColor);
+            let _ = stdout.execute(SetAttribute(Attribute::Reset));
+        }
+    }
+    let _ = stdout.flush();
+}
+
+/// Clear the current transient status line. Pair with [`print_transient`]
+/// before printing a finalized message.
+pub fn clear_transient() {
+    if !is_stdout_tty() {
+        return;
+    }
+    let mut stdout = io::stdout();
+    let _ = stdout.execute(MoveToColumn(0));
+    let _ = stdout.execute(Clear(ClearType::CurrentLine));
+    let _ = stdout.flush();
 }
 
 /// Get terminal width, defaulting to 80.
@@ -120,5 +163,31 @@ fn to_crossterm_color(color: Color) -> Option<CtColor> {
         Color::White => Some(CtColor::White),
         Color::Rgb(r, g, b) => Some(CtColor::Rgb { r, g, b }),
         Color::Indexed(i) => Some(CtColor::AnsiValue(i)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_crossterm_color_maps_known_variants() {
+        assert_eq!(to_crossterm_color(Color::Reset), None);
+        assert!(matches!(to_crossterm_color(Color::Red), Some(CtColor::DarkRed)));
+        assert!(matches!(
+            to_crossterm_color(Color::Rgb(10, 20, 30)),
+            Some(CtColor::Rgb { r: 10, g: 20, b: 30 })
+        ));
+        assert!(matches!(
+            to_crossterm_color(Color::Indexed(42)),
+            Some(CtColor::AnsiValue(42))
+        ));
+    }
+
+    #[test]
+    fn terminal_width_has_minimum_floor() {
+        // The width helper enforces a 40-col floor so layout math stays sane
+        // even on tiny or unmeasurable terminals.
+        assert!(terminal_width() >= 40);
     }
 }

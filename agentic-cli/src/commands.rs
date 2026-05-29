@@ -2,7 +2,6 @@ use anyhow::Result;
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color as TColor, Table};
 use core_agentic::{Config, Orchestrator, ToolRegistry};
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
-use indicatif::{ProgressBar, ProgressStyle};
 use ratatui::style::{Color as RColor, Modifier as RModifier, Style as RStyle};
 use ratatui::text::{Line as RLine, Span as RSpan};
 use std::io::{self, Write};
@@ -715,7 +714,7 @@ impl Commands {
     // ── Run task ────────────────────────────────────────────
 
     pub async fn run(&mut self, task: &str) -> Result<()> {
-        use crate::widgets::{components, inline, markdown as md_widget};
+        use crate::widgets::{components, inline, markdown as md_widget, progress, spinner};
         use ratatui::style::Color as RColor;
 
         // Expand @file references before sending to AI
@@ -732,17 +731,37 @@ impl Commands {
         // Fresh run: clear any pending cancel from a previous invocation.
         orchestrator.reset_cancel();
 
-        // Simple spinner during streaming. We accumulate chunks and render
-        // the full markdown response once when done — no live preview.
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-                .template("  {spinner:.cyan} {msg}")
-                .unwrap(),
-        );
-        pb.set_message("Thinking…");
-        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+        // Live transient spinner: a background task ticks the frame and
+        // redraws via `inline::print_transient` (no-op when not a TTY).
+        // We hand the orchestrator's stream the same callback to update an
+        // optional message; chunks are otherwise discarded — the final
+        // markdown is rendered once at the end.
+        let progress = std::sync::Arc::new(std::sync::Mutex::new({
+            let mut p = progress::ProgressState::new();
+            p.start();
+            p.set_message("Thinking…".to_string());
+            p
+        }));
+        let stop_flag = std::sync::Arc::new(AtomicBool::new(false));
+
+        let tick_progress = progress.clone();
+        let tick_stop = stop_flag.clone();
+        let ticker = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_millis(80));
+            loop {
+                interval.tick().await;
+                if tick_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let line = {
+                    let mut p = tick_progress.lock().unwrap();
+                    p.tick();
+                    spinner::spinner_line(&p)
+                };
+                inline::print_transient(&line);
+            }
+        });
 
         let result = orchestrator
             .run_stream(task, |_chunk| {
@@ -750,11 +769,14 @@ impl Commands {
             })
             .await;
 
-        pb.finish_and_clear();
+        // Stop ticker, drop transient line.
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = ticker.await;
+        progress.lock().unwrap().stop();
+        inline::clear_transient();
 
         match result {
             Ok(final_result) => {
-                // Section header for the response
                 inline::print_blank();
                 inline::print_line(&components::section_header(
                     "🤖",
@@ -763,7 +785,6 @@ impl Commands {
                 ));
                 inline::print_blank();
 
-                // Render the final markdown beautifully via shared widgets
                 let parsed = md_widget::MarkdownContent::parse(&final_result);
                 inline::print_lines(&parsed.lines);
                 inline::print_blank();

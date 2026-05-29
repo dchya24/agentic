@@ -12,6 +12,7 @@ use super::app::{App, MessageRole};
 use super::dropdown::DropdownType;
 use super::input::{render_input, render_placeholder};
 use crate::widgets::markdown::{MarkdownContent, role_prefix};
+use crate::widgets::spinner;
 
 /// Padding configuration
 const PADDING_HORIZONTAL: u16 = 2;
@@ -233,32 +234,11 @@ fn draw_progress(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let _progress_text = app.progress.display();
-    let progress_bar = app.progress.progress_bar(area.width.saturating_sub(4) as usize);
-
+    // Reuse the shared spinner widget so the TUI matches inline mode.
+    let bar_width = area.width.saturating_sub(4) as usize;
     let progress_widget = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled(
-                app.progress.spinner(),
-                Style::default()
-                    .fg(Color::Rgb(52, 152, 219))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                &app.progress.message,
-                Style::default().fg(Color::Rgb(180, 180, 180)),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                format!("({})", app.progress.elapsed_str()),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
-        Line::from(Span::styled(
-            progress_bar,
-            Style::default().fg(Color::Rgb(52, 152, 219)),
-        )),
+        spinner::spinner_line(&app.progress),
+        spinner::progress_bar_line(&app.progress, bar_width),
     ])
     .block(
         Block::default()

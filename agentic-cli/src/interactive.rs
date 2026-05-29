@@ -8,7 +8,6 @@
 //! - Session statistics, conversation history, save/load
 
 use anyhow::Result;
-use indicatif::{ProgressBar, ProgressStyle};
 use nu_ansi_term::{Color as AnsiColor, Style};
 use ratatui::{
     style::{Color, Modifier, Style as RStyle},
@@ -126,23 +125,6 @@ const SLASH_COMMANDS: &[(&str, &[&str], &str)] = &[
     ("stats", &[], "Show session statistics"),
     ("quit", &["q", "exit"], "Exit interactive mode"),
 ];
-
-// ── Spinner frames ──────────────────────────────────────────
-
-const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-fn start_spinner(message: &str) -> ProgressBar {
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .tick_strings(SPINNER_FRAMES)
-            .template("  {spinner:.cyan} {msg:.dim}")
-            .unwrap(),
-    );
-    pb.set_message(message.to_string());
-    pb.enable_steady_tick(std::time::Duration::from_millis(80));
-    pb
-}
 
 // ── Layout helpers ──────────────────────────────────────────
 
@@ -929,17 +911,15 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                 stats.increment_messages();
 
                                 print_turn_separator();
-                                let pb = start_spinner("Planning...");
+                                // commands.run() owns its own transient spinner now.
                                 let start = Instant::now();
                                 if let Err(e) =
                                     commands.run(&format!("Create a plan for: {}", goal)).await
                                 {
-                                    pb.finish_and_clear();
                                     inline::print_blank();
                                     inline::print_line(&components::error_badge(&e.to_string()));
                                     inline::print_blank();
                                 } else {
-                                    pb.finish_and_clear();
                                     let elapsed = start.elapsed();
                                     conversation.push(ConversationEntry {
                                         role: "assistant".into(),
@@ -981,16 +961,15 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                         // and the assistant turn.
                         print_turn_separator();
 
-                        let pb = start_spinner("Thinking...");
+                        // commands.run() owns its own transient spinner now,
+                        // so we just time the call here.
                         let start = Instant::now();
 
                         if let Err(e) = commands.run(&input).await {
-                            pb.finish_and_clear();
                             inline::print_blank();
                             inline::print_line(&components::error_badge(&e.to_string()));
                             inline::print_blank();
                         } else {
-                            pb.finish_and_clear();
                             let elapsed = start.elapsed();
 
                             let estimated_input = (input.len() as f32 / 4.0) as u32;

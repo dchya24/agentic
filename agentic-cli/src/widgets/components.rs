@@ -506,4 +506,59 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
         assert!(text.contains("All good"));
     }
+
+    // ── Snapshot-style tests (widgets used by commands.rs/main.rs migration) ──
+
+    fn flatten(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.to_string()).collect()
+    }
+
+    #[test]
+    fn badges_have_consistent_glyph_and_styling() {
+        // All badges share the same shape: leading two-space indent,
+        // a glyph, then the message wrapped in a colored background.
+        let cases = [
+            (success_badge("ok"), '✓', "ok"),
+            (error_badge("oops"), '✗', "oops"),
+            (warning_badge("careful"), '⚠', "careful"),
+            (info_badge("fyi"), 'ℹ', "fyi"),
+        ];
+        for (line, glyph, msg) in cases {
+            let text = flatten(&line);
+            assert!(text.starts_with("  "), "badge should be indented");
+            assert!(text.contains(glyph), "badge missing glyph {}", glyph);
+            assert!(text.contains(msg), "badge missing message {}", msg);
+            // The styled span (the badge itself) should have a background.
+            let badge_span = line
+                .spans
+                .iter()
+                .find(|s| s.style.bg.is_some())
+                .expect("badge should have a colored background span");
+            assert!(badge_span.style.fg.is_some());
+        }
+    }
+
+    #[test]
+    fn kv_line_aligns_key_to_width() {
+        // commands.rs::config_show_inline relies on a fixed key width to
+        // line up provider/api base/api key/model. The dim-styled key span
+        // should be at least `key_width + 1` chars (key + colon).
+        let line = kv_line("Provider", "openai", 12, Color::Yellow);
+        let key_span = &line.spans[0];
+        assert!(key_span.content.len() >= 12 + 1);
+        assert!(key_span.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn section_header_pads_to_terminal_width() {
+        // Used as the response header in commands::run() and elsewhere.
+        // After the title, the trailing dashes should fill the remaining
+        // width so the header reads as a horizontal rule.
+        let line = section_header("🤖", "Response", Color::Cyan);
+        let text = flatten(&line);
+        assert!(text.starts_with("── "));
+        assert!(text.contains("Response"));
+        // Trailing portion should be made of repeated em-dashes.
+        assert!(text.trim_end_matches('─').len() < text.len());
+    }
 }
