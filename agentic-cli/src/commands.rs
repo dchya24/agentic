@@ -725,7 +725,7 @@ impl Commands {
     // ── Run task ────────────────────────────────────────────
 
     pub async fn run(&mut self, task: &str) -> Result<()> {
-        use crate::widgets::{components, inline, markdown as md_widget, progress, spinner, tool_call};
+        use crate::widgets::{components, inline, markdown as md_widget, progress, spinner};
         use ratatui::style::Color as RColor;
 
         // Expand @file references before sending to AI
@@ -748,6 +748,9 @@ impl Commands {
         // Subscribe to runtime events (tool calls, results) so we can
         // render them between spinner ticks. Gated by config.output.show_tool_calls.
         let show_tool_calls = self.config.output.show_tool_calls;
+        // Verbose body for tool results piggybacks on `show_thoughts`:
+        // it's the same intent (render the agent's internal trace, not
+        // just the final answer).
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         if show_tool_calls {
             let tx = event_tx.clone();
@@ -787,7 +790,9 @@ impl Commands {
                         let line = {
                             let mut p = tick_progress.lock().unwrap();
                             p.tick();
-                            spinner::spinner_line(&p)
+                            // Compact line = spinner + message + animated bar.
+                            // No elapsed seconds — motion comes from the bar.
+                            spinner::compact_progress_line(&p, 18)
                         };
                         inline::print_transient(&line);
                     }
@@ -853,44 +858,9 @@ impl Commands {
             }
         }
 
-        // Helper kept inside `run` so it captures the right widget imports.
-        fn render_event(event: &core_agentic::Event) {
-            const MAX_TOOL_OUTPUT_LINES: usize = 12;
-            match event {
-                core_agentic::Event::ToolCall { tool_name, arguments } => {
-                    let lines = tool_call::render_call(tool_name, arguments);
-                    inline::print_lines(&lines);
-                }
-                core_agentic::Event::ToolOutput { tool_name, output } => {
-                    let body = match output {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    };
-                    let is_error = body.starts_with("Tool error")
-                        || body.starts_with("Blocked:")
-                        || body.starts_with("Skipped:");
-                    let lines = tool_call::render_result(
-                        tool_name,
-                        output,
-                        is_error,
-                        MAX_TOOL_OUTPUT_LINES,
-                    );
-                    inline::print_lines(&lines);
-                }
-                core_agentic::Event::Error { message } => {
-                    inline::print_line(&components::error_badge(message));
-                }
-                core_agentic::Event::System { message } => {
-                    inline::print_line(&components::info_badge(message));
-                }
-                // Thought / ConfirmationRequest / Completed are handled
-                // elsewhere or not surfaced inline.
-                _ => {}
-            }
-        }
-
         Ok(())
     }
+
 
     /// Run task with a callback for streaming chunks (used by TUI)
     pub async fn run_with_callback<F>(&mut self, task: &str, mut on_chunk: F) -> Result<String>
@@ -1771,9 +1741,57 @@ impl Commands {
     }
 }
 
-// ── Print helpers (shared widgets) ──────────────────────────
+// ── Inline event rendering helper (used by run()'s ticker task) ───────────
 //
-// All visual output goes through `widgets::*` so that:
+// Free function so it can be called from inside the spawned tokio task
+// without moving a closure (and therefore without capturing &self).
+
+fn render_event(event: &core_agentic::Event) {
+    use crate::widgets::{components, inline, tool_call};
+
+    // Compact rendering by default: success notifications show only the
+    // headline (tool name + numeric summary). Errors always include their
+    // message body so users can debug without flipping a flag. The full
+    // raw output is still in memory for the model.
+    const MAX_TOOL_OUTPUT_LINES: usize = 12;
+    match event {
+        core_agentic::Event::ToolCall { tool_name, arguments } => {
+            let lines = tool_call::render_call(tool_name, arguments);
+            inline::print_lines(&lines);
+        }
+        core_agentic::Event::ToolOutput { tool_name, output } => {
+            // Heuristic: orchestrator records denied/skipped/error outcomes
+            // as plain string output with these prefixes. We render those
+            // with the red error accent.
+            let body = match output {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            let is_error = body.starts_with("Tool error")
+                || body.starts_with("Blocked:")
+                || body.starts_with("Skipped:");
+            let lines = tool_call::render_result(
+                tool_name,
+                output,
+                is_error,
+                MAX_TOOL_OUTPUT_LINES,
+                /*verbose=*/ false,
+            );
+            inline::print_lines(&lines);
+        }
+        core_agentic::Event::Error { message } => {
+            inline::print_line(&components::error_badge(message));
+        }
+        core_agentic::Event::System { message } => {
+            inline::print_line(&components::info_badge(message));
+        }
+        // Thought / ConfirmationRequest / Completed are surfaced via other
+        // channels (memory, the confirmation prompt, the final markdown).
+        _ => {}
+    }
+}
+
+// ── Print helpers (shared widgets) ──────────────────────────
 //  - CLI and TUI share one styling vocabulary
 //  - Color/TTY decisions live in one place (`widgets::capabilities`)
 //

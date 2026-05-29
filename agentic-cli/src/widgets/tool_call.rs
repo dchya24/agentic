@@ -32,13 +32,17 @@ pub fn render_call(tool_name: &str, arguments: &Value) -> Vec<Line<'static>> {
 
 /// Render the result of a tool call.
 ///
-/// Success path: a green accent line + the (possibly truncated) output body.
-/// Error path:   a red accent line + the error message.
+/// `verbose` controls whether the output body is shown:
+/// - `false` (default for inline mode): only the notification headline,
+///   keeping the scrollback compact when many tools run in sequence.
+///   Errors are always shown with their message.
+/// - `true`: the full output body, truncated at `max_body_lines`.
 pub fn render_result(
     tool_name: &str,
     output: &Value,
     is_error: bool,
     max_body_lines: usize,
+    verbose: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let (icon, color, summary) = if is_error {
@@ -56,6 +60,12 @@ pub fn render_result(
         )
     };
     lines.push(notification(icon, &summary, color));
+
+    // Errors always show their message regardless of `verbose`. Successful
+    // calls only render the body when verbose mode is on.
+    if !is_error && !verbose {
+        return lines;
+    }
 
     let body_text = match output {
         Value::String(s) => s.clone(),
@@ -191,12 +201,21 @@ mod tests {
     #[test]
     fn render_result_truncates_long_output() {
         let big = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
-        let lines = render_result("bash", &Value::String(big), false, 10);
+        let lines = render_result("bash", &Value::String(big), false, 10, /*verbose=*/ true);
         let truncation_marker = lines
             .iter()
             .map(flatten)
             .any(|l| l.contains("more line(s) truncated"));
         assert!(truncation_marker);
+    }
+
+    #[test]
+    fn render_result_compact_omits_body_for_success() {
+        let big = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let lines = render_result("bash", &Value::String(big), false, 10, /*verbose=*/ false);
+        // Only the headline notification line, no body.
+        assert_eq!(lines.len(), 1);
+        assert!(flatten(&lines[0]).contains("✓"));
     }
 
     #[test]
@@ -206,11 +225,26 @@ mod tests {
             &Value::String("permission denied".into()),
             true,
             5,
+            false,
         );
         // The first line is the notification accent — should contain ✗.
         let first = flatten(&lines[0]);
         assert!(first.contains("✗"));
         assert!(first.contains("error from bash"));
+    }
+
+    #[test]
+    fn render_result_error_always_shows_body() {
+        // Errors should show their message even when verbose=false so
+        // the user can debug without needing a flag.
+        let lines = render_result(
+            "bash",
+            &Value::String("permission denied".into()),
+            true,
+            5,
+            false,
+        );
+        assert!(lines.iter().map(flatten).any(|l| l.contains("permission denied")));
     }
 
     #[test]

@@ -831,7 +831,7 @@ pub(crate) fn build_request_messages(
             .collect()
     };
 
-    context
+    let raw: Vec<ChatMessageRequest> = context
         .iter()
         .enumerate()
         .map(|(i, m)| {
@@ -868,7 +868,92 @@ pub(crate) fn build_request_messages(
                 tool_calls,
             }
         })
-        .collect()
+        .collect();
+
+    sanitize_for_provider(raw)
+}
+
+/// Drop messages that would violate the OpenAI/Anthropic tool-call spec
+/// before they hit the wire.
+///
+/// The slice handed to us by `Memory::get_context(N)` is just the last N
+/// raw messages — it may start mid-pair. Two failure modes:
+///
+/// 1. **Orphan tool message**: the slice begins with `tool` but its parent
+///    assistant (the one that requested the call) was trimmed off. Z.AI /
+///    OpenAI return HTTP 400 "The messages parameter is illegal".
+/// 2. **Dangling tool_calls**: an assistant advertises tool calls in
+///    `tool_calls`, but the matching `tool` results were trimmed.
+///
+/// Strategy: keep only assistant tool_calls whose IDs are matched by
+/// `tool` messages later in the slice; drop tool messages whose IDs are
+/// not advertised by an earlier assistant in the slice.
+fn sanitize_for_provider(messages: Vec<ChatMessageRequest>) -> Vec<ChatMessageRequest> {
+    use std::collections::HashSet;
+
+    if messages.is_empty() {
+        return messages;
+    }
+
+    let mut sanitized: Vec<ChatMessageRequest> = Vec::with_capacity(messages.len());
+    let mut announced_ids: HashSet<String> = HashSet::new();
+
+    for (i, msg) in messages.iter().enumerate() {
+        match msg.role.as_str() {
+            "assistant" if !msg.tool_calls.is_empty() => {
+                // Look ahead: collect tool_call_ids that appear in later
+                // tool messages, stopping at the next assistant or user.
+                let mut seen_after: HashSet<String> = HashSet::new();
+                for next in &messages[i + 1..] {
+                    match next.role.as_str() {
+                        "tool" => {
+                            if let Some(id) = &next.tool_call_id {
+                                seen_after.insert(id.clone());
+                            }
+                        }
+                        "assistant" | "user" => break,
+                        _ => {}
+                    }
+                }
+
+                let mut kept = msg.clone();
+                kept.tool_calls.retain(|tc| seen_after.contains(&tc.id));
+                for tc in &kept.tool_calls {
+                    announced_ids.insert(tc.id.clone());
+                }
+                sanitized.push(kept);
+            }
+            "tool" => {
+                // Drop orphan tool messages whose parent assistant either
+                // wasn't in the slice or had its tool_calls stripped.
+                if let Some(id) = &msg.tool_call_id {
+                    if announced_ids.contains(id) {
+                        sanitized.push(msg.clone());
+                    } else {
+                        tracing::debug!(
+                            tool_call_id = %id,
+                            "sanitize_for_provider: dropping orphan tool message"
+                        );
+                    }
+                }
+            }
+            _ => {
+                sanitized.push(msg.clone());
+            }
+        }
+    }
+
+    // Drop leading non-conversational messages. Defensive after pass above.
+    while let Some(first) = sanitized.first() {
+        match first.role.as_str() {
+            "user" | "system" | "assistant" => break,
+            _ => {
+                sanitized.remove(0);
+            }
+        }
+    }
+
+    sanitized
 }
 
 /// Convert a list of `(id, name, arguments_json_string)` triples into
@@ -913,9 +998,11 @@ pub(crate) fn truncate_tool_result(raw: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod orchestrator_unit_tests {
     use super::{
-        build_request_messages, truncate_tool_result, CLEARED_TOOL_RESULT_PLACEHOLDER,
+        build_request_messages, sanitize_for_provider, truncate_tool_result,
+        CLEARED_TOOL_RESULT_PLACEHOLDER,
     };
     use crate::memory::Message;
+    use crate::providers::{ChatMessageRequest, ToolCallFunction, ToolCallResponse};
 
     #[test]
     fn passthrough_when_under_limit() {
@@ -948,14 +1035,24 @@ mod orchestrator_unit_tests {
     }
 
     fn make_context() -> Vec<Message> {
-        // user, assistant, tool(t1), assistant, tool(t2), assistant, tool(t3)
+        // Three rounds of: assistant(with tool_calls) -> tool(matching id).
+        // This mirrors the real history shape now that assistant messages
+        // carry their tool_calls in metadata.
+        let tc = |id: &str| ToolCallResponse {
+            id: id.to_string(),
+            call_type: "function".to_string(),
+            function: ToolCallFunction {
+                name: "read_file".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
         vec![
             Message::user("q"),
-            Message::assistant("thinking"),
+            Message::assistant_with_tool_calls("thinking", vec![tc("call-1")]),
             Message::tool("read_file", "call-1", "OLD result 1"),
-            Message::assistant("more thinking"),
+            Message::assistant_with_tool_calls("more thinking", vec![tc("call-2")]),
             Message::tool("read_file", "call-2", "OLD result 2"),
-            Message::assistant("still thinking"),
+            Message::assistant_with_tool_calls("still thinking", vec![tc("call-3")]),
             Message::tool("read_file", "call-3", "FRESH result 3"),
         ]
     }
@@ -1046,5 +1143,114 @@ mod orchestrator_unit_tests {
         .unwrap();
 
         assert!(cancel.load(Ordering::SeqCst));
+    }
+
+    // --- sanitize_for_provider ---
+
+    fn assistant_with(content: &str, ids: &[&str]) -> ChatMessageRequest {
+        ChatMessageRequest {
+            role: "assistant".to_string(),
+            content: content.to_string(),
+            tool_call_id: None,
+            tool_calls: ids
+                .iter()
+                .map(|id| ToolCallResponse {
+                    id: (*id).to_string(),
+                    call_type: "function".to_string(),
+                    function: ToolCallFunction {
+                        name: "read_file".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    fn tool_msg(id: &str, content: &str) -> ChatMessageRequest {
+        ChatMessageRequest {
+            role: "tool".to_string(),
+            content: content.to_string(),
+            tool_call_id: Some(id.to_string()),
+            tool_calls: vec![],
+        }
+    }
+
+    fn user_msg(content: &str) -> ChatMessageRequest {
+        ChatMessageRequest {
+            role: "user".to_string(),
+            content: content.to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+        }
+    }
+
+    #[test]
+    fn sanitize_drops_orphan_tool_at_start_of_slice() {
+        // Real failure case: get_context(N) sliced mid-pair so the
+        // assistant that announced call-1 was trimmed off. The leading
+        // tool message would cause Z.AI/OpenAI HTTP 400.
+        let input = vec![
+            tool_msg("call-1", "orphan result"),
+            user_msg("new question"),
+            assistant_with("answer", &[]),
+        ];
+        let out = sanitize_for_provider(input);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role, "user");
+        assert_eq!(out[1].role, "assistant");
+    }
+
+    #[test]
+    fn sanitize_keeps_well_formed_pair() {
+        let input = vec![
+            user_msg("q"),
+            assistant_with("thinking", &["call-1"]),
+            tool_msg("call-1", "result"),
+            assistant_with("final", &[]),
+        ];
+        let out = sanitize_for_provider(input.clone());
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[1].tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn sanitize_drops_dangling_tool_calls_from_assistant() {
+        // Assistant announces 2 calls but only one tool result follows.
+        // The unmatched tool_call entry would cause provider error.
+        let input = vec![
+            user_msg("q"),
+            assistant_with("thinking", &["call-1", "call-2"]),
+            tool_msg("call-1", "only one result"),
+            // call-2 result is missing (e.g. trimmed by Layer 2).
+            assistant_with("answer", &[]),
+        ];
+        let out = sanitize_for_provider(input);
+        assert_eq!(out.len(), 4);
+        // The assistant's tool_calls should be reduced to just call-1.
+        assert_eq!(out[1].tool_calls.len(), 1);
+        assert_eq!(out[1].tool_calls[0].id, "call-1");
+    }
+
+    #[test]
+    fn sanitize_handles_empty() {
+        assert!(sanitize_for_provider(vec![]).is_empty());
+    }
+
+    #[test]
+    fn sanitize_does_not_pull_results_across_user_turn() {
+        // A tool result appearing AFTER a new user turn must not be
+        // counted toward the previous assistant's tool_calls. Otherwise
+        // sanitize would keep a tool_call whose result is in a later turn.
+        let input = vec![
+            assistant_with("thinking", &["call-1"]),
+            user_msg("actually nevermind, do this instead"),
+            tool_msg("call-1", "stale result from previous turn"),
+        ];
+        let out = sanitize_for_provider(input);
+        // The assistant's tool_calls should be cleared (no result before
+        // the user turn), and the orphan tool message after the user turn
+        // should be dropped because no announced ID.
+        assert!(out.iter().find(|m| m.role == "assistant").unwrap().tool_calls.is_empty());
+        assert_eq!(out.iter().filter(|m| m.role == "tool").count(), 0);
     }
 }
