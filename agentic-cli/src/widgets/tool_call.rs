@@ -1,0 +1,221 @@
+//! Tool call / tool result rendering.
+//!
+//! Produces `Vec<Line<'static>>` from a tool name + arguments + optional
+//! result. Used by both the TUI message log and any inline trace mode.
+//!
+//! Visual contract:
+//!
+//! ```text
+//!   ╭─ tool · read_file ──────────────────────────╮
+//!   │  path = "src/main.rs"                       │
+//!   │  limit = 100                                │
+//!   ╰─────────────────────────────────────────────╯
+//!   ┃ ✓ output  (3 lines, 142 bytes)
+//!     line 1...
+//! ```
+
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
+use serde_json::Value;
+
+use super::components::{notification, panel, BoxStyle};
+
+/// Render a tool call: a bordered panel with the tool name as title and
+/// the arguments listed as `key = value` rows.
+pub fn render_call(tool_name: &str, arguments: &Value) -> Vec<Line<'static>> {
+    let title = format!("tool · {}", tool_name);
+    let body = arg_lines(arguments);
+    panel(&title, &body, BoxStyle::Rounded, Color::Rgb(241, 196, 15))
+}
+
+/// Render the result of a tool call.
+///
+/// Success path: a green accent line + the (possibly truncated) output body.
+/// Error path:   a red accent line + the error message.
+pub fn render_result(
+    tool_name: &str,
+    output: &Value,
+    is_error: bool,
+    max_body_lines: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let (icon, color, summary) = if is_error {
+        (
+            "✗",
+            Color::Rgb(231, 76, 60),
+            format!("error from {}", tool_name),
+        )
+    } else {
+        let summary = result_summary(output);
+        (
+            "✓",
+            Color::Rgb(46, 204, 113),
+            format!("{}  {}", tool_name, summary),
+        )
+    };
+    lines.push(notification(icon, &summary, color));
+
+    let body_text = match output {
+        Value::String(s) => s.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
+    };
+
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut shown = 0usize;
+    for raw_line in body_text.lines() {
+        if shown >= max_body_lines {
+            let remaining = body_text.lines().count().saturating_sub(shown);
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(
+                    format!("… {} more line(s) truncated", remaining),
+                    dim,
+                ),
+            ]));
+            break;
+        }
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::raw(raw_line.to_string()),
+        ]));
+        shown += 1;
+    }
+
+    lines
+}
+
+// ── Helpers ─────────────────────────────────────────────────
+
+fn arg_lines(arguments: &Value) -> Vec<Line<'static>> {
+    let key_style = Style::default()
+        .fg(Color::Rgb(241, 196, 15))
+        .add_modifier(Modifier::BOLD);
+    let eq_style = Style::default().add_modifier(Modifier::DIM);
+
+    match arguments {
+        Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| {
+                Line::from(vec![
+                    Span::styled(k.clone(), key_style),
+                    Span::styled(" = ", eq_style),
+                    Span::raw(value_inline(v)),
+                ])
+            })
+            .collect(),
+        Value::Null => vec![Line::from(Span::styled(
+            "(no arguments)",
+            Style::default().add_modifier(Modifier::DIM),
+        ))],
+        other => vec![Line::from(Span::raw(value_inline(other)))],
+    }
+}
+
+/// Compact one-line representation of a JSON value, suitable for arg rows.
+fn value_inline(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("\"{}\"", s),
+        Value::Null => "null".into(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::Array(a) => {
+            // Show the first few elements only.
+            let preview: Vec<String> = a.iter().take(3).map(value_inline).collect();
+            let more = if a.len() > 3 {
+                format!(", … +{}", a.len() - 3)
+            } else {
+                String::new()
+            };
+            format!("[{}{}]", preview.join(", "), more)
+        }
+        Value::Object(_) => {
+            let s = v.to_string();
+            if s.len() > 80 {
+                format!("{}…", &s[..79])
+            } else {
+                s
+            }
+        }
+    }
+}
+
+/// One-line summary of a tool result, used in the success notification.
+fn result_summary(output: &Value) -> String {
+    match output {
+        Value::String(s) => {
+            let lines = s.lines().count();
+            format!("({} line{}, {} byte{})",
+                lines,
+                if lines == 1 { "" } else { "s" },
+                s.len(),
+                if s.len() == 1 { "" } else { "s" },
+            )
+        }
+        Value::Array(a) => format!("({} item{})", a.len(), if a.len() == 1 { "" } else { "s" }),
+        Value::Object(o) => format!("({} field{})", o.len(), if o.len() == 1 { "" } else { "s" }),
+        Value::Null => "(no output)".into(),
+        _ => format!("({})", output),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn flatten(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.to_string()).collect()
+    }
+
+    #[test]
+    fn render_call_includes_tool_name_and_args() {
+        let lines = render_call("read_file", &json!({"path": "src/main.rs", "limit": 100}));
+        let body: String = lines.iter().map(flatten).collect::<Vec<_>>().join("\n");
+        assert!(body.contains("read_file"));
+        assert!(body.contains("path"));
+        assert!(body.contains("\"src/main.rs\""));
+        assert!(body.contains("limit"));
+        assert!(body.contains("100"));
+    }
+
+    #[test]
+    fn render_call_with_no_args() {
+        let lines = render_call("status", &Value::Null);
+        let body: String = lines.iter().map(flatten).collect::<Vec<_>>().join("\n");
+        assert!(body.contains("status"));
+        assert!(body.contains("no arguments"));
+    }
+
+    #[test]
+    fn render_result_truncates_long_output() {
+        let big = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let lines = render_result("bash", &Value::String(big), false, 10);
+        let truncation_marker = lines
+            .iter()
+            .map(flatten)
+            .any(|l| l.contains("more line(s) truncated"));
+        assert!(truncation_marker);
+    }
+
+    #[test]
+    fn render_result_error_uses_red_accent() {
+        let lines = render_result(
+            "bash",
+            &Value::String("permission denied".into()),
+            true,
+            5,
+        );
+        // The first line is the notification accent — should contain ✗.
+        let first = flatten(&lines[0]);
+        assert!(first.contains("✗"));
+        assert!(first.contains("error from bash"));
+    }
+
+    #[test]
+    fn value_inline_truncates_arrays() {
+        let s = value_inline(&json!([1, 2, 3, 4, 5]));
+        assert!(s.contains("+2"));
+    }
+}

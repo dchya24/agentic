@@ -8,10 +8,11 @@
 | Module | Uses Shared Widgets | Notes |
 |--------|--------------------|---------|
 | `tui/app.rs` | ✓ `widgets::progress::ProgressState` | Full-screen mode |
-| `tui/ui.rs` | ✓ `widgets::markdown::MarkdownContent` | Full-screen mode |
+| `tui/ui.rs` | ✓ `widgets::markdown::MarkdownContent`, `widgets::spinner::*` | Full-screen mode — spinner unified with inline mode |
 | `interactive.rs` | ✓ `widgets::inline`, `widgets::components`, `widgets::markdown` | All output uses shared widgets, zero raw ANSI |
-| `commands.rs` | ✓ `widgets::inline`, `widgets::components`, `widgets::markdown`, `widgets::capabilities` | All `println!`-based ANSI replaced with shared widgets (one ANSI escape kept inside a dialoguer label, gated by capability detection) |
+| `commands.rs` | ✓ full widgets stack including transient spinner via `widgets::spinner` + `inline::print_transient` | All `println!`-based ANSI replaced |
 | `main.rs` | ✓ `widgets::inline`, `widgets::components`, `widgets::capabilities` | Bootstrap messages use badges; `--color` flag drives `capabilities::set_color_enabled` |
+| `confirmation.rs` | ✓ `widgets::components::panel` | Risk colour leaks through panel border; old hard-coded fixed-width box removed |
 
 ## Overview
 
@@ -29,16 +30,19 @@ src/
 ├── widgets/              # Shared components (ratatui primitives)
 │   ├── mod.rs            # Module root
 │   ├── capabilities.rs   # Color/TTY detection (NO_COLOR, TERM=dumb, isatty, --color override)
-│   ├── inline.rs         # Inline renderer: Line/Text → stdout (no raw mode)
+│   ├── inline.rs         # Inline renderer: Line/Text → stdout, transient updates
 │   ├── markdown.rs       # Markdown parser → Vec<Line<'static>>
 │   ├── progress.rs       # Progress state (spinner frames, bars, elapsed time)
 │   ├── spinner.rs        # Higher-level Line builders for spinners/status
-│   └── components.rs     # Rich UI components: panels, badges, headers, gradients
+│   ├── components.rs     # Rich UI components: panels, badges, headers, gradients
+│   ├── tool_call.rs      # Tool call panel + tool result notification
+│   └── diff.rs           # Unified-diff renderer + summary line
 ├── tui/                  # Full-screen TUI (consumes widgets via Frame)
 │   ├── app.rs            # App state, imports widgets::progress::ProgressState
-│   ├── ui.rs             # Rendering, imports widgets::markdown::MarkdownContent
+│   ├── ui.rs             # Rendering, imports markdown + spinner widgets
 │   ├── dropdown.rs       # Dropdown widget (TUI-specific)
 │   └── input.rs          # Input rendering (TUI-specific)
+├── confirmation.rs       # Risk-coloured panel for tool confirmations
 ├── interactive.rs        # Reedline REPL (uses all widgets for output)
 └── main.rs              # Registers `mod widgets`, drives capability override
 ```
@@ -91,6 +95,26 @@ inline::print_rule('─', Style::default().fg(Color::DarkGray));
 ```
 
 ## API Reference
+
+### `widgets::tool_call`
+
+Renders agent tool invocations and their results.
+
+| Item | Description |
+|------|-------------|
+| `render_call(tool_name, arguments)` | Bordered panel titled `tool · <name>` with `key = value` arg rows |
+| `render_result(tool_name, output, is_error, max_body_lines)` | Notification accent + truncated output body |
+
+Long outputs are clipped after `max_body_lines` and the suffix `… N more line(s) truncated` is rendered in dim style.
+
+### `widgets::diff`
+
+Styled renderer for unified-diff text (no diff *computation*).
+
+| Item | Description |
+|------|-------------|
+| `render(diff)` | One styled `Line` per input line; recognises `--- ` / `+++ ` / `@@` / `+` / `-` |
+| `summary_line(diff)` | `+12 −3  in 2 hunks` summary span |
 
 ### `widgets::capabilities`
 

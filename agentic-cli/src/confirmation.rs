@@ -1,4 +1,11 @@
 use core_agentic::{ConfirmationRequest, RiskLevel};
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
+
+use crate::widgets::components::{panel, BoxStyle};
+use crate::widgets::inline;
 
 pub enum ConfirmationResponse {
     Yes,
@@ -8,31 +15,60 @@ pub enum ConfirmationResponse {
 }
 
 pub fn prompt_confirmation(request: &ConfirmationRequest) -> Option<ConfirmationResponse> {
-    let risk_str = match request.risk_level {
-        RiskLevel::Low => "LOW",
-        RiskLevel::Medium => "MEDIUM",
-        RiskLevel::High => "HIGH",
-        RiskLevel::Critical => "CRITICAL",
+    // Risk → label + color. Color leaks through to the panel border so the
+    // operator gets a visual cue at a glance.
+    let (risk_label, risk_color) = match request.risk_level {
+        RiskLevel::Low => ("LOW", Color::Rgb(46, 204, 113)),
+        RiskLevel::Medium => ("MEDIUM", Color::Rgb(241, 196, 15)),
+        RiskLevel::High => ("HIGH", Color::Rgb(230, 126, 34)),
+        RiskLevel::Critical => ("CRITICAL", Color::Rgb(231, 76, 60)),
     };
 
-    println!();
-    println!("┌─ ⚠️  CONFIRMATION REQUIRED ──────────────────────────────────┐");
-    println!(
-        "│ Risk Level: {}                                           │",
-        risk_str
+    let label_style = Style::default().add_modifier(Modifier::BOLD);
+    let risk_style = Style::default()
+        .fg(risk_color)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+
+    let body = vec![
+        Line::from(vec![
+            Span::styled("Risk Level:  ", label_style),
+            Span::styled(risk_label.to_string(), risk_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Action:      ", label_style),
+            Span::raw(request.action.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("Description: ", label_style),
+            Span::raw(request.description.clone()),
+        ]),
+        Line::default(),
+        Line::from(vec![
+            Span::styled("[y]", label_style),
+            Span::raw(" Yes  "),
+            Span::styled("[n]", label_style),
+            Span::raw(" No  "),
+            Span::styled("[a]", label_style),
+            Span::raw(" Always  "),
+            Span::styled("[q]", label_style),
+            Span::raw(" Quit"),
+        ]),
+    ];
+
+    let lines = panel(
+        "⚠ Confirmation Required",
+        &body,
+        BoxStyle::Rounded,
+        risk_color,
     );
-    println!(
-        "│ Action: {}                                     │",
-        truncate(&request.action, 50)
-    );
-    println!(
-        "│ Description: {}                                 │",
-        truncate(&request.description, 50)
-    );
-    println!("├───────────────────────────────────────────────────────────┤");
-    println!("│ [y] Yes  [n] No  [a] Always  [q] Quit                     │");
-    println!("└───────────────────────────────────────────────────────────┘");
-    print!("> ");
+
+    inline::print_blank();
+    inline::print_lines(&lines);
+    inline::print_line(&Line::from(Span::styled(
+        "  > ",
+        dim,
+    )));
 
     loop {
         let mut input = String::new();
@@ -47,16 +83,14 @@ pub fn prompt_confirmation(request: &ConfirmationRequest) -> Option<Confirmation
             "a" | "always" => return Some(ConfirmationResponse::Always),
             "q" | "quit" => return Some(ConfirmationResponse::Quit),
             _ => {
-                print!("Invalid input. Enter (y/n/a/q): ");
+                inline::print_line(&Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "Invalid input. Enter (y/n/a/q): ",
+                        Style::default().fg(Color::Rgb(241, 196, 15)),
+                    ),
+                ]));
             }
         }
-    }
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len - 3])
     }
 }

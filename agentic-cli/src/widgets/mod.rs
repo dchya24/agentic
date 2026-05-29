@@ -7,7 +7,9 @@
 
 pub mod capabilities;
 pub mod components;
+pub mod diff;
 pub mod inline;
 pub mod markdown;
 pub mod progress;
 pub mod spinner;
+pub mod tool_call;
