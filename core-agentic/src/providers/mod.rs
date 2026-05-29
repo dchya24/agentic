@@ -46,14 +46,61 @@ impl ProviderError {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChatMessageRequest {
     pub role: String,
+    /// Message content. We serialize manually so that an assistant
+    /// message with `tool_calls` can emit `content: null` when the model
+    /// returned no text alongside its tool requests — several
+    /// OpenAI-compatible providers (notably Z.AI) reject
+    /// `{role: "assistant", content: "", tool_calls: [...]}` with
+    /// HTTP 400 "messages parameter is illegal".
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCallResponse>,
+}
+
+impl Serialize for ChatMessageRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        // Decide field count up front so we don't emit empty optionals.
+        let emit_content_as_null =
+            self.role == "assistant" && !self.tool_calls.is_empty() && self.content.is_empty();
+        let mut field_count = 2; // role + content
+        if self.tool_call_id.is_some() {
+            field_count += 1;
+        }
+        if !self.tool_calls.is_empty() {
+            field_count += 1;
+        }
+
+        let mut state = serializer.serialize_struct("ChatMessageRequest", field_count)?;
+        state.serialize_field("role", &self.role)?;
+
+        if emit_content_as_null {
+            // None makes serde emit `null` for the content field. This
+            // is what OpenAI/Z.AI expect for an assistant turn that
+            // consisted purely of tool_calls.
+            state.serialize_field("content", &Option::<String>::None)?;
+        } else {
+            state.serialize_field("content", &self.content)?;
+        }
+
+        if let Some(id) = &self.tool_call_id {
+            state.serialize_field("tool_call_id", id)?;
+        }
+        if !self.tool_calls.is_empty() {
+            state.serialize_field("tool_calls", &self.tool_calls)?;
+        }
+
+        state.end()
+    }
 }
 
 impl ChatMessageRequest {
@@ -272,4 +319,93 @@ pub enum ModelCapability {
     ToolCalling,
     Vision,
     Embeddings,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool_call(id: &str) -> ToolCallResponse {
+        ToolCallResponse {
+            id: id.to_string(),
+            call_type: "function".to_string(),
+            function: ToolCallFunction {
+                name: "read_file".to_string(),
+                arguments: "{}".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn assistant_with_tool_calls_serializes_empty_content_as_null() {
+        // OpenAI/Z.AI reject {role:"assistant", content:"", tool_calls:[...]}
+        // with HTTP 400. The fix: when content is empty AND tool_calls is
+        // non-empty, emit `content: null`.
+        let msg = ChatMessageRequest {
+            role: "assistant".into(),
+            content: "".into(),
+            tool_call_id: None,
+            tool_calls: vec![tool_call("call-1")],
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["role"], "assistant");
+        assert!(json["content"].is_null(), "content should serialize as null");
+        assert!(json["tool_calls"].is_array());
+    }
+
+    #[test]
+    fn assistant_with_tool_calls_keeps_content_when_present() {
+        // The model can return both text content and tool_calls in the
+        // same turn. Don't null out the content in that case.
+        let msg = ChatMessageRequest {
+            role: "assistant".into(),
+            content: "thinking out loud".into(),
+            tool_call_id: None,
+            tool_calls: vec![tool_call("call-1")],
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["content"], "thinking out loud");
+    }
+
+    #[test]
+    fn user_message_keeps_empty_string_content() {
+        // The null-content rule is specific to assistant + tool_calls.
+        // A plain user/tool message with empty content should still
+        // serialize as an empty string (caller's choice).
+        let msg = ChatMessageRequest {
+            role: "user".into(),
+            content: "".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["content"], "");
+    }
+
+    #[test]
+    fn tool_message_includes_tool_call_id() {
+        let msg = ChatMessageRequest {
+            role: "tool".into(),
+            content: "result".into(),
+            tool_call_id: Some("call-1".into()),
+            tool_calls: vec![],
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["tool_call_id"], "call-1");
+        assert_eq!(json["content"], "result");
+    }
+
+    #[test]
+    fn empty_optional_fields_omitted() {
+        let msg = ChatMessageRequest {
+            role: "user".into(),
+            content: "hi".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("tool_call_id"));
+        assert!(!obj.contains_key("tool_calls"));
+    }
 }

@@ -876,18 +876,23 @@ pub(crate) fn build_request_messages(
 /// Drop messages that would violate the OpenAI/Anthropic tool-call spec
 /// before they hit the wire.
 ///
-/// The slice handed to us by `Memory::get_context(N)` is just the last N
-/// raw messages — it may start mid-pair. Two failure modes:
+/// `Memory::get_context(N)` returns the last N raw messages without
+/// awareness of pairing rules, so a slice can be malformed in several
+/// ways. This function fixes them all in one pass:
 ///
-/// 1. **Orphan tool message**: the slice begins with `tool` but its parent
-///    assistant (the one that requested the call) was trimmed off. Z.AI /
-///    OpenAI return HTTP 400 "The messages parameter is illegal".
+/// 1. **Orphan tool message**: a `tool` message whose announced parent
+///    assistant was trimmed off (or had its tool_calls cleared). Drop it.
 /// 2. **Dangling tool_calls**: an assistant advertises tool calls in
-///    `tool_calls`, but the matching `tool` results were trimmed.
+///    `tool_calls` but the matching `tool` results are not present.
+///    Trim the unmatched IDs from the assistant's tool_calls list.
+/// 3. **Empty assistant after trimming**: an assistant whose `content` is
+///    empty AND whose tool_calls became empty after step 2. Z.AI rejects
+///    `{role: "assistant", content: ""}` with no tool_calls. Drop it.
+/// 4. **Bad first non-system message**: providers require the first
+///    non-system message to be `user`. Drop leading assistant/tool
+///    messages that would otherwise lead the slice.
 ///
-/// Strategy: keep only assistant tool_calls whose IDs are matched by
-/// `tool` messages later in the slice; drop tool messages whose IDs are
-/// not advertised by an earlier assistant in the slice.
+/// All decisions are local: we never invent messages, only drop or trim.
 fn sanitize_for_provider(messages: Vec<ChatMessageRequest>) -> Vec<ChatMessageRequest> {
     use std::collections::HashSet;
 
@@ -895,14 +900,18 @@ fn sanitize_for_provider(messages: Vec<ChatMessageRequest>) -> Vec<ChatMessageRe
         return messages;
     }
 
+    // Pass 1: trim assistant tool_calls to those whose result actually
+    // appears later in the slice (before the next user/assistant turn),
+    // and drop tool messages whose IDs are not announced by an earlier
+    // assistant.
     let mut sanitized: Vec<ChatMessageRequest> = Vec::with_capacity(messages.len());
     let mut announced_ids: HashSet<String> = HashSet::new();
 
     for (i, msg) in messages.iter().enumerate() {
         match msg.role.as_str() {
             "assistant" if !msg.tool_calls.is_empty() => {
-                // Look ahead: collect tool_call_ids that appear in later
-                // tool messages, stopping at the next assistant or user.
+                // Look ahead until the next assistant/user turn and collect
+                // tool_call_ids whose result lands in this group.
                 let mut seen_after: HashSet<String> = HashSet::new();
                 for next in &messages[i + 1..] {
                     match next.role.as_str() {
@@ -918,24 +927,51 @@ fn sanitize_for_provider(messages: Vec<ChatMessageRequest>) -> Vec<ChatMessageRe
 
                 let mut kept = msg.clone();
                 kept.tool_calls.retain(|tc| seen_after.contains(&tc.id));
+
+                // Failure mode #3: assistant ended up with neither content
+                // nor tool_calls. Drop it rather than emit an empty turn.
+                if kept.tool_calls.is_empty() && kept.content.trim().is_empty() {
+                    tracing::debug!(
+                        "sanitize_for_provider: dropping empty assistant after tool_call trim"
+                    );
+                    continue;
+                }
+
                 for tc in &kept.tool_calls {
                     announced_ids.insert(tc.id.clone());
                 }
                 sanitized.push(kept);
             }
             "tool" => {
-                // Drop orphan tool messages whose parent assistant either
-                // wasn't in the slice or had its tool_calls stripped.
-                if let Some(id) = &msg.tool_call_id {
-                    if announced_ids.contains(id) {
+                // Failure mode #1: orphan tool message. Drop unless its
+                // parent's announcement is in scope.
+                match &msg.tool_call_id {
+                    Some(id) if announced_ids.contains(id) => {
                         sanitized.push(msg.clone());
-                    } else {
+                    }
+                    Some(id) => {
                         tracing::debug!(
                             tool_call_id = %id,
                             "sanitize_for_provider: dropping orphan tool message"
                         );
                     }
+                    None => {
+                        tracing::warn!(
+                            "sanitize_for_provider: dropping tool message with no tool_call_id"
+                        );
+                    }
                 }
+            }
+            "assistant" => {
+                // Plain assistant (no tool_calls). Drop if also empty
+                // content — same provider rejection as in failure mode #3.
+                if msg.content.trim().is_empty() {
+                    tracing::debug!(
+                        "sanitize_for_provider: dropping empty assistant message"
+                    );
+                    continue;
+                }
+                sanitized.push(msg.clone());
             }
             _ => {
                 sanitized.push(msg.clone());
@@ -943,15 +979,41 @@ fn sanitize_for_provider(messages: Vec<ChatMessageRequest>) -> Vec<ChatMessageRe
         }
     }
 
-    // Drop leading non-conversational messages. Defensive after pass above.
+    // Pass 2: drop leading assistant/tool messages so the slice starts
+    // with a user (or a system-then-user) sequence. Failure mode #4.
+    //
+    // We only drop *leading* non-user/system messages — once we hit a
+    // user, the rest of the slice is well-formed (per pass 1).
     while let Some(first) = sanitized.first() {
         match first.role.as_str() {
-            "user" | "system" | "assistant" => break,
+            "system" | "user" => break,
             _ => {
+                tracing::debug!(
+                    role = %first.role,
+                    "sanitize_for_provider: dropping leading non-user/system message"
+                );
                 sanitized.remove(0);
             }
         }
     }
+
+    // Pass 3: collapse consecutive system messages so the slice has at
+    // most one leading system (provider-friendly). Defensive — the
+    // current orchestrator only emits one, but this guards against
+    // future regressions.
+    let mut leading_system_seen = false;
+    sanitized.retain(|m| {
+        if m.role == "system" {
+            if leading_system_seen {
+                tracing::debug!(
+                    "sanitize_for_provider: dropping duplicate system message"
+                );
+                return false;
+            }
+            leading_system_seen = true;
+        }
+        true
+    });
 
     sanitized
 }
@@ -1239,18 +1301,104 @@ mod orchestrator_unit_tests {
     #[test]
     fn sanitize_does_not_pull_results_across_user_turn() {
         // A tool result appearing AFTER a new user turn must not be
-        // counted toward the previous assistant's tool_calls. Otherwise
-        // sanitize would keep a tool_call whose result is in a later turn.
+        // counted toward the previous assistant's tool_calls. With
+        // failure mode #3 in place, the assistant whose tool_calls all
+        // get cleared and whose content is empty/the placeholder is
+        // dropped entirely. The orphan tool message after the user turn
+        // is also dropped because no announced ID is in scope.
+        //
+        // Net effect: only the user message survives — a clean slice
+        // ready for the next provider call.
+        let mut leading = assistant_with("", &["call-1"]);
+        leading.content = "".to_string();
         let input = vec![
-            assistant_with("thinking", &["call-1"]),
+            leading,
             user_msg("actually nevermind, do this instead"),
             tool_msg("call-1", "stale result from previous turn"),
         ];
         let out = sanitize_for_provider(input);
-        // The assistant's tool_calls should be cleared (no result before
-        // the user turn), and the orphan tool message after the user turn
-        // should be dropped because no announced ID.
-        assert!(out.iter().find(|m| m.role == "assistant").unwrap().tool_calls.is_empty());
-        assert_eq!(out.iter().filter(|m| m.role == "tool").count(), 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].role, "user");
+    }
+
+    #[test]
+    fn sanitize_drops_empty_assistant_with_no_tool_calls() {
+        // Provider rejects {role: assistant, content: ""} with no
+        // tool_calls. Drop it entirely.
+        let input = vec![
+            user_msg("q"),
+            ChatMessageRequest {
+                role: "assistant".into(),
+                content: "".into(),
+                tool_call_id: None,
+                tool_calls: vec![],
+            },
+            user_msg("follow-up"),
+        ];
+        let out = sanitize_for_provider(input);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|m| m.role == "user"));
+    }
+
+    #[test]
+    fn sanitize_drops_leading_assistant() {
+        // Slice starts with an assistant message (no tool_calls). The
+        // provider needs a user turn first, so drop the leading
+        // assistant.
+        let input = vec![
+            ChatMessageRequest {
+                role: "assistant".into(),
+                content: "continuing thought".into(),
+                tool_call_id: None,
+                tool_calls: vec![],
+            },
+            user_msg("new question"),
+            ChatMessageRequest {
+                role: "assistant".into(),
+                content: "answer".into(),
+                tool_call_id: None,
+                tool_calls: vec![],
+            },
+        ];
+        let out = sanitize_for_provider(input);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role, "user");
+        assert_eq!(out[1].role, "assistant");
+        assert_eq!(out[1].content, "answer");
+    }
+
+    #[test]
+    fn sanitize_keeps_system_then_user_lead() {
+        // Standard well-formed lead: system + user. Both should survive.
+        let system = ChatMessageRequest {
+            role: "system".into(),
+            content: "you are an agent".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+        };
+        let input = vec![system.clone(), user_msg("hi")];
+        let out = sanitize_for_provider(input);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role, "system");
+        assert_eq!(out[1].role, "user");
+    }
+
+    #[test]
+    fn sanitize_collapses_duplicate_system_messages() {
+        // Defensive: only one system message should survive.
+        let sys = |c: &str| ChatMessageRequest {
+            role: "system".into(),
+            content: c.into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+        };
+        let input = vec![
+            sys("first"),
+            sys("second"),
+            user_msg("hi"),
+        ];
+        let out = sanitize_for_provider(input);
+        assert_eq!(out.iter().filter(|m| m.role == "system").count(), 1);
+        assert_eq!(out[0].content, "first");
     }
 }
