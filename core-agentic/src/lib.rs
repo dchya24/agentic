@@ -8,6 +8,7 @@ mod tests;
 
 pub mod config;
 pub mod agent;
+pub mod diff_util;
 pub mod events;
 pub mod memory;
 pub mod orchestrator;

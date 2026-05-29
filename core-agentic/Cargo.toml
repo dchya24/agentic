@@ -21,6 +21,7 @@ async-stream = "0.3"
 glob = "0.3.3"
 regex = "1.12.3"
 async-trait = "0.1"
+similar = "2.6"
 
 # Optional: real BPE tokenizer for accurate token counts.
 # Without this feature, estimate_tokens uses a ~4-chars-per-token heuristic,

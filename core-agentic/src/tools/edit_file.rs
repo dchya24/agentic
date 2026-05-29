@@ -234,11 +234,22 @@ fn apply_replacement(
     std::fs::write(path, &new_content)
         .map_err(|e| ToolError::new(format!("Failed to write file: {}", e)))?;
 
+    // Build a unified diff and stats from before → after so the CLI can
+    // render a real diff widget instead of just a success line. The diff
+    // is included in the JSON result; the orchestrator forwards the same
+    // payload to event subscribers.
+    let path_label = path.to_string_lossy().to_string();
+    let diff = crate::diff_util::unified_diff(&path_label, content, &new_content, 3);
+    let stats = crate::diff_util::change_summary(content, &new_content);
+
     Ok(serde_json::json!({
-        "path": path.to_string_lossy(),
+        "path": path_label,
         "success": true,
         "replacements": if replace_all { count } else { 1 },
         "quotes_normalized": quotes_normalized,
+        "diff": diff,
+        "lines_added": stats.added,
+        "lines_removed": stats.removed,
     }))
 }
 

@@ -35,6 +35,18 @@ pub enum AppMessage {
     Error(String),
     /// Progress update
     Progress(String),
+    /// Agent invoked a tool. Renders as a yellow panel before the result.
+    ToolCall {
+        name: String,
+        arguments: serde_json::Value,
+    },
+    /// Agent received a tool result. Renders as a green/red notification
+    /// + optional unified-diff body when the tool is edit_file/write_file.
+    ToolResult {
+        name: String,
+        output: serde_json::Value,
+        is_error: bool,
+    },
 }
 
 /// Application state
@@ -86,6 +98,14 @@ pub enum MessageRole {
     Assistant,
     System,
     Error,
+    /// Tool invocation: rendered as a panel with the tool name and args.
+    Tool,
+    /// Tool result (success path): rendered as a green notification with
+    /// optional unified-diff body for edit_file/write_file outputs.
+    ToolResult,
+    /// Tool result (error / blocked / skipped): rendered as a red
+    /// notification with the body always shown.
+    ToolError,
 }
 
 impl App {
@@ -419,10 +439,49 @@ impl App {
             tokio::spawn(async move {
                 let _ = tx.send(AppMessage::Progress("Thinking...".into()));
 
+                // Pipe orchestrator events to the same channel so the
+                // message log shows tool calls / results inline. Cloning
+                // the sender into the closure is cheap (Arc internally).
+                let event_tx = tx.clone();
+
                 match commands
-                    .run_with_callback(&task, |chunk| {
-                        let _ = tx.send(AppMessage::StreamChunk(chunk.to_string()));
-                    })
+                    .run_with_callbacks(
+                        &task,
+                        |chunk| {
+                            let _ = tx.send(AppMessage::StreamChunk(chunk.to_string()));
+                        },
+                        move |event| match event {
+                            core_agentic::Event::ToolCall { tool_name, arguments } => {
+                                let _ = event_tx.send(AppMessage::ToolCall {
+                                    name: tool_name,
+                                    arguments,
+                                });
+                            }
+                            core_agentic::Event::ToolOutput { tool_name, output } => {
+                                // Heuristic matching the inline mode: orchestrator
+                                // records denied/skipped/errored outcomes as plain
+                                // strings with these prefixes. Surface them as errors
+                                // so the UI uses the red accent.
+                                let body = match &output {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    other => other.to_string(),
+                                };
+                                let is_error = body.starts_with("Tool error")
+                                    || body.starts_with("Blocked:")
+                                    || body.starts_with("Skipped:");
+                                let _ = event_tx.send(AppMessage::ToolResult {
+                                    name: tool_name,
+                                    output,
+                                    is_error,
+                                });
+                            }
+                            core_agentic::Event::Error { message } => {
+                                let _ = event_tx.send(AppMessage::Error(message));
+                            }
+                            // Other event types aren't surfaced in TUI for now.
+                            _ => {}
+                        },
+                    )
                     .await
                 {
                     Ok(result) => {
@@ -581,6 +640,36 @@ impl App {
                     }
                     AppMessage::Progress(msg) => {
                         self.progress.set_message(msg);
+                    }
+                    AppMessage::ToolCall { name, arguments } => {
+                        // Stash the structured payload as JSON in the
+                        // message content so the renderer can decode it.
+                        // We use a sentinel envelope so render code can
+                        // tell tool messages apart by the role enum.
+                        let payload = serde_json::json!({
+                            "name": name,
+                            "arguments": arguments,
+                        });
+                        self.messages.push(Message {
+                            role: MessageRole::Tool,
+                            content: payload.to_string(),
+                            timestamp: chrono::Local::now(),
+                        });
+                    }
+                    AppMessage::ToolResult { name, output, is_error } => {
+                        let payload = serde_json::json!({
+                            "name": name,
+                            "output": output,
+                        });
+                        self.messages.push(Message {
+                            role: if is_error {
+                                MessageRole::ToolError
+                            } else {
+                                MessageRole::ToolResult
+                            },
+                            content: payload.to_string(),
+                            timestamp: chrono::Local::now(),
+                        });
                     }
                 }
             }

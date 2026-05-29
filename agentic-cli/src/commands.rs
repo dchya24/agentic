@@ -862,7 +862,12 @@ impl Commands {
     }
 
 
-    /// Run task with a callback for streaming chunks (used by TUI)
+    /// Run task with a callback for streaming chunks (used by TUI).
+    ///
+    /// Chunks are token deltas from the LLM. Tool-call lifecycle is
+    /// surfaced separately via [`run_with_callbacks`] which subscribes
+    /// to orchestrator events. This thin variant exists for callers
+    /// that only care about the streamed text.
     pub async fn run_with_callback<F>(&mut self, task: &str, mut on_chunk: F) -> Result<String>
     where
         F: FnMut(&str),
@@ -886,6 +891,51 @@ impl Commands {
             .await?;
 
         Ok(result)
+    }
+
+    /// Run task with separate callbacks for streaming chunks and runtime
+    /// events (tool calls + results). Used by the TUI to surface tool
+    /// activity in the message log alongside the streaming response.
+    ///
+    /// `on_chunk` receives token deltas as the model generates them.
+    /// `on_event` receives `core_agentic::Event` for every tool call and
+    /// result emitted by the orchestrator.
+    ///
+    /// Both callbacks must be `Send + Sync + 'static` because the event
+    /// stream is dispatched on blocking-pool threads.
+    pub async fn run_with_callbacks<C, E>(
+        &mut self,
+        task: &str,
+        mut on_chunk: C,
+        on_event: E,
+    ) -> Result<String>
+    where
+        C: FnMut(&str),
+        E: Fn(core_agentic::Event) + Send + Sync + 'static,
+    {
+        let expanded = crate::file_ref::expand_file_refs(task);
+        let task = &expanded;
+
+        self.ensure_orchestrator()?;
+
+        let orchestrator = self
+            .orchestrator
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Orchestrator not initialized"))?;
+        orchestrator.reset_cancel();
+        // Subscribers from a previous run shouldn't leak into this one.
+        orchestrator.clear_event_handlers();
+        orchestrator.on_event(on_event);
+
+        let result = orchestrator
+            .run_stream(task, |chunk| on_chunk(&chunk))
+            .await;
+
+        // Drop our subscriber once the run completes so its captured
+        // sender doesn't keep the receiver open forever.
+        orchestrator.clear_event_handlers();
+
+        Ok(result?)
     }
 
     // ── Config dispatch ─────────────────────────────────────
@@ -1747,12 +1797,17 @@ impl Commands {
 // without moving a closure (and therefore without capturing &self).
 
 fn render_event(event: &core_agentic::Event) {
-    use crate::widgets::{components, inline, tool_call};
+    use crate::widgets::{components, diff as diff_widget, inline, tool_call};
 
     // Compact rendering by default: success notifications show only the
     // headline (tool name + numeric summary). Errors always include their
     // message body so users can debug without flipping a flag. The full
     // raw output is still in memory for the model.
+    //
+    // Special case: edit_file / write_file results carry a `diff` field
+    // (unified-diff string) and `lines_added` / `lines_removed` counts.
+    // We render those through `widgets::diff` so the user sees a real
+    // colored diff inline instead of the raw JSON blob.
     const MAX_TOOL_OUTPUT_LINES: usize = 12;
     match event {
         core_agentic::Event::ToolCall { tool_name, arguments } => {
@@ -1770,6 +1825,26 @@ fn render_event(event: &core_agentic::Event) {
             let is_error = body.starts_with("Tool error")
                 || body.starts_with("Blocked:")
                 || body.starts_with("Skipped:");
+
+            // Try to extract a unified diff from the embedded JSON. The
+            // orchestrator wraps tool results as Value::String containing
+            // pretty-printed JSON; we parse it back to look for our
+            // structured fields. If we find a non-empty diff, render it
+            // through the diff widget; the headline notification still
+            // appears so the user gets the summary line.
+            let parsed: Option<serde_json::Value> = if !is_error {
+                serde_json::from_str(&body).ok()
+            } else {
+                None
+            };
+
+            let diff_text = parsed
+                .as_ref()
+                .and_then(|v| v.get("diff"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty());
+
+            // Always print the headline (success/error badge).
             let lines = tool_call::render_result(
                 tool_name,
                 output,
@@ -1778,6 +1853,26 @@ fn render_event(event: &core_agentic::Event) {
                 /*verbose=*/ false,
             );
             inline::print_lines(&lines);
+
+            // If there's a diff, render the summary line + the diff body.
+            if let Some(diff) = diff_text {
+                inline::print_line(&diff_widget::summary_line(diff));
+                let diff_lines = diff_widget::render(diff);
+                let max_diff_lines = 40;
+                if diff_lines.len() > max_diff_lines {
+                    inline::print_lines(&diff_lines[..max_diff_lines]);
+                    let remaining = diff_lines.len() - max_diff_lines;
+                    inline::print_line(&ratatui::text::Line::from(
+                        ratatui::text::Span::styled(
+                            format!("    … {} more diff line(s) hidden", remaining),
+                            ratatui::style::Style::default()
+                                .add_modifier(ratatui::style::Modifier::DIM),
+                        ),
+                    ));
+                } else {
+                    inline::print_lines(&diff_lines);
+                }
+            }
         }
         core_agentic::Event::Error { message } => {
             inline::print_line(&components::error_badge(message));

@@ -73,13 +73,27 @@ impl Tool for WriteFileTool {
             }
         }
 
+        // Capture previous content (if any) so we can produce a real diff.
+        // Treat "file does not exist" as an empty before-state so creates
+        // surface as `+N` lines added.
+        let before = std::fs::read_to_string(path).unwrap_or_default();
+        let is_create = !path.exists() || before.is_empty();
+
         std::fs::write(path, content)
             .map_err(|e| ToolError::new(format!("Failed to write file: {}", e)))?;
 
+        let path_label = path.to_string_lossy().to_string();
+        let diff = crate::diff_util::unified_diff(&path_label, &before, content, 3);
+        let stats = crate::diff_util::change_summary(&before, content);
+
         Ok(serde_json::json!({
-            "path": path.to_string_lossy(),
+            "path": path_label,
             "success": true,
             "bytes_written": content.len(),
+            "created": is_create,
+            "diff": diff,
+            "lines_added": stats.added,
+            "lines_removed": stats.removed,
         }))
     }
 }

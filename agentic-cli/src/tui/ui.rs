@@ -12,7 +12,7 @@ use super::app::{App, MessageRole};
 use super::dropdown::DropdownType;
 use super::input::{render_input, render_placeholder};
 use crate::widgets::markdown::{MarkdownContent, role_prefix};
-use crate::widgets::spinner;
+use crate::widgets::{diff as diff_widget, spinner, tool_call};
 
 /// Padding configuration
 const PADDING_HORIZONTAL: u16 = 2;
@@ -111,12 +111,67 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             all_lines.push(Line::default());
         }
 
+        // Tool messages render through the dedicated widgets, not as
+        // markdown. They carry a JSON envelope in `content`.
+        match message.role {
+            MessageRole::Tool => {
+                if let Some((name, args)) = parse_tool_call_payload(&message.content) {
+                    let lines = tool_call::render_call(&name, &args);
+                    all_lines.extend(lines);
+                } else {
+                    all_lines.push(Line::from(Span::styled(
+                        "(malformed tool call event)",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+                continue;
+            }
+            MessageRole::ToolResult | MessageRole::ToolError => {
+                if let Some((name, output)) = parse_tool_result_payload(&message.content) {
+                    let is_error = matches!(message.role, MessageRole::ToolError);
+                    let lines = tool_call::render_result(&name, &output, is_error, 12, false);
+                    all_lines.extend(lines);
+
+                    // If the result carries a unified diff (edit_file /
+                    // write_file), render it inline through the diff
+                    // widget so the user sees real colored hunks.
+                    if !is_error {
+                        if let Some(diff_text) = extract_diff_string(&output) {
+                            all_lines.push(diff_widget::summary_line(&diff_text));
+                            let diff_lines = diff_widget::render(&diff_text);
+                            let max_diff_lines = 40;
+                            if diff_lines.len() > max_diff_lines {
+                                all_lines.extend(diff_lines.into_iter().take(max_diff_lines));
+                                all_lines.push(Line::from(Span::styled(
+                                    "    … diff truncated",
+                                    Style::default()
+                                        .fg(Color::DarkGray)
+                                        .add_modifier(Modifier::DIM),
+                                )));
+                            } else {
+                                all_lines.extend(diff_lines);
+                            }
+                        }
+                    }
+                } else {
+                    all_lines.push(Line::from(Span::styled(
+                        "(malformed tool result event)",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+                continue;
+            }
+            _ => {}
+        }
+
         // Role header with timestamp
         let (role_span, content_style) = match message.role {
             MessageRole::User => role_prefix("user"),
             MessageRole::Assistant => role_prefix("assistant"),
             MessageRole::System => role_prefix("system"),
             MessageRole::Error => role_prefix("error"),
+            // Tool variants handled above with `continue`; unreachable here.
+            _ => role_prefix("system"),
         };
 
         let time_str = message.timestamp.format("%H:%M").to_string();
@@ -377,4 +432,38 @@ fn draw_dropdown(frame: &mut Frame, app: &App, input_area: Rect) {
         );
 
     frame.render_widget(list, dropdown_area);
+}
+
+// ── Tool event payload decoding ─────────────────────────────
+//
+// AppMessage::ToolCall and AppMessage::ToolResult package the structured
+// payload as a JSON string in `Message::content` so we can keep
+// `Message` simple. The TUI message log decodes it back here.
+
+fn parse_tool_call_payload(content: &str) -> Option<(String, serde_json::Value)> {
+    let v: serde_json::Value = serde_json::from_str(content).ok()?;
+    let name = v.get("name")?.as_str()?.to_string();
+    let arguments = v.get("arguments")?.clone();
+    Some((name, arguments))
+}
+
+fn parse_tool_result_payload(content: &str) -> Option<(String, serde_json::Value)> {
+    let v: serde_json::Value = serde_json::from_str(content).ok()?;
+    let name = v.get("name")?.as_str()?.to_string();
+    let output = v.get("output")?.clone();
+    Some((name, output))
+}
+
+/// Extract a unified-diff string from a tool result. The orchestrator
+/// emits ToolOutput as `Value::String(json_string)` so we have to parse
+/// twice: once to lift the inner JSON, once to look up the `diff` field.
+fn extract_diff_string(output: &serde_json::Value) -> Option<String> {
+    let body = output.as_str()?;
+    let inner: serde_json::Value = serde_json::from_str(body).ok()?;
+    let diff = inner.get("diff")?.as_str()?;
+    if diff.is_empty() {
+        None
+    } else {
+        Some(diff.to_string())
+    }
 }
