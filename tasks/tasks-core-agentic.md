@@ -1,30 +1,30 @@
 # Tasks: Core Agentic Library
 
-**Feature**: core-agentic - Rust library for AI agent orchestration  
-**Status**: In Progress (Safety + Memory enhanced, Phase 1 core done)  
+**Feature**: core-agentic — Rust library for AI agent orchestration
+**Status**: Foundation complete; ~95% architecture coverage (post-M3 + alignment refactor)
 **Created**: 2026-04-20
-**Updated**: 2026-05-04
+**Updated**: 2026-05-31
 
 ---
 
 ## Relevant Files
 
-- `core-agentic/Cargo.toml` - Library manifest
-- `core-agentic/src/lib.rs` - Main exports
-- `core-agentic/src/orchestrator.rs` - Agent loop implementation
-- `core-agentic/src/agent.rs` - Agent struct
-- `core-agentic/src/tool.rs` - Tool trait
-- `core-agentic/src/tool_registry.rs` - Tool registration
-- `core-agentic/src/memory.rs` - Context/memory management
-- `core-agentic/src/safety.rs` - Safety checks
-- `core-agentic/src/events.rs` - Event types
-- `core-agentic/src/providers/mod.rs` - Provider trait
-- `core-agentic/src/providers/openai.rs` - OpenAI provider
-- `core-agentic/src/tools/mod.rs` - Built-in tools
-- `core-agentic/src/tools/run_command.rs` - Command execution tool
-- `core-agentic/src/tools/read_file.rs` - File read tool
-- `core-agentic/src/tools/write_file.rs` - File write tool
-- `core-agentic/src/tools/list_files.rs` - Directory listing tool
+- `core-agentic/Cargo.toml` — Library manifest
+- `core-agentic/src/lib.rs` — Public re-exports
+- `core-agentic/src/orchestrator/` — Agent loop (mod, messages, tool_exec, compaction, run)
+- `core-agentic/src/agent.rs` — Higher-level Agent wrapper
+- `core-agentic/src/tool.rs` — Tool trait
+- `core-agentic/src/tool_registry.rs` — Tool registration
+- `core-agentic/src/memory/` — Context/memory (mod, types, store, compaction, persist)
+- `core-agentic/src/safety/` — Risk + permissions (mod, risk, config, audit, engine)
+- `core-agentic/src/events.rs` — Event emitter + types
+- `core-agentic/src/providers/` — `openai`, `anthropic`, `failover`
+- `core-agentic/src/tools/` — Built-in tools (read, write, edit, list, search, glob, grep, run_command, run_script, fetch, web_search, update_memory, spawn_subagent)
+- `core-agentic/src/prompts.rs` — Default system prompt + AGENT.md loading
+- `core-agentic/src/file_tracker.rs` — Read/edit staleness detection
+- `core-agentic/src/memory_file.rs` — Persistent user/project memory.md
+- `core-agentic/src/diff_util.rs` — Unified-diff producer (consumed by widgets::diff)
+- `core-agentic/src/mcp/` — MCP client (transport, types, client)
 
 ---
 
@@ -34,53 +34,116 @@
 
 ## Tasks
 
-- [ ] 0.0 Create feature branch
-  - [ ] 0.1 Create and checkout new branch (`git checkout -b feature/core-agentic`)
-- [ ] 1.0 Set up project structure
-  - [ ] 1.1 Create core-agentic directory
-  - [ ] 1.2 Initialize Cargo.toml with dependencies
-  - [ ] 1.3 Create lib.rs with module exports
-- [ ] 2.0 Define core types
-  - [ ] 2.1 Implement AgentConfig struct
-  - [ ] 2.2 Implement Message and MessageRole
-  - [ ] 2.3 Implement ToolCall and ToolResult
-  - [ ] 2.4 Implement ToolSchema
-- [ ] 3.0 Build Tool system
-  - [ ] 3.1 Define Tool trait
-  - [ ] 3.2 Implement ToolRegistry
-  - [ ] 3.3 Create built-in tools (run_command, read_file, write_file, list_files)
-- [ ] 4.0 Implement LLM Provider
-  - [ ] 4.1 Define Provider trait
-  - [ ] 4.2 Implement OpenAI-compatible provider
-  - [ ] 4.3 Add streaming support
-- [ ] 5.0 Build Orchestrator
-  - [ ] 5.1 Implement agent loop logic
-  - [ ] 5.2 Implement state machine (IDLE → PLANNING → EXECUTING → etc.)
-  - [ ] 5.3 Add tool execution flow
-- [x] 6.0 Add Memory management
-  - [x] 6.1 Implement Memory struct
-  - [x] 6.2 Add message tracking
-  - [x] 6.3 Add context window/summarization
-  - [x] 6.4 Add message pinning
-  - [x] 6.5 Add session isolation
-  - [x] 6.6 Add disk persistence
-  - [x] 6.7 Add message search
-- [x] 7.0 Implement Safety system
-  - [x] 7.1 Add risk detection (numeric scoring 0.0-1.0)
-  - [x] 7.2 Implement confirmation system (configurable thresholds)
-  - [x] 7.3 Add blocked commands list (configurable)
-  - [x] 7.4 Add pattern-based risk detection (25+ regex patterns)
-  - [x] 7.5 Add path sandboxing
-  - [x] 7.6 Add rate limiting per tool
-  - [x] 7.7 Add audit logging (ring buffer)
-- [ ] 8.0 Add Events system
-  - [ ] 8.1 Define event types
-  - [ ] 8.2 Implement event emission
-- [x] 9.0 Testing
-  - [x] 9.1 Write unit tests for core types
-  - [x] 9.2 Write unit tests for tools
-  - [x] 9.3 Write unit tests for safety (48 tests)
-  - [x] 9.4 Write unit tests for memory (48 tests)
-  - [ ] 9.5 Write integration tests for orchestrator
+### Phase 1 — Foundation (✅ done)
+
+- [x] 0.0 Project setup
+  - [x] 0.1 Create core-agentic crate
+  - [x] 0.2 Cargo manifest + workspace integration
+  - [x] 0.3 Public exports in `lib.rs`
+- [x] 1.0 Core types
+  - [x] 1.1 `Message`, `MessageRole`
+  - [x] 1.2 `ToolCall`, `ToolResult`, `ToolSchema`
+  - [x] 1.3 `Config` (multi-provider, MCP, safety, output, agent loop)
+- [x] 2.0 Tool system
+  - [x] 2.1 `Tool` trait + `ToolRegistry`
+  - [x] 2.2 Built-ins: read, write, edit, list, search, glob, grep
+  - [x] 2.3 Built-ins: run_command, run_script
+  - [x] 2.4 Edit-tool string replacement with uniqueness + quote normalization
+  - [x] 2.5 `FileTracker` — staleness detection between read/edit
+- [x] 3.0 LLM providers
+  - [x] 3.1 OpenAI-compatible
+  - [x] 3.2 Anthropic
+  - [x] 3.3 Streaming (text deltas + buffered tool calls)
+  - [x] 3.4 Failover wrapper
+
+### Phase 2 — Orchestrator (✅ done)
+
+- [x] 4.0 Agent loop
+  - [x] 4.1 Synchronous `run()` and async `run_stream()`
+  - [x] 4.2 State machine
+  - [x] 4.3 Max-iterations cap
+  - [x] 4.4 Cooperative cancel (`Arc<AtomicBool>`)
+- [x] 5.0 System prompt
+  - [x] 5.1 Default prompt with the three rules
+  - [x] 5.2 `AGENT.md` walk-up auto-load
+  - [x] 5.3 Persistent memory section in prompt
+
+### Phase 3 — Memory (✅ done)
+
+- [x] 6.0 Memory management
+  - [x] 6.1 `Memory` struct + message tracking
+  - [x] 6.2 Token-budget context window (replaces message-count slicing)
+  - [x] 6.3 Pinned messages
+  - [x] 6.4 Session isolation
+  - [x] 6.5 Disk persistence (`persist`, `load`, `list_sessions`, `delete_session`)
+  - [x] 6.6 Keyword search (`Memory::search`)
+  - [x] 6.7 Optional tiktoken backend behind a feature flag
+  - [x] 6.8 Configurable `context_budget_ratio`
+
+### Phase 4 — Safety (✅ done)
+
+- [x] 7.0 Safety system
+  - [x] 7.1 Risk scoring (0.0–1.0)
+  - [x] 7.2 Configurable confirmation thresholds
+  - [x] 7.3 Hard blocklist (`rm -rf /`, `mkfs`, `dd if=`, fork bombs, …)
+  - [x] 7.4 Pattern-based risk detection (25+ regex patterns)
+  - [x] 7.5 Path sandboxing
+  - [x] 7.6 Per-tool rate limiting
+  - [x] 7.7 Audit log (ring buffer)
+  - [x] 7.8 Permission modes: `default` / `plan` / `yolo`
+
+### Phase 5 — Compression (✅ done)
+
+- [x] 8.0 Three-layer compression pipeline
+  - [x] 8.1 Layer 1 — UTF-8 safe truncate of large tool results
+  - [x] 8.2 Layer 2 — replace older tool results with `[Cleared]` placeholder
+  - [x] 8.3 Layer 3 — heuristic autocompact at ~85% budget
+  - [x] 8.4 Layer 3 — LLM-based summarization (opt-in, falls back on error)
+  - [x] 8.5 Wired through Config (`agent.auto_compact_with_llm`, `agent.summarizer_model`)
+
+### Phase 6 — Advanced (✅ done)
+
+- [x] 9.0 Subagents
+  - [x] 9.1 `SpawnSubagentTool` with fresh context
+  - [x] 9.2 Shared `ToolRegistry` + `Provider` via `Arc`
+  - [x] 9.3 Linked cancel flag with parent
+- [x] 10.0 Web access
+  - [x] 10.1 `fetch` tool — HTML→text + per-session cache
+  - [x] 10.2 `web_search` tool — Tavily / Brave / DuckDuckGo backends
+- [x] 11.0 Persistent memory
+  - [x] 11.1 User-global `~/.config/agentic/memory.md`
+  - [x] 11.2 Project-local `<cwd>/memory.md` walk-up
+  - [x] 11.3 `update_memory` tool
+
+### Phase 7 — Events / Concurrency / MCP (✅ done)
+
+- [x] 12.0 Events system
+  - [x] 12.1 Event types (`ToolCall`, `ToolOutput`, …)
+  - [x] 12.2 `EventEmitter` (Mutex<Vec<…>>) for `&self.on()`
+  - [x] 12.3 Public `on_event` / `clear_event_handlers`
+- [x] 13.0 Concurrency
+  - [x] 13.1 Concurrent read-only tool batches in `run_stream`
+- [x] 14.0 MCP integration
+  - [x] 14.1 stdio transport
+  - [x] 14.2 HTTP transport
+  - [x] 14.3 SSE transport
+  - [x] 14.4 Tool schema conversion
+
+### Phase 8 — Testing & docs
+
+- [x] 15.0 Unit tests (270+ across the crate; see milestone docs)
+- [ ] 15.1 Integration tests for the orchestrator agent loop
+- [x] 16.0 Architecture docs
+  - [x] 16.1 `AGENT_ARCHITECTURE.md` reference
+  - [x] 16.2 Three milestone docs (foundational / quality-of-life / additions)
+  - [x] 16.3 Architecture alignment overview
+
+### Open / future work
+
+- [ ] Domain allowlist for `fetch` / `web_search` (existing safety pipeline already gates URLs)
+- [ ] Concurrent tools in sync `run()` — intentional gap; concurrent path is `run_stream` only
+- [ ] LSP integration, prompt caching, file watching — out of scope per architecture doc
 
 > **Full testing plan:** [docs/PLAN_TESTING.md](../../docs/PLAN_TESTING.md)
+> **Architecture reference:** [AGENT_ARCHITECTURE.md](../AGENT_ARCHITECTURE.md)
+> **Coverage detail:** [docs/architecture-alignment-overview-25052026.md](../docs/architecture-alignment-overview-25052026.md)

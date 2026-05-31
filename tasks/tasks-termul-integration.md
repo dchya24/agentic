@@ -1,22 +1,24 @@
 # Tasks: Termul Integration
 
-**Feature**: termul-integration - Integrate core-agentic into Termul terminal manager  
-**Status**: In Progress (Phase 7: Config file persistence complete)  
-**Created**: 2026-04-20  
+**Feature**: termul-integration — embed core-agentic into the Termul terminal manager
+**Status**: Backend + frontend foundation done; advanced UI features pending
+**Created**: 2026-04-20
+**Updated**: 2026-05-31
 **Depends on**: `tasks-core-agentic.md`
 
 ---
 
 ## Relevant Files
 
-- `src-tauri/Cargo.toml` - Tauri manifest (add core-agentic dependency)
-- `src-tauri/src/agentic/mod.rs` - Module exports
-- `src-tauri/src/agentic/commands.rs` - Tauri commands
-- `src-tauri/src/agentic/state.rs` - AppState management
-- `src-tauri/src/agentic/tools/mod.rs` - Termul-specific tools
-- `src-tauri/src/agentic/tools/pty_tool.rs` - PTY-based run_command tool
-- `src/renderer/components/agentic/` - React components
-- `src/renderer/stores/agentic-store.ts` - Zustand state
+- `src-tauri/Cargo.toml` — Tauri manifest (depends on `core-agentic`)
+- `src-tauri/src/agentic/mod.rs` — Module exports
+- `src-tauri/src/agentic/commands.rs` — Tauri command handlers
+- `src-tauri/src/agentic/state.rs` — `AppState` for orchestrator + config
+- `src-tauri/src/agentic/tools/pty_tool.rs` — PTY-backed `run_command`
+- `src/renderer/components/agentic/` — React components (panel, sidebar, output, input, banner)
+- `src/renderer/stores/agentic-store.ts` — Zustand state
+- `src/renderer/lib/agentic-config-helper.ts` — Config check + wizard launch
+- `src/renderer/pages/AppPreferences.tsx` — Agentic settings section
 
 ---
 
@@ -26,44 +28,81 @@
 
 ## Tasks
 
-- [x] 0.0 Create feature branch
-  - [x] 0.1 Create and checkout new branch (`git checkout -b feature/termul-agentic`)
-- [x] 1.0 Set up backend integration
-  - [x] 1.1 Add core-agentic to src-tauri/Cargo.toml
-  - [x] 1.2 Create agentic module directory
-  - [x] 1.3 Create mod.rs with module exports
-- [x] 2.0 Build Tauri commands
-  - [x] 2.1 Implement agentic_load_config command
-  - [x] 2.2 Implement agentic_save_config command
-  - [x] 2.3 Implement agentic_chat command
-  - [x] 2.4 Implement agentic_chat_stream command
-  - [x] 2.5 Implement agentic_get_status command
-- [x] 3.0 Implement Termul-specific tools
-  - [x] 3.1 Create PTY-based run_command tool
-  - [x] 3.2 Integrate with existing terminal system
-  - [x] 3.3 Add tool output streaming
-- [x] 4.0 Build React frontend
-  - [x] 4.1 Create AgenticPanel component
-  - [x] 4.2 Create AgenticOutput component
-  - [x] 4.3 Create AgenticInput component
-  - [x] 4.4 Create AgenticSidebar component
-- [x] 5.0 Integrate with tab system
-  - [x] 5.1 Add agentic tab to tab bar
-  - [x] 5.2 Implement tab creation logic
-  - [x] 5.3 Add close button handling
-- [x] 6.0 Add sidebar status
-  - [x] 6.1 Implement status display
-  - [x] 6.2 Show provider info
-  - [x] 6.3 Show token usage
-- [x] 7.0 Config file persistence (shared with agentic-cli)
-  - [x] 7.1 Load config from ~/.config/agentic/config.json on startup
-  - [x] 7.2 Parse both native (flat) and CLI (nested) config formats
-  - [x] 7.3 Save config to file when load_config is called from frontend
-  - [x] 7.4 Add agentic_read_file_config Tauri command for frontend
-  - [x] 7.5 Init config from file on AgenticSidebar mount
-- [ ] 8.0 Testing
-  - [ ] 8.1 Test backend commands
-  - [ ] 8.2 Test frontend components
-  - [ ] 8.3 Test end-to-end flow
+### Phase 1 — Backend integration (✅ done)
 
-> **Full testing plan:** [docs/PLAN_TESTING.md](../../docs/PLAN_TESTING.md)
+- [x] 0.0 Workspace + dependency wiring
+- [x] 1.0 Tauri command surface
+  - [x] 1.1 `agentic_load_config` / `agentic_save_config`
+  - [x] 1.2 `agentic_chat` / `agentic_chat_stream`
+  - [x] 1.3 `agentic_get_status`
+  - [x] 1.4 `agentic_read_file_config`
+
+### Phase 2 — Termul-specific tools (✅ done)
+
+- [x] 2.0 PTY-based `run_command`
+- [x] 2.1 Stream tool output to the agentic panel
+- [x] 2.2 Reuse existing terminal session for the PTY
+
+### Phase 3 — Frontend (✅ done)
+
+- [x] 3.0 React components
+  - [x] 3.1 `AgenticPanel`
+  - [x] 3.2 `AgenticOutput`
+  - [x] 3.3 `AgenticInput`
+  - [x] 3.4 `AgenticSidebar`
+  - [x] 3.5 `FirstRunBanner` mounted in `App.tsx`
+- [x] 3.1 Tab integration
+  - [x] 3.1.1 Agentic tab in `PaneContent` via workspace store
+  - [x] 3.1.2 Close button + lifecycle
+- [x] 3.2 Sidebar status (provider, model, token usage)
+
+### Phase 4 — Config persistence (shared with agentic-cli) (✅ done)
+
+- [x] 4.0 Load `~/.config/agentic/config.json` on startup
+- [x] 4.1 Parse both native (multi-provider) and legacy CLI shapes
+- [x] 4.2 Save config to disk on frontend updates
+- [x] 4.3 Initialize config from file when sidebar mounts
+
+### Phase 5 — Preferences & command palette (✅ done)
+
+- [x] 5.0 Agentic section in `AppPreferences`
+  - [x] 5.0.1 Status, wizard, validate, manual edit
+  - [ ] 5.0.2 Reset config button
+  - [ ] 5.0.3 Mask + show API-key state
+- [x] 5.1 Command palette actions
+  - [x] 5.1.1 Open Agentic Chat
+  - [x] 5.1.2 Open Agentic Settings
+  - [x] 5.1.3 Clear Agentic History
+  - [ ] 5.1.4 Restart Agentic
+
+### Phase 6 — UI polish (open)
+
+- [ ] 6.0 Markdown rendering for AI responses (headers, lists, code blocks)
+- [ ] 6.1 Syntax highlighting + copy button for code blocks
+- [ ] 6.2 Message timestamps + dividers
+- [ ] 6.3 Loading + error states
+- [ ] 6.4 Empty state copy
+- [ ] 6.5 Collapsible message-history sidebar
+
+### Phase 7 — Advanced surfaces (open)
+
+- [ ] 7.0 Planner agent panel
+- [ ] 7.1 Multi-provider management UI
+- [ ] 7.2 MCP server management UI (templates, status, enable/disable)
+- [ ] 7.3 Memory search + visualization UI
+- [ ] 7.4 Safety panel — risk levels, command preview, undo
+
+### Phase 8 — Testing
+
+- [ ] 8.0 E2E for first-run setup flow
+- [ ] 8.1 E2E for chat + streaming
+- [ ] 8.2 E2E for file/terminal operations triggered by agent
+
+### Open project-wide TODOs
+
+- [ ] Pass actual system env from backend for variable expansion (WorkspaceLayout, use-terminal-restore, use-snapshots, env-parser)
+- [ ] Route to active terminal pane via context (WorkspaceLayout)
+- [ ] Batch delete with multi-select (FileExplorer)
+- [ ] Store secret values in OS keyring (use-projects-persistence)
+
+> **Roadmap source:** [docs/IMPLEMENTATION_ROADMAP.md](../docs/IMPLEMENTATION_ROADMAP.md)
