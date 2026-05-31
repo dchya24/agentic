@@ -236,15 +236,3 @@ pub enum OutputFormat {
     Json,
     Table,
 }
-
-impl ConfigAction {
-    pub fn needs_config_file(&self) -> bool {
-        matches!(
-            self,
-            Self::Show { .. }
-                | Self::Validate { .. }
-                | Self::Edit
-                | Self::Reset { .. }
-        )
-    }
-}

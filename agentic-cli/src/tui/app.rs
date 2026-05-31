@@ -162,11 +162,6 @@ impl App {
     #[allow(dead_code)]
     pub fn delete_char_forward(&mut self) {
         if self.cursor_pos < self.input.len() {
-            let next = self.input[self.cursor_pos..]
-                .char_indices()
-                .nth(1)
-                .map(|(i, _)| self.cursor_pos + i)
-                .unwrap_or(self.input.len());
             self.input.remove(self.cursor_pos);
             // cursor_pos stays the same
             self.update_dropdown();

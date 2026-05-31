@@ -76,6 +76,7 @@ impl ProgressState {
     }
 
     /// Get elapsed time string
+    #[allow(dead_code)]
     pub fn elapsed_str(&self) -> String {
         if let Some(start) = self.start_time {
             let elapsed = start.elapsed();
@@ -123,6 +124,7 @@ impl ProgressState {
     }
 
     /// Get full progress display string (plain text, for non-widget usage)
+    #[allow(dead_code)]
     pub fn display(&self) -> String {
         if !self.active {
             return String::new();

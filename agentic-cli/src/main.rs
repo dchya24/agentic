@@ -3,12 +3,10 @@ mod tests;
 
 mod cli;
 mod commands;
-mod config;
 mod confirmation;
 mod error;
 mod file_ref;
 mod interactive;
-mod markdown;
 mod tui;
 mod widgets;
 

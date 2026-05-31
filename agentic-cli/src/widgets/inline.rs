@@ -45,11 +45,13 @@ pub fn print_lines(lines: &[Line<'_>]) {
 }
 
 /// Print a `Text` block to stdout.
+#[allow(dead_code)]
 pub fn print_text(text: &Text<'_>) {
     print_lines(&text.lines);
 }
 
 /// Print a horizontal rule using a repeated character.
+#[allow(dead_code)]
 pub fn print_rule(ch: char, style: Style) {
     let width = terminal_width();
     let rule_str: String = std::iter::repeat(ch).take(width).collect();

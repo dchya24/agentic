@@ -4,7 +4,6 @@ use core_agentic::{Config, Orchestrator, ToolRegistry};
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use ratatui::style::{Color as RColor, Modifier as RModifier, Style as RStyle};
 use ratatui::text::{Line as RLine, Span as RSpan};
-use std::io::{self, Write};
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -13,7 +12,6 @@ use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 use crate::cli::{ConfigAction, OutputFormat};
 use crate::confirmation::{prompt_confirmation, ConfirmationResponse};
 use crate::error::CommandError;
-use crate::markdown::render_markdown;
 use crate::widgets::capabilities;
 use crate::widgets::{components, inline};
 
@@ -370,117 +368,6 @@ impl Commands {
         }
     }
 
-    // ── List all models from all providers ─────────────────
-
-    pub fn list_models(&self) {
-        let providers = &self.config.providers;
-
-        inline::print_blank();
-        inline::print_line(&components::section_header(
-            "🤖",
-            "Available Models",
-            RColor::Cyan,
-        ));
-        inline::print_blank();
-
-        if providers.is_empty() {
-            inline::print_line(&components::warning_badge("No providers configured."));
-            inline::print_line(&RLine::from(vec![
-                RSpan::raw("  Run "),
-                RSpan::styled(
-                    "agentic init",
-                    RStyle::default().add_modifier(RModifier::BOLD),
-                ),
-                RSpan::raw(" to set up a provider."),
-            ]));
-            inline::print_blank();
-            return;
-        }
-
-        let active_provider = self.config.active_provider();
-        let active_model = self.config.active_model();
-
-        let bold = RStyle::default().add_modifier(RModifier::BOLD);
-        let dim = RStyle::default().add_modifier(RModifier::DIM);
-        let active_marker = RStyle::default().fg(RColor::Green);
-
-        for provider in providers {
-            let is_active_provider = active_provider
-                .map(|p| p.name == provider.name)
-                .unwrap_or(false);
-
-            // Provider header line: marker + name + (type)
-            let mut spans = vec![RSpan::raw("  ")];
-            if is_active_provider {
-                spans.push(RSpan::styled("● ", active_marker));
-            } else {
-                spans.push(RSpan::raw("  "));
-            }
-            spans.push(RSpan::styled(provider.name.to_string(), bold));
-            spans.push(RSpan::styled(
-                format!(" ({})", provider.provider_type),
-                dim,
-            ));
-            inline::print_line(&RLine::from(spans));
-
-            inline::print_line(&RLine::from(vec![
-                RSpan::raw("    "),
-                RSpan::styled(provider.api_base.clone(), dim),
-            ]));
-            inline::print_blank();
-
-            if provider.models.is_empty() {
-                inline::print_line(&RLine::from(vec![
-                    RSpan::raw("    "),
-                    RSpan::styled(
-                        "No models configured for this provider.",
-                        RStyle::default().fg(RColor::Yellow),
-                    ),
-                ]));
-            } else {
-                for model in &provider.models {
-                    let is_active_model = is_active_provider
-                        && active_model.map(|m| m.model == model.model).unwrap_or(false);
-
-                    let display = model.display_name.as_deref().unwrap_or(&model.model);
-                    let (marker, name_style) = if is_active_model {
-                        (
-                            RSpan::styled("  ✓ ", active_marker),
-                            RStyle::default().fg(RColor::Green).add_modifier(RModifier::BOLD),
-                        )
-                    } else {
-                        (RSpan::raw("    "), bold)
-                    };
-
-                    inline::print_line(&RLine::from(vec![
-                        RSpan::raw("  "),
-                        marker,
-                        RSpan::styled(display.to_string(), name_style),
-                        RSpan::raw("  "),
-                        RSpan::styled(model.model.clone(), dim),
-                    ]));
-                    inline::print_line(&RLine::from(vec![
-                        RSpan::raw("       "),
-                        RSpan::styled(
-                            format!(
-                                "temp: {}  max_tokens: {}",
-                                model.temperature, model.max_tokens
-                            ),
-                            dim,
-                        ),
-                    ]));
-                }
-            }
-            inline::print_blank();
-        }
-
-        inline::print_line(&RLine::from(RSpan::styled(
-            "  ● = active provider   ✓ = active model",
-            dim,
-        )));
-        inline::print_blank();
-    }
-
     // ── Switch model ────────────────────────────────────────
 
     /// Switch to a model by name (partial match ok).
@@ -653,14 +540,6 @@ impl Commands {
                 inline::print_line(&RLine::from(format!("    URL:     {}", url)));
             }
             inline::print_blank();
-        }
-    }
-
-    // ── Clear memory (for REPL /clear after history) ────────
-
-    pub fn clear_memory(&self) {
-        if let Some(orch) = &self.orchestrator {
-            orch.clear_memory();
         }
     }
 
@@ -861,37 +740,6 @@ impl Commands {
         Ok(())
     }
 
-
-    /// Run task with a callback for streaming chunks (used by TUI).
-    ///
-    /// Chunks are token deltas from the LLM. Tool-call lifecycle is
-    /// surfaced separately via [`run_with_callbacks`] which subscribes
-    /// to orchestrator events. This thin variant exists for callers
-    /// that only care about the streamed text.
-    pub async fn run_with_callback<F>(&mut self, task: &str, mut on_chunk: F) -> Result<String>
-    where
-        F: FnMut(&str),
-    {
-        // Expand @file references before sending to AI
-        let expanded = crate::file_ref::expand_file_refs(task);
-        let task = &expanded;
-
-        self.ensure_orchestrator()?;
-
-        let orchestrator = self
-            .orchestrator
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Orchestrator not initialized"))?;
-        orchestrator.reset_cancel();
-
-        let result = orchestrator
-            .run_stream(task, |chunk| {
-                on_chunk(&chunk);
-            })
-            .await?;
-
-        Ok(result)
-    }
 
     /// Run task with separate callbacks for streaming chunks and runtime
     /// events (tool calls + results). Used by the TUI to surface tool
@@ -1889,39 +1737,6 @@ fn render_event(event: &core_agentic::Event) {
 // ── Print helpers (shared widgets) ──────────────────────────
 //  - CLI and TUI share one styling vocabulary
 //  - Color/TTY decisions live in one place (`widgets::capabilities`)
-//
-// `print_chunk` still uses the streaming markdown renderer because the chunk
-// path needs partial flushes; everything else is structured Line output.
-
-fn print_chunk(chunk: &str, _color_enabled: bool) {
-    let use_color = capabilities::should_use_color();
-    if chunk.starts_with('#')
-        || chunk.starts_with("```")
-        || chunk.starts_with('-')
-        || chunk.starts_with('*')
-    {
-        let _ = render_markdown(chunk);
-    } else if use_color {
-        let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Always);
-        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Rgb(200, 200, 200))));
-        print!("{}", chunk);
-        let _ = stdout.reset();
-        stdout.flush().ok();
-    } else {
-        print!("{}", chunk);
-        io::stdout().flush().ok();
-    }
-}
-
-fn print_markdown_header(text: &str) {
-    inline::print_blank();
-    inline::print_line(&components::section_header(
-        "▸",
-        text,
-        RColor::Rgb(255, 165, 0),
-    ));
-}
-
 fn print_success(text: &str) {
     inline::print_line(&components::success_badge(text));
 }
@@ -1952,16 +1767,3 @@ fn print_error(text: &str, _color_enabled: bool) {
 fn print_info(text: &str) {
     inline::print_line(&components::info_badge(text));
 }
-
-fn print_response_stats(ms: u128) {
-    let secs = ms / 1000;
-    let millis = ms % 1000;
-    inline::print_line(&RLine::from(vec![
-        RSpan::raw("  "),
-        RSpan::styled(
-            format!("📊 Completed in {}.{:03}s", secs, millis),
-            RStyle::default().add_modifier(RModifier::DIM),
-        ),
-    ]));
-}
-

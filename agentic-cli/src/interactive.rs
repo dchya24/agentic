@@ -817,14 +817,6 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                 ).ok();
                                 print_status_bar(&model_info, &stats);
                             }
-                            ReplAction::ClearHistory => {
-                                conversation.clear();
-                                commands.clear_memory();
-                                inline::print_blank();
-                                inline::print_line(&components::success_badge("Conversation cleared."));
-                                inline::print_blank();
-                                print_status_bar(&model_info, &stats);
-                            }
                             ReplAction::Config => {
                                 commands.config_show_inline();
                             }
@@ -1031,7 +1023,6 @@ fn get_model_info(commands: &Commands) -> ModelInfo {
 enum ReplAction {
     Quit,
     Clear,
-    ClearHistory,
     Config,
     History,
     Tools,

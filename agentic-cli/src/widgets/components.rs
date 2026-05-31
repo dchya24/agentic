@@ -18,6 +18,7 @@ use super::inline::terminal_width;
 // ── Box drawing characters ──────────────────────────────────
 
 /// Box style for panels
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub enum BoxStyle {
     /// Single line: ┌─┐│└─┘
@@ -104,6 +105,7 @@ pub fn panel(title: &str, content: &[Line<'static>], style: BoxStyle, border_col
 }
 
 /// Render a compact panel with no title.
+#[allow(dead_code)]
 pub fn box_content(content: &[Line<'static>], style: BoxStyle, border_color: Color) -> Vec<Line<'static>> {
     panel("", content, style, border_color)
 }
@@ -298,6 +300,7 @@ pub fn dashed_separator(color: Color) -> Line<'static> {
 }
 
 /// Double-line separator
+#[allow(dead_code)]
 pub fn double_separator(color: Color) -> Line<'static> {
     let width = terminal_width().min(100);
     let line: String = "═".repeat(width);
@@ -331,6 +334,7 @@ pub fn labeled_bar(label: &str, value: f32, width: usize, filled_color: Color, e
 }
 
 /// Render a mini sparkline from values.
+#[allow(dead_code)]
 pub fn sparkline(values: &[f32], color: Color) -> Line<'static> {
     let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let max = values.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -351,6 +355,7 @@ pub fn sparkline(values: &[f32], color: Color) -> Line<'static> {
 // ── Table ───────────────────────────────────────────────────
 
 /// Render a simple table with headers and rows.
+#[allow(dead_code)]
 pub fn table(headers: &[&str], rows: &[Vec<String>], header_color: Color, border_color: Color) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let col_widths: Vec<usize> = headers

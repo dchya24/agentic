@@ -95,6 +95,7 @@ pub fn compact_progress_line(progress: &ProgressState, bar_width: usize) -> Line
 /// Render a "done" line after progress completes.
 ///
 /// Returns: `✓ Done (2.3s)`
+#[allow(dead_code)]
 pub fn done_line(elapsed_ms: u128) -> Line<'static> {
     let elapsed_str = if elapsed_ms < 1000 {
         format!("{}ms", elapsed_ms)
@@ -125,6 +126,7 @@ pub fn done_line(elapsed_ms: u128) -> Line<'static> {
 /// Render an error line.
 ///
 /// Returns: `✗ Error: <message>`
+#[allow(dead_code)]
 pub fn error_line(message: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled(

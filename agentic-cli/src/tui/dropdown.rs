@@ -23,7 +23,6 @@ pub enum DropdownType {
 #[derive(Clone, Debug)]
 pub struct Dropdown {
     pub dropdown_type: DropdownType,
-    pub query: String,
     pub items: Vec<String>,
     pub selected: usize,
     pub visible_count: usize,
@@ -55,7 +54,6 @@ impl Dropdown {
 
         Self {
             dropdown_type,
-            query,
             items,
             selected: 0,
             visible_count: 8,
