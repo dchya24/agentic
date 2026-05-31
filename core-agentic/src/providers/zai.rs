@@ -259,15 +259,32 @@ impl LLMProvider for ZaiProvider {
                                 #[derive(Deserialize)]
                                 struct StreamChoice { delta: StreamDelta, finish_reason: Option<String> }
                                 #[derive(Deserialize)]
-                                struct StreamResp { id: String, choices: Vec<StreamChoice> }
+                                struct StreamUsage {
+                                    prompt_tokens: Option<u32>,
+                                    completion_tokens: Option<u32>,
+                                    total_tokens: Option<u32>,
+                                }
+                                #[derive(Deserialize)]
+                                struct StreamResp {
+                                    id: String,
+                                    choices: Vec<StreamChoice>,
+                                    #[serde(default)]
+                                    usage: Option<StreamUsage>,
+                                }
 
                                 if let Ok(resp) = serde_json::from_str::<StreamResp>(trimmed) {
+                                    let usage = resp.usage.map(|u| super::ChatUsage {
+                                        prompt_tokens: u.prompt_tokens.unwrap_or(0),
+                                        completion_tokens: u.completion_tokens.unwrap_or(0),
+                                        total_tokens: u.total_tokens.unwrap_or(0),
+                                    });
                                     if let Some(choice) = resp.choices.first() {
                                         yield Ok(ChatChunk {
                                             id: resp.id,
                                             delta: choice.delta.content.clone().unwrap_or_default(),
                                             finish_reason: choice.finish_reason.clone(),
                                             tool_calls: vec![],
+                                            usage,
                                         });
                                     }
                                 }

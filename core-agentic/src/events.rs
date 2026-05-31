@@ -37,6 +37,21 @@ pub enum Event {
 
     #[serde(rename = "system")]
     System { message: String },
+
+    /// Provider-reported token usage for a single chat completion.
+    /// Emitted once per provider call (so multi-turn loops emit
+    /// multiple times). `cost_usd` is `None` when the model has no
+    /// pricing entry.
+    #[serde(rename = "usage")]
+    Usage {
+        model: String,
+        input_tokens: u32,
+        output_tokens: u32,
+        cost_usd: Option<f64>,
+        /// Cumulative cost since orchestrator construction. `None`
+        /// if any turn so far had unknown pricing.
+        cumulative_cost_usd: Option<f64>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +63,7 @@ pub enum EventType {
     Error,
     Completed,
     System,
+    Usage,
 }
 
 impl Event {
@@ -60,6 +76,7 @@ impl Event {
             Event::Error { .. } => EventType::Error,
             Event::Completed { .. } => EventType::Completed,
             Event::System { .. } => EventType::System,
+            Event::Usage { .. } => EventType::Usage,
         }
     }
 }

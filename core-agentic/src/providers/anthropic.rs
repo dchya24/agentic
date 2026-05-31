@@ -574,6 +574,7 @@ impl LLMProvider for AnthropicProvider {
                                                         delta: delta.text.unwrap_or_default(),
                                                         finish_reason: None,
                                                         tool_calls: vec![],
+                                                        usage: None,
                                                     });
                                                 }
 
@@ -583,11 +584,36 @@ impl LLMProvider for AnthropicProvider {
                                                         delta: String::new(),
                                                         finish_reason: None,
                                                         tool_calls: vec![],
+                                                        usage: None,
                                                     });
                                                 }
 
                                                 if event.r#type == "message_stop" {
+                                                    // Final usage often arrives in `message_delta`
+                                                    // events before this; the orchestrator will
+                                                    // have already received it via the dedicated
+                                                    // event below if so.
                                                     return;
+                                                }
+
+                                                // `message_delta` carries the cumulative usage
+                                                // for the whole response. Emit it as a final
+                                                // empty chunk so the orchestrator can record
+                                                // the cost.
+                                                if event.r#type == "message_delta" {
+                                                    if let Some(u) = event.usage {
+                                                        yield Ok(super::ChatChunk {
+                                                            id: response_id.clone(),
+                                                            delta: String::new(),
+                                                            finish_reason: Some("stop".to_string()),
+                                                            tool_calls: vec![],
+                                                            usage: Some(super::ChatUsage {
+                                                                prompt_tokens: u.input_tokens,
+                                                                completion_tokens: u.output_tokens,
+                                                                total_tokens: u.input_tokens + u.output_tokens,
+                                                            }),
+                                                        });
+                                                    }
                                                 }
                                             }
                                             Err(e) => {

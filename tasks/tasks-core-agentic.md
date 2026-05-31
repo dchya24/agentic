@@ -132,12 +132,25 @@
 
 ### Phase 8 — Testing & docs
 
-- [x] 15.0 Unit tests (270+ across the crate; see milestone docs)
+- [x] 15.0 Unit tests (290+ across the crate; see milestone docs)
 - [ ] 15.1 Integration tests for the orchestrator agent loop
 - [x] 16.0 Architecture docs
   - [x] 16.1 `AGENT_ARCHITECTURE.md` reference
   - [x] 16.2 Three milestone docs (foundational / quality-of-life / additions)
   - [x] 16.3 Architecture alignment overview
+
+### Phase 9 — Cost & budget (✅ done)
+
+- [x] 17.0 Per-token pricing module (`pricing.rs`)
+  - [x] 17.1 Built-in rates for OpenAI / Anthropic / DeepSeek / GLM
+  - [x] 17.2 Longest-`contains` fallback for vendor-suffixed model names
+  - [x] 17.3 `Config.agent.pricing` per-model overrides
+- [x] 18.0 Cost tracking on `Orchestrator`
+  - [x] 18.1 `record_usage()` updates cumulative cost on every chat call
+  - [x] 18.2 `Event::Usage { model, input_tokens, output_tokens, cost_usd, cumulative_cost_usd }`
+  - [x] 18.3 Soft USD budget cap (`Config.agent.budget_usd`)
+  - [x] 18.4 Loop bails with `"Budget exceeded"` at next iteration when over cap
+  - [x] 18.5 Streaming providers attach `usage` to the final chunk
 
 ### Open / future work
 

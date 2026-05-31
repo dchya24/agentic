@@ -32,6 +32,17 @@ pub struct AgentLoopConfig {
     pub auto_compact_with_llm: bool,
     #[serde(default)]
     pub summarizer_model: Option<String>,
+    /// Soft USD budget cap. When set and the cumulative cost since the
+    /// orchestrator was constructed exceeds this value, the agent loop
+    /// returns `AgenticError::Cancelled` at the next iteration boundary.
+    /// `None` (default) disables the cap.
+    #[serde(default)]
+    pub budget_usd: Option<f64>,
+    /// Per-model pricing overrides. Keys are model names; values are
+    /// `(input_per_million, output_per_million)` USD rates. These take
+    /// precedence over the built-in pricing table when matched.
+    #[serde(default)]
+    pub pricing: std::collections::HashMap<String, super::pricing::ModelPricing>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

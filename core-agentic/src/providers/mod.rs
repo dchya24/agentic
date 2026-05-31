@@ -263,6 +263,11 @@ pub struct ChatChunk {
     pub finish_reason: Option<String>,
     #[serde(default)]
     pub tool_calls: Vec<ToolCallDelta>,
+    /// Provider-reported token usage. Typically only set on the final
+    /// chunk of a stream (when `finish_reason` is also set). `None` on
+    /// intermediate chunks.
+    #[serde(default)]
+    pub usage: Option<ChatUsage>,
 }
 
 pub type StreamResult<T, E> = std::result::Result<

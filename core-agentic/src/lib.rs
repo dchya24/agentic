@@ -19,6 +19,7 @@ pub mod tool_registry;
 pub mod mcp;
 pub mod tools;
 pub mod planner;
+pub mod pricing;
 pub mod prompts;
 pub mod file_tracker;
 pub mod memory_file;

@@ -188,6 +188,8 @@ impl OpenAIProvider {
         struct StreamResponse {
             id: String,
             choices: Vec<StreamChoice>,
+            #[serde(default)]
+            usage: Option<OpenAIUsageResp>,
         }
 
         let resp: StreamResponse = serde_json::from_str(data).ok()?;
@@ -210,11 +212,17 @@ impl OpenAIProvider {
                     .collect()
             })
             .unwrap_or_default();
+        let usage = resp.usage.map(|u| super::ChatUsage {
+            prompt_tokens: u.prompt_tokens.unwrap_or(0),
+            completion_tokens: u.completion_tokens.unwrap_or(0),
+            total_tokens: u.total_tokens.unwrap_or(0),
+        });
         Some(super::ChatChunk {
             id: resp.id,
             delta: choice.delta.content.clone().unwrap_or_default(),
             finish_reason: choice.finish_reason.clone(),
             tool_calls,
+            usage,
         })
     }
 

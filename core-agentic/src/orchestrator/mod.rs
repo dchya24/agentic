@@ -75,6 +75,15 @@ pub struct Orchestrator {
     /// Optional model name used for summarization calls. Defaults to the
     /// orchestrator's main `model` when unset.
     summarizer_model: Option<String>,
+    /// Soft USD budget cap. When set, the orchestrator cancels the next
+    /// iteration once `cumulative_cost_usd` exceeds this value.
+    budget_usd: Option<f64>,
+    /// Cumulative cost in USD since this orchestrator was constructed.
+    /// `None` if any provider call had an unknown model price.
+    cumulative_cost_usd: Mutex<Option<f64>>,
+    /// Optional per-model pricing overrides. Consulted before the
+    /// built-in `pricing::lookup` table.
+    pricing_overrides: std::collections::HashMap<String, crate::pricing::ModelPricing>,
 }
 
 impl Orchestrator {
@@ -96,6 +105,9 @@ impl Orchestrator {
             cancel: Arc::new(AtomicBool::new(false)),
             auto_compact_with_llm: false,
             summarizer_model: None,
+            budget_usd: None,
+            cumulative_cost_usd: Mutex::new(Some(0.0)),
+            pricing_overrides: std::collections::HashMap::new(),
         }
     }
 
@@ -175,6 +187,77 @@ impl Orchestrator {
     /// model. Setting a cheaper/faster model here is recommended.
     pub fn set_summarizer_model(&mut self, model: impl Into<String>) {
         self.summarizer_model = Some(model.into());
+    }
+
+    /// Set a soft USD budget cap. When the cumulative provider cost
+    /// exceeds this value the agent loop cancels at the next iteration
+    /// boundary. Pass `None` to disable.
+    pub fn set_budget_usd(&mut self, budget: Option<f64>) {
+        self.budget_usd = budget;
+    }
+
+    /// Cumulative provider cost in USD since this orchestrator was
+    /// constructed. `None` if any turn used a model without pricing
+    /// data and no override was supplied.
+    pub fn cumulative_cost_usd(&self) -> Option<f64> {
+        *self.cumulative_cost_usd.lock().unwrap()
+    }
+
+    /// Replace the per-model pricing override map.
+    pub fn set_pricing_overrides(
+        &mut self,
+        overrides: std::collections::HashMap<String, crate::pricing::ModelPricing>,
+    ) {
+        self.pricing_overrides = overrides;
+    }
+
+    /// Resolve a price for `model`: overrides first, then the built-in
+    /// table.
+    pub(super) fn lookup_pricing(&self, model: &str) -> Option<crate::pricing::ModelPricing> {
+        if let Some(p) = self.pricing_overrides.get(model) {
+            return Some(*p);
+        }
+        crate::pricing::lookup(model)
+    }
+
+    /// Record a provider usage report. Updates the cumulative-cost
+    /// running total and emits an `Event::Usage`. Returns the cost in
+    /// USD for this single call (`None` if pricing unavailable).
+    pub(super) fn record_usage(&self, input_tokens: u32, output_tokens: u32) -> Option<f64> {
+        let pricing = self.lookup_pricing(&self.model);
+        let call_cost = pricing.map(|p| p.cost_usd(input_tokens, output_tokens));
+
+        let cumulative = {
+            let mut total = self.cumulative_cost_usd.lock().unwrap();
+            match (*total, call_cost) {
+                (Some(t), Some(c)) => {
+                    *total = Some(t + c);
+                }
+                _ => {
+                    // Any unknown turn poisons the cumulative total.
+                    *total = None;
+                }
+            }
+            *total
+        };
+
+        self.events.emit(crate::events::Event::Usage {
+            model: self.model.clone(),
+            input_tokens,
+            output_tokens,
+            cost_usd: call_cost,
+            cumulative_cost_usd: cumulative,
+        });
+
+        call_cost
+    }
+
+    /// Returns true if the configured budget has been exceeded.
+    pub(super) fn budget_exceeded(&self) -> bool {
+        match (self.budget_usd, self.cumulative_cost_usd()) {
+            (Some(cap), Some(spent)) => spent > cap,
+            _ => false,
+        }
     }
 
     /// Reset the cancel flag (e.g. between REPL inputs).
@@ -272,5 +355,174 @@ mod cancel_handle_tests {
         .unwrap();
 
         assert!(cancel.load(Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
+mod cost_tracking_tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use crate::providers::{
+        ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, ChatUsage, LLMProvider,
+        ProviderError, ProviderResult, StreamResult,
+    };
+    use crate::tool_registry::ToolRegistry;
+
+    use super::Orchestrator;
+
+    /// Provider that returns scripted `ChatResponse`s with usage attached.
+    struct ScriptedProvider {
+        responses: Mutex<Vec<ChatResponse>>,
+    }
+
+    impl ScriptedProvider {
+        fn new(responses: Vec<ChatResponse>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+            }
+        }
+    }
+
+    impl LLMProvider for ScriptedProvider {
+        fn provider_type(&self) -> &str { "fake" }
+        fn provider_id(&self) -> &str { "fake" }
+        fn chat(&self, _req: ChatRequest) -> ProviderResult<ChatResponse> {
+            let mut q = self.responses.lock().unwrap();
+            if q.is_empty() {
+                return Err(ProviderError::new("no scripted response"));
+            }
+            Ok(q.remove(0))
+        }
+        fn chat_stream(&self, _req: ChatRequest) -> StreamResult<ChatChunk, ProviderError> {
+            Err(ProviderError::new("streaming not supported in test"))
+        }
+    }
+
+    fn text_response_with_usage(s: &str, in_tok: u32, out_tok: u32) -> ChatResponse {
+        ChatResponse {
+            id: "test".into(),
+            model: "gpt-4o-mini".into(),
+            message: ChatMessageResponse {
+                role: "assistant".into(),
+                content: Some(s.into()),
+                tool_calls: vec![],
+            },
+            finish_reason: Some("stop".into()),
+            usage: Some(ChatUsage {
+                prompt_tokens: in_tok,
+                completion_tokens: out_tok,
+                total_tokens: in_tok + out_tok,
+            }),
+        }
+    }
+
+    fn make_orch(model: &str, responses: Vec<ChatResponse>) -> Orchestrator {
+        let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(responses));
+        let mut o = Orchestrator::new(provider, ToolRegistry::new());
+        o.set_model(model);
+        o
+    }
+
+    #[test]
+    fn record_usage_emits_event_with_cost() {
+        let o = make_orch("gpt-4o-mini", vec![]);
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+        o.on_event(move |event| {
+            if let crate::events::Event::Usage {
+                model,
+                input_tokens,
+                output_tokens,
+                cost_usd,
+                cumulative_cost_usd,
+            } = event
+            {
+                captured_clone
+                    .lock()
+                    .unwrap()
+                    .push((model, input_tokens, output_tokens, cost_usd, cumulative_cost_usd));
+            }
+        });
+
+        // 1M in + 1M out at gpt-4o-mini ($0.15 / $0.60 per M) = $0.75.
+        let cost = o.record_usage(1_000_000, 1_000_000);
+        let cost = cost.expect("gpt-4o-mini has known pricing");
+        assert!((cost - 0.75).abs() < 1e-9);
+
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        let (ref model, in_tok, out_tok, c, cum) = events[0];
+        assert_eq!(model, "gpt-4o-mini");
+        assert_eq!(in_tok, 1_000_000);
+        assert_eq!(out_tok, 1_000_000);
+        assert!((c.unwrap() - 0.75).abs() < 1e-9);
+        assert!((cum.unwrap() - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cumulative_cost_accumulates_across_calls() {
+        let o = make_orch("gpt-4o-mini", vec![]);
+        o.record_usage(100_000, 50_000);
+        o.record_usage(200_000, 100_000);
+        // (100k * 0.15 + 50k * 0.60) / 1M = 0.015 + 0.030 = 0.045
+        // (200k * 0.15 + 100k * 0.60) / 1M = 0.030 + 0.060 = 0.090
+        let total = o.cumulative_cost_usd().expect("known model");
+        assert!((total - 0.135).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unknown_model_poisons_cumulative_cost() {
+        let o = make_orch("some-unlisted-model", vec![]);
+        o.record_usage(1_000, 1_000);
+        // Cost for one call is unknown — cumulative becomes None.
+        assert!(o.cumulative_cost_usd().is_none());
+    }
+
+    #[test]
+    fn pricing_override_used_when_set() {
+        use crate::pricing::ModelPricing;
+        let mut o = make_orch("my-custom-model", vec![]);
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("my-custom-model".to_string(), ModelPricing::new(1.00, 2.00));
+        o.set_pricing_overrides(overrides);
+        let cost = o.record_usage(1_000_000, 1_000_000).expect("override");
+        assert!((cost - 3.00).abs() < 1e-9);
+    }
+
+    #[test]
+    fn budget_exceeded_reports_correctly() {
+        let mut o = make_orch("gpt-4o-mini", vec![]);
+        o.set_budget_usd(Some(0.05));
+
+        // Under budget.
+        o.record_usage(100_000, 50_000); // = $0.045
+        assert!(!o.budget_exceeded());
+
+        // Push over.
+        o.record_usage(50_000, 0); // + $0.0075 = $0.0525
+        assert!(o.budget_exceeded());
+    }
+
+    #[test]
+    fn budget_disabled_when_unset() {
+        let o = make_orch("gpt-4o-mini", vec![]);
+        // Big spend, no budget — still allowed.
+        o.record_usage(10_000_000, 10_000_000);
+        assert!(!o.budget_exceeded());
+    }
+
+    #[test]
+    fn run_loop_returns_error_when_budget_exceeded() {
+        // Pre-load cumulative cost over budget; the loop should bail at
+        // the next iteration before calling the provider.
+        let mut o = make_orch("gpt-4o-mini", vec![text_response_with_usage("hi", 0, 0)]);
+        o.set_budget_usd(Some(0.001));
+        o.record_usage(1_000_000, 1_000_000); // $0.75 — way over.
+
+        let err = o.run("please respond").expect_err("budget should block");
+        let msg = err.to_string();
+        assert!(msg.contains("Budget exceeded"), "got: {}", msg);
     }
 }

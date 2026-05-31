@@ -36,6 +36,11 @@ struct SessionStats {
     tool_calls: Arc<AtomicU32>,
     total_input_tokens: Arc<AtomicU32>,
     total_output_tokens: Arc<AtomicU32>,
+    /// Cumulative provider cost in USD, encoded as f64 bits in an
+    /// AtomicU64 so the SessionStats clone stays cheap and the value
+    /// can be updated from the orchestrator's event handler. Using
+    /// `f64::NAN` for the "unknown / mixed-pricing" sentinel.
+    total_cost_usd_bits: Arc<std::sync::atomic::AtomicU64>,
     session_start: Instant,
 }
 
@@ -46,6 +51,9 @@ impl SessionStats {
             tool_calls: Arc::new(AtomicU32::new(0)),
             total_input_tokens: Arc::new(AtomicU32::new(0)),
             total_output_tokens: Arc::new(AtomicU32::new(0)),
+            total_cost_usd_bits: Arc::new(std::sync::atomic::AtomicU64::new(
+                0f64.to_bits(),
+            )),
             session_start: Instant::now(),
         }
     }
@@ -82,6 +90,36 @@ impl SessionStats {
 
     fn total_output_tokens(&self) -> u32 {
         self.total_output_tokens.load(Ordering::Relaxed)
+    }
+
+    /// Set the cumulative cost. `None` means "any turn so far had
+    /// unknown pricing" — stored as NaN to round-trip the unknown state.
+    fn set_cost_usd(&self, cost: Option<f64>) {
+        let bits = match cost {
+            Some(v) => v.to_bits(),
+            None => f64::NAN.to_bits(),
+        };
+        self.total_cost_usd_bits.store(bits, Ordering::Relaxed);
+    }
+
+    /// Get the cumulative cost. `None` if any turn had unknown pricing.
+    fn cost_usd(&self) -> Option<f64> {
+        let bits = self.total_cost_usd_bits.load(Ordering::Relaxed);
+        let v = f64::from_bits(bits);
+        if v.is_nan() {
+            None
+        } else {
+            Some(v)
+        }
+    }
+
+    /// Format cost as a `$X.XXXX` string, or `"-"` when unknown.
+    fn format_cost(&self) -> String {
+        match self.cost_usd() {
+            Some(v) if v >= 0.01 => format!("${:.2}", v),
+            Some(v) => format!("${:.4}", v),
+            None => "-".to_string(),
+        }
     }
 
     fn elapsed_secs(&self) -> u64 {
@@ -970,6 +1008,12 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                             let estimated_input = (input.len() as f32 / 4.0) as u32;
                             stats.add_input_tokens(estimated_input);
 
+                            // Refresh cumulative cost from the orchestrator.
+                            // record_usage() updates the orchestrator's
+                            // running total; we mirror it into SessionStats
+                            // so the status bar / /stats can show it.
+                            stats.set_cost_usd(commands.cumulative_cost_usd());
+
                             conversation.push(ConversationEntry {
                                 role: "assistant".into(),
                                 content: format!(
@@ -1231,6 +1275,11 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
             format!("📊 {} ↑ / {} ↓", in_tok, out_tok),
             RStyle::default().fg(Color::Rgb(186, 85, 211)),
         ),
+        sep.clone(),
+        RSpan::styled(
+            format!("💰 {}", stats.format_cost()),
+            RStyle::default().fg(Color::Rgb(255, 165, 0)),
+        ),
         sep,
         RSpan::styled(
             format!("⏱ {}", stats.elapsed_str()),
@@ -1274,6 +1323,11 @@ fn print_response_summary(stats: &SessionStats, ms: u128) {
         sep.clone(),
         RSpan::styled(
             format!("📊 {} ↑ / {} ↓", in_tok, out_tok),
+            RStyle::default().fg(Color::Rgb(180, 180, 200)),
+        ),
+        sep.clone(),
+        RSpan::styled(
+            format!("💰 {}", stats.format_cost()),
             RStyle::default().fg(Color::Rgb(180, 180, 200)),
         ),
         sep,
@@ -1450,6 +1504,23 @@ fn show_stats(stats: &SessionStats, model_info: &ModelInfo) {
         ),
     ]));
     inline::print_blank();
+
+    // Cost subsection — only shown when we have data, since older
+    // models (or any with unknown pricing) display nothing useful.
+    let cost_str = stats.format_cost();
+    if cost_str != "-" || stats.cost_usd().is_some() {
+        inline::print_line(&components::subsection_header(
+            "Cost",
+            Color::Rgb(255, 215, 0),
+        ));
+        inline::print_line(&components::kv_line(
+            "Spent",
+            &cost_str,
+            12,
+            Color::Rgb(255, 165, 0),
+        ));
+        inline::print_blank();
+    }
 
     // Environment subsection
     inline::print_line(&components::subsection_header(
