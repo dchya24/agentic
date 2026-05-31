@@ -6,6 +6,7 @@
 //! - The CLI via `inline::print_lines()` which writes styled output directly to stdout
 
 pub mod capabilities;
+pub mod code_highlight;
 pub mod components;
 pub mod diff;
 pub mod inline;

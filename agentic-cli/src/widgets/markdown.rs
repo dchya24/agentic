@@ -305,9 +305,19 @@ impl MarkdownRenderer {
             TagEnd::CodeBlock => {
                 self.pop_style();
                 self.in_code_block = false;
+                // Bottom border + a dim copy hint so the operator knows
+                // they can drag-select to copy. Terminal copy is
+                // delegated to the multiplexer/terminal app; we just
+                // surface the affordance.
                 self.current_line.push(Span::styled(
-                    format!("└{}", "─".repeat(35)),
+                    format!("└{}", "─".repeat(28)),
                     Style::default().fg(Color::Rgb(46, 204, 113)),
+                ));
+                self.current_line.push(Span::styled(
+                    "  drag-select to copy ".to_string(),
+                    Style::default()
+                        .fg(Color::Rgb(98, 114, 164))
+                        .add_modifier(Modifier::DIM | Modifier::ITALIC),
                 ));
                 self.finish_line();
             }
@@ -350,20 +360,40 @@ impl MarkdownRenderer {
 
     fn handle_text(&mut self, text: &str) {
         if self.in_code_block {
-            // Handle code block text line by line
+            // Per-language tinting when the language tag is recognised;
+            // otherwise dim-gray plain. The highlighter is line-based
+            // so we split on \n ourselves here.
+            let lang = super::code_highlight::canonical_lang(&self.code_lang);
             for (i, line) in text.split('\n').enumerate() {
                 if i > 0 {
                     self.finish_line();
                 }
-                if !line.is_empty() {
+                if line.is_empty() {
+                    if i > 0 {
+                        // Render a bare "│" so empty inner lines still
+                        // sit visually inside the code block frame.
+                        self.current_line.push(Span::styled(
+                            "│".to_string(),
+                            Style::default().fg(Color::Rgb(46, 204, 113)),
+                        ));
+                    }
+                    continue;
+                }
+                // Left frame.
+                self.current_line.push(Span::styled(
+                    "│ ".to_string(),
+                    Style::default().fg(Color::Rgb(46, 204, 113)),
+                ));
+                if let Some(canonical) = lang {
+                    let spans =
+                        super::code_highlight::highlight_line(line, canonical);
+                    for span in spans {
+                        self.current_line.push(span);
+                    }
+                } else {
                     self.current_line.push(Span::styled(
-                        format!("│ {}", line),
+                        line.to_string(),
                         Style::default().fg(Color::Rgb(200, 200, 200)),
-                    ));
-                } else if i > 0 {
-                    self.current_line.push(Span::styled(
-                        "│".to_string(),
-                        Style::default().fg(Color::Rgb(46, 204, 113)),
                     ));
                 }
             }
