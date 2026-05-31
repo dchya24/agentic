@@ -84,16 +84,29 @@
 - [x] 8.0 `/search <query>` slash command surfaces `Memory::search`
 - [x] 8.1 Snippet renderer with role badges + UTF-8-safe windowing
 
-### Phase 6 — Testing & docs
+### Phase 6 — Cost tracking (✅ done)
 
-- [x] 9.0 Unit tests for argument parsing + widget helpers
-- [x] 9.1 README in `agentic-cli/`
-- [ ] 9.2 End-to-end smoke test for `agentic run` against a mock provider
+- [x] 9.0 Status-bar `💰` segment showing cumulative provider cost
+- [x] 9.1 `/stats` Cost subsection with $X.XXXX / `-` for unknown
+- [x] 9.2 Mirrors `Orchestrator::cumulative_cost_usd()` after each turn
+
+### Phase 7 — Confirmation UX (✅ done)
+
+- [x] 10.0 Diff preview in the confirmation prompt for `write_file` /
+      `edit_file` / `apply_patch` (rendered through `widgets::diff`)
+- [x] 10.1 60-line cap with `… N more diff line(s) hidden` notice
+
+### Phase 8 — Testing & docs
+
+- [x] 11.0 Unit tests for argument parsing + widget helpers
+- [x] 11.1 README in `agentic-cli/`
+- [ ] 11.2 End-to-end smoke test for `agentic run` against a mock provider
 
 ### Open / future work
 
-- [ ] Markdown rendering polish for streaming responses (richer code-fence handling, copy hints)
-- [ ] Restart-agentic / kill-current-turn slash command
-- [ ] Status line: surface persistent-memory + AGENT.md detection state
+- [ ] Markdown rendering polish for streaming responses (richer code-fence handling on delta chunks, copy hints)
+- [ ] `/restart` slash command (clear orchestrator state mid-session: memory + cancel + cumulative cost)
+- [ ] Status-line indicators for `AGENT.md` + persistent `memory.md` detection
 
 > **Architecture reference:** [docs/shared-widgets-architecture-26052026.md](../docs/shared-widgets-architecture-26052026.md)
+> **Roadmap:** [docs/ROADMAP.md](../docs/ROADMAP.md)

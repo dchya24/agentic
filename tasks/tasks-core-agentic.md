@@ -48,6 +48,8 @@
   - [x] 2.1 `Tool` trait + `ToolRegistry`
   - [x] 2.2 Built-ins: read, write, edit, list, search, glob, grep
   - [x] 2.3 Built-ins: run_command, run_script
+  - [x] 2.4 Built-ins: fetch, web_search (URL-aware tools)
+  - [x] 2.5 Built-in: apply_patch (atomic unified-diff applier)
   - [x] 2.4 Edit-tool string replacement with uniqueness + quote normalization
   - [x] 2.5 `FileTracker` — staleness detection between read/edit
 - [x] 3.0 LLM providers
@@ -92,6 +94,7 @@
   - [x] 7.7 Audit log (ring buffer)
   - [x] 7.8 Permission modes: `default` / `plan` / `yolo`
   - [x] 7.9 URL allowlist for `fetch` / `web_search` (`safety.allowed_domains`, `safety.block_ip_urls`)
+  - [x] 7.10 Prompt-injection scanner for content from `fetch` / `web_search` (annotates results, does not block)
 
 ### Phase 5 — Compression (✅ done)
 
@@ -157,6 +160,6 @@
 - [ ] Concurrent tools in sync `run()` — intentional gap; concurrent path is `run_stream` only
 - [ ] LSP integration, prompt caching, file watching — out of scope per architecture doc
 
-> **Full testing plan:** [docs/PLAN_TESTING.md](../../docs/PLAN_TESTING.md)
 > **Architecture reference:** [AGENT_ARCHITECTURE.md](../AGENT_ARCHITECTURE.md)
 > **Coverage detail:** [docs/architecture-alignment-overview-25052026.md](../docs/architecture-alignment-overview-25052026.md)
+> **Roadmap:** [docs/ROADMAP.md](../docs/ROADMAP.md)
