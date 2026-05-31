@@ -127,6 +127,8 @@
   - [x] 12.3 Public `on_event` / `clear_event_handlers`
 - [x] 13.0 Concurrency
   - [x] 13.1 Concurrent read-only tool batches in `run_stream`
+  - [x] 13.2 Concurrent read-only tool batches in sync `run` (via
+        `std::thread::scope`)
 - [x] 14.0 MCP integration
   - [x] 14.1 stdio transport
   - [x] 14.2 HTTP transport
@@ -147,7 +149,6 @@
 
 ### Open / future work
 
-- [ ] Concurrent tools in sync `run()` — intentional gap; concurrent path is `run_stream` only
 - [ ] LSP integration, prompt caching, file watching — out of scope per architecture doc
 
 > **Architecture reference:** [AGENT_ARCHITECTURE.md](../AGENT_ARCHITECTURE.md)

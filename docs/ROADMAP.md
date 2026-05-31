@@ -95,7 +95,6 @@ Sized by effort. Each item has its own home in
 
 ### Out of scope (intentional)
 
-- Concurrent tools in sync `run()` — concurrent path is `run_stream` only.
 - LSP integration, prompt caching, file watching — out of scope per the
   architecture spec ("Production Extensions Beyond This Tutorial").
 

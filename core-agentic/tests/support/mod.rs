@@ -115,3 +115,45 @@ pub fn tempdir() -> std::path::PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+/// Test-only tool that sleeps for a configurable duration before
+/// returning a trivial JSON value. Marked `is_read_only = true` so the
+/// orchestrator's batched executor schedules it alongside other reads.
+///
+/// Used by the concurrent-batching test to verify that N parallel
+/// invocations finish in roughly one slot's wall-time, not N × slot.
+pub struct SlowReadTool {
+    name: String,
+    sleep: std::time::Duration,
+}
+
+impl SlowReadTool {
+    pub fn new(name: impl Into<String>, sleep: std::time::Duration) -> Self {
+        Self {
+            name: name.into(),
+            sleep,
+        }
+    }
+}
+
+impl core_agentic::tool::Tool for SlowReadTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        "slow read-only test tool"
+    }
+    fn schema(&self) -> core_agentic::tool::ToolSchema {
+        core_agentic::tool::ToolSchema::new(self.name.clone(), "slow read-only test tool")
+    }
+    fn execute(
+        &self,
+        _args: serde_json::Value,
+    ) -> core_agentic::tool::ToolResult<serde_json::Value> {
+        std::thread::sleep(self.sleep);
+        Ok(serde_json::json!({"ok": true, "name": self.name}))
+    }
+    fn is_read_only(&self) -> bool {
+        true
+    }
+}

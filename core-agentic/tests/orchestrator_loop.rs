@@ -291,3 +291,50 @@ fn restart_session_workflow_resets_memory() {
     let answer = orch.run("second turn").expect("ok");
     assert_eq!(answer, "second");
 }
+
+/// Sync run() concurrent batching: when the model returns multiple
+/// read-only tool calls in the same turn, they execute concurrently in
+/// a `std::thread::scope` rather than sequentially. We verify by
+/// scripting four 200ms slow read-only tools in one turn and asserting
+/// total wall-time is much less than 4 * 200ms.
+#[test]
+fn sync_run_executes_read_only_batch_concurrently() {
+    use std::time::{Duration, Instant};
+
+    // Four no-op slow reads in one assistant turn, then a final answer.
+    let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
+        support::multi_tool_call_response(vec![
+            tool_call("a", "slow_read", &serde_json::json!({})),
+            tool_call("b", "slow_read", &serde_json::json!({})),
+            tool_call("c", "slow_read", &serde_json::json!({})),
+            tool_call("d", "slow_read", &serde_json::json!({})),
+        ]),
+        support::text_response("done"),
+    ]));
+
+    let tools = ToolRegistry::new();
+    // Single tool registered four times under one name; each call lands
+    // a fresh Box. The CONCURRENT path doesn't care about name
+    // duplication — it dispatches by name per call.
+    tools.register(Box::new(support::SlowReadTool::new(
+        "slow_read",
+        Duration::from_millis(200),
+    )));
+
+    let orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+
+    let start = Instant::now();
+    let answer = orch.run("go").expect("ok");
+    let elapsed = start.elapsed();
+    assert_eq!(answer, "done");
+
+    // Sequential lower bound is 4 * 200ms = 800ms.
+    // Concurrent ceiling on a slow CI box: 600ms (3x slot) leaves
+    // plenty of headroom while still failing if the loop went serial.
+    assert!(
+        elapsed < Duration::from_millis(600),
+        "expected concurrent batch to complete in <600ms, got {:?}",
+        elapsed
+    );
+}
