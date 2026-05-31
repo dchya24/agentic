@@ -18,6 +18,22 @@ use super::{Orchestrator, OrchestratorState};
 
 impl Orchestrator {
     pub fn run(&self, input: &str) -> Result<String, AgenticError> {
+        self.run_with_attachments(input, Vec::new())
+    }
+
+    /// Same as [`Self::run`] but the user message carries image (or
+    /// other) attachments. The orchestrator validates capabilities up
+    /// front so a vision-incompatible model fails fast with a clear
+    /// error before any provider call.
+    pub fn run_with_attachments(
+        &self,
+        input: &str,
+        attachments: Vec<crate::attachments::Attachment>,
+    ) -> Result<String, AgenticError> {
+        if !attachments.is_empty() {
+            self.check_attachment_capability(&attachments)?;
+        }
+
         {
             let mut state = self.state.lock().unwrap();
             *state = OrchestratorState::Planning;
@@ -26,7 +42,11 @@ impl Orchestrator {
         self.memory
             .lock()
             .unwrap()
-            .add_message(Message::user(input));
+            .add_message(if attachments.is_empty() {
+                Message::user(input)
+            } else {
+                Message::user_with_attachments(input, attachments)
+            });
 
         let tool_defs = self.tools.tool_definitions();
         let mut iteration: u32 = 0;
@@ -116,6 +136,21 @@ impl Orchestrator {
     pub async fn run_stream<F>(
         &self,
         input: &str,
+        on_chunk: F,
+    ) -> Result<String, AgenticError>
+    where
+        F: FnMut(String),
+    {
+        self.run_stream_with_attachments(input, Vec::new(), on_chunk).await
+    }
+
+    /// Streaming variant of [`Self::run_with_attachments`]. The same
+    /// capability check runs up front; on failure the loop returns
+    /// `AgenticError::Provider` before opening a stream.
+    pub async fn run_stream_with_attachments<F>(
+        &self,
+        input: &str,
+        attachments: Vec<crate::attachments::Attachment>,
         mut on_chunk: F,
     ) -> Result<String, AgenticError>
     where
@@ -125,6 +160,10 @@ impl Orchestrator {
 
         use futures::stream::StreamExt;
 
+        if !attachments.is_empty() {
+            self.check_attachment_capability(&attachments)?;
+        }
+
         {
             let mut state = self.state.lock().unwrap();
             *state = OrchestratorState::Planning;
@@ -133,7 +172,11 @@ impl Orchestrator {
         self.memory
             .lock()
             .unwrap()
-            .add_message(Message::user(input));
+            .add_message(if attachments.is_empty() {
+                Message::user(input)
+            } else {
+                Message::user_with_attachments(input, attachments)
+            });
 
         let tool_defs = self.tools.tool_definitions();
         let mut iteration: u32 = 0;
@@ -264,5 +307,31 @@ impl Orchestrator {
     /// Internal helper: returns true when cancel was requested.
     pub(super) fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
+    }
+
+    /// Pre-flight check: every attachment must be supported by the
+    /// active model. Today only image attachments are checked, against
+    /// `ModelCapabilities::vision`. Lookup falls back to the conservative
+    /// default (`vision: false`) for unknown models, so the safe
+    /// behavior is to reject rather than silently send.
+    pub(super) fn check_attachment_capability(
+        &self,
+        attachments: &[crate::attachments::Attachment],
+    ) -> Result<(), AgenticError> {
+        let needs_vision = attachments
+            .iter()
+            .any(|a| matches!(a.kind, crate::attachments::AttachmentKind::Image));
+        if !needs_vision {
+            return Ok(());
+        }
+        let caps = crate::capabilities::resolve(&self.model);
+        if caps.vision {
+            return Ok(());
+        }
+        Err(AgenticError::Provider(format!(
+            "Model '{}' does not support image input. Switch to a vision-capable model \
+             (e.g. gpt-4o, gpt-4o-mini, claude-3-5-sonnet, claude-3-5-haiku) via `/models`.",
+            self.model
+        )))
     }
 }

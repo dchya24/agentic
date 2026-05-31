@@ -75,6 +75,10 @@ pub struct Commands {
     /// `true` when at least one persistent memory file (user-global or
     /// project-local) was loaded and folded into the system prompt.
     memory_md_loaded: bool,
+    /// Image attachments queued by the `/image <path>` slash command,
+    /// to ride along with the next user turn. Drained by `run()` when
+    /// the next message is sent.
+    pending_attachments: Vec<core_agentic::Attachment>,
 }
 
 impl Commands {
@@ -88,6 +92,7 @@ impl Commands {
             permission_mode: core_agentic::PermissionMode::Default,
             agent_md_path: None,
             memory_md_loaded: false,
+            pending_attachments: Vec::new(),
         }
     }
 
@@ -381,6 +386,111 @@ impl Commands {
     /// project-local) was loaded into the system prompt.
     pub fn memory_md_loaded(&self) -> bool {
         self.memory_md_loaded
+    }
+
+    /// Resolve the active model's capabilities (vision / tools /
+    /// streaming). Reads the per-model override first, then falls back
+    /// to the built-in lookup.
+    pub fn active_model_capabilities(&self) -> core_agentic::ModelCapabilities {
+        if let Some(model) = self.config.active_model() {
+            return model.effective_capabilities();
+        }
+        core_agentic::ModelCapabilities::default()
+    }
+
+    /// Drain the queue of `/image`-attached payloads. The queue is
+    /// per-command-run — once attached to a turn, the buffer empties.
+    pub fn drain_pending_attachments(&mut self) -> Vec<core_agentic::Attachment> {
+        std::mem::take(&mut self.pending_attachments)
+    }
+
+    /// Number of images queued for the next turn (for status display).
+    #[allow(dead_code)]
+    pub fn pending_attachment_count(&self) -> usize {
+        self.pending_attachment_count_inner()
+    }
+
+    fn pending_attachment_count_inner(&self) -> usize {
+        self.pending_attachments.len()
+    }
+
+    /// Render the `/image <path>` slash command: load the file, validate
+    /// it (size cap + MIME), and queue it for the next user turn. The
+    /// next call to `run()` will attach all queued images to the
+    /// outgoing message.
+    pub fn attach_image_inline(&mut self, path: &str) {
+        let path = path.trim();
+        if path.is_empty() {
+            inline::print_blank();
+            inline::print_line(&components::warning_badge("Usage: /image <path>"));
+            inline::print_blank();
+            return;
+        }
+
+        // Pre-flight capability check so the user sees the failure now,
+        // not on the next turn.
+        let caps = self.active_model_capabilities();
+        if !caps.vision {
+            inline::print_blank();
+            inline::print_line(&components::error_badge(
+                "Active model does not support image input.",
+            ));
+            inline::print_line(&RLine::from(vec![
+                RSpan::raw("  Switch with "),
+                RSpan::styled(
+                    "/models",
+                    RStyle::default().add_modifier(RModifier::BOLD),
+                ),
+                RSpan::raw(" to a vision-capable model first."),
+            ]));
+            inline::print_blank();
+            return;
+        }
+
+        let limits = core_agentic::AttachmentLimits::default();
+        let result = if path.starts_with("http://")
+            || path.starts_with("https://")
+            || path.starts_with("data:")
+        {
+            core_agentic::attachments::load_image_from_url(path, limits)
+        } else {
+            core_agentic::attachments::load_image_from_path(path, limits)
+        };
+
+        match result {
+            Ok(att) => {
+                let bytes = att.size_bytes;
+                let mime = att.mime_type.clone();
+                let source = format!("{}", att.source);
+                self.pending_attachments.push(att);
+                inline::print_blank();
+                inline::print_line(&components::success_badge(&format!(
+                    "Attached: {} ({} bytes, {})",
+                    source,
+                    bytes,
+                    if mime.is_empty() { "remote" } else { mime.as_str() }
+                )));
+                inline::print_line(&RLine::from(vec![
+                    RSpan::raw("  "),
+                    RSpan::styled(
+                        format!(
+                            "{} image(s) queued for next turn.",
+                            self.pending_attachments.len()
+                        ),
+                        RStyle::default().add_modifier(RModifier::DIM),
+                    ),
+                ]));
+                inline::print_blank();
+            }
+            Err(e) => {
+                inline::print_blank();
+                inline::print_line(&components::error_badge(&format!(
+                    "Failed to attach: {}",
+                    e
+                )));
+                inline::print_blank();
+            }
+        }
     }
 
     /// Restart the agent session in-place: drops the conversation memory,
@@ -909,9 +1019,35 @@ impl Commands {
         use crate::widgets::{components, inline, markdown as md_widget, progress, spinner};
         use ratatui::style::Color as RColor;
 
-        // Expand @file references before sending to AI
-        let expanded = crate::file_ref::expand_file_refs(task);
-        let task = &expanded;
+        // Expand @file references and extract any image attachments
+        // (`@photo.png`) for the vision channel. Pending attachments
+        // queued by `/image` are drained here too.
+        let expanded = crate::file_ref::expand_with_attachments(task);
+        let mut attachments = self.drain_pending_attachments();
+        attachments.extend(expanded.attachments);
+        let task = &expanded.text;
+
+        if !attachments.is_empty() {
+            // Pre-flight capability check so we fail fast with a clear,
+            // user-actionable error instead of waiting on a provider 4xx.
+            let caps = self.active_model_capabilities();
+            if !caps.vision {
+                inline::print_blank();
+                inline::print_line(&components::error_badge(&format!(
+                    "Active model does not support image input."
+                )));
+                inline::print_line(&RLine::from(vec![
+                    RSpan::raw("  Switch with "),
+                    RSpan::styled(
+                        "/models",
+                        RStyle::default().add_modifier(RModifier::BOLD),
+                    ),
+                    RSpan::raw(" to a vision-capable model (e.g. gpt-4o, claude-3-5-sonnet)."),
+                ]));
+                inline::print_blank();
+                return Ok(());
+            }
+        }
 
         self.ensure_orchestrator()?;
 
@@ -1004,7 +1140,7 @@ impl Commands {
         });
 
         let result = orchestrator
-            .run_stream(task, |_chunk| {
+            .run_stream_with_attachments(task, attachments, |_chunk| {
                 // Discard chunks; we render the final result once at the end.
             })
             .await;

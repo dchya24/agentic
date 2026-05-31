@@ -172,6 +172,7 @@ const SLASH_COMMANDS: &[(&str, &[&str], &str)] = &[
     ("mcp", &[], "Show MCP server status"),
     ("plan", &["p"], "Create a plan for a goal"),
     ("search", &["find"], "Search conversation memory"),
+    ("image", &["img"], "Attach an image for the next turn"),
     ("restart", &["reset"], "Restart session (clear memory + cost)"),
     ("stats", &[], "Show session statistics"),
     ("quit", &["q", "exit"], "Exit interactive mode"),
@@ -993,6 +994,9 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                 inline::print_blank();
                                 print_status_bar(&model_info, &stats);
                             }
+                            ReplAction::Image(path) => {
+                                commands.attach_image_inline(&path);
+                            }
                         }
                     }
                     continue;
@@ -1088,6 +1092,8 @@ struct ModelInfo {
     /// `true` when at least one persistent memory file was folded into
     /// the system prompt.
     memory_md_loaded: bool,
+    /// `true` when the active model supports image input.
+    vision_capable: bool,
 }
 
 fn get_model_info(commands: &Commands) -> ModelInfo {
@@ -1102,6 +1108,7 @@ fn get_model_info(commands: &Commands) -> ModelInfo {
         api_base,
         agent_md_name,
         memory_md_loaded: commands.memory_md_loaded(),
+        vision_capable: commands.active_model_capabilities().vision,
     }
 }
 
@@ -1123,6 +1130,7 @@ enum ReplAction {
     Plan(String),
     Search(String),
     Restart,
+    Image(String),
 }
 
 fn handle_slash_command(input: &str) -> Option<ReplAction> {
@@ -1185,6 +1193,15 @@ fn handle_slash_command(input: &str) -> Option<ReplAction> {
             None
         }
         "/restart" | "/reset" => Some(ReplAction::Restart),
+        "/image" | "/img" if !arg.is_empty() => Some(ReplAction::Image(arg)),
+        "/image" | "/img" => {
+            inline::print_blank();
+            inline::print_line(&components::warning_badge(
+                "Usage: /image <path | data: url | http(s) url>",
+            ));
+            inline::print_blank();
+            None
+        }
         _ => {
             inline::print_blank();
             inline::print_line(&components::error_badge(
@@ -1342,6 +1359,14 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
             format!("/{}", model_info.model),
             RStyle::default().fg(Color::Rgb(241, 196, 15)).add_modifier(Modifier::DIM),
         ),
+        if model_info.vision_capable {
+            RSpan::styled(
+                "  👁",
+                RStyle::default().fg(Color::Rgb(135, 206, 250)),
+            )
+        } else {
+            RSpan::raw("")
+        },
         sep.clone(),
         RSpan::styled(
             format!("💬 {} msgs", stats.messages_sent()),
@@ -1461,6 +1486,7 @@ fn print_help() {
 - `/load <file>`       Load conversation from file
 - `/plan <goal>`       Create a plan for a goal
 - `/search <query>`    Search conversation memory (case-insensitive)
+- `/image <path>`      Attach image for next turn (path | data: | http(s) URL)
 - `/restart`           Restart session (clear memory + cost; AGENT.md stays)
 - `/provider <name>`   Switch provider (not yet supported)
 - `/models`            List & switch models (interactive picker)

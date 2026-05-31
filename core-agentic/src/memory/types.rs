@@ -65,6 +65,18 @@ impl Message {
         }
     }
 
+    /// User message carrying image attachments. The attachments survive
+    /// memory persistence and flow back into the next provider request
+    /// via `MessageMetadata::attachments`.
+    pub fn user_with_attachments(
+        content: impl Into<String>,
+        attachments: Vec<crate::attachments::Attachment>,
+    ) -> Self {
+        let mut msg = Self::user(content);
+        msg.metadata.attachments = attachments;
+        msg
+    }
+
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             id: new_id(),

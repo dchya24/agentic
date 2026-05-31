@@ -20,28 +20,89 @@ use std::path::Path;
 ///
 /// Returns the expanded string. If a file doesn't exist,
 /// includes an error message inline instead.
+///
+/// Image references (png/jpeg/gif/webp by extension OR magic bytes) are
+/// kept as a short marker in the text — callers that want the actual
+/// image bytes should use [`expand_with_attachments`] instead so the
+/// image flows to the provider as a real attachment.
 pub fn expand_file_refs(input: &str) -> String {
+    expand_with_attachments(input).text
+}
+
+/// Result of [`expand_with_attachments`].
+pub struct ExpandedRefs {
+    /// The user input with `@path` references replaced. Image refs are
+    /// replaced with a `<image path="..." />` marker; non-image files
+    /// retain their `<file path="..." />` marker.
+    pub text: String,
+    /// Image attachments extracted from `@image.png`-style refs. The
+    /// orchestrator will pass these to the provider's vision channel.
+    pub attachments: Vec<core_agentic::Attachment>,
+}
+
+/// Like [`expand_file_refs`] but additionally loads any `@image.png`
+/// references as real attachments. Magic-byte detection (not extension
+/// trust) decides whether a file is an image. The text marker remains
+/// in place so the model sees the reference position; the actual
+/// bytes ride alongside in the returned `attachments` vec.
+pub fn expand_with_attachments(input: &str) -> ExpandedRefs {
     let mut result = String::new();
+    let mut attachments: Vec<core_agentic::Attachment> = Vec::new();
     let mut last_end = 0;
 
     for (at_pos, path) in find_file_refs(input) {
-        // Push text before this @ref
         result.push_str(&input[last_end..at_pos]);
 
-        // Read and expand the file/directory
-        let expanded = read_file_ref(&path);
-        result.push_str(&expanded);
+        match try_load_as_image(&path) {
+            Some(att) => {
+                result.push_str(&format!("<image path=\"{}\" />", path));
+                attachments.push(att);
+            }
+            None => {
+                let expanded = read_file_ref(&path);
+                result.push_str(&expanded);
+            }
+        }
 
-        // Skip past the @path in the original input
         last_end = at_pos + 1 + path.len();
     }
 
-    // Push remaining text after last @ref
     if last_end < input.len() {
         result.push_str(&input[last_end..]);
     }
 
-    result
+    ExpandedRefs {
+        text: result,
+        attachments,
+    }
+}
+
+/// Try to load `path_str` as an image attachment. Returns `None` for
+/// non-image files, missing files, and directories — the caller falls
+/// back to the regular `<file path=...>` rendering for those.
+fn try_load_as_image(path_str: &str) -> Option<core_agentic::Attachment> {
+    let path = Path::new(path_str.trim_end_matches('/').trim_end_matches('\\'));
+    if !path.is_file() {
+        return None;
+    }
+    // Read first 16 bytes to sniff. Avoid reading the whole file when
+    // it isn't an image.
+    let mut head = [0u8; 16];
+    let n = match std::fs::File::open(path).and_then(|mut f| {
+        use std::io::Read;
+        f.read(&mut head)
+    }) {
+        Ok(n) => n,
+        Err(_) => return None,
+    };
+    core_agentic::attachments::detect_image_mime(&head[..n])?;
+    // Fully load + base64-encode through the canonical loader so size
+    // caps + format validation apply uniformly.
+    core_agentic::attachments::load_image_from_path(
+        path,
+        core_agentic::AttachmentLimits::default(),
+    )
+    .ok()
 }
 
 /// Find all `@path` references in the input.
@@ -266,5 +327,65 @@ mod tests {
         let refs = find_file_refs("check @Cargo.toml");
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].1, "Cargo.toml");
+    }
+
+    // ── attachment expansion ───────────────────────────
+
+    fn write_temp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir()
+            .join(format!("agentic-fileref-{}-{}", std::process::id(), nanos));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    fn png_bytes() -> Vec<u8> {
+        // Minimal PNG signature + IHDR (1×1 RGBA).
+        let mut b = b"\x89PNG\r\n\x1a\n".to_vec();
+        b.extend_from_slice(&[
+            0x00, 0x00, 0x00, 0x0D, b'I', b'H', b'D', b'R',
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
+        ]);
+        b
+    }
+
+    #[test]
+    fn expand_with_attachments_extracts_image() {
+        let p = write_temp("shot.png", &png_bytes());
+        // No trailing punctuation — the parser treats `?` as part of the path.
+        let input = format!("see @{}", p.to_string_lossy());
+        let out = expand_with_attachments(&input);
+        assert_eq!(out.attachments.len(), 1);
+        assert_eq!(out.attachments[0].mime_type, "image/png");
+        assert!(
+            out.text.contains("<image path="),
+            "expected <image path=...>, got: {}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn expand_with_attachments_keeps_text_files_as_file_marker() {
+        let p = write_temp("notes.txt", b"hello");
+        let input = format!("summarize @{}", p.to_string_lossy());
+        let out = expand_with_attachments(&input);
+        assert!(out.attachments.is_empty());
+        assert!(out.text.contains("<file path="));
+    }
+
+    #[test]
+    fn expand_with_attachments_handles_renamed_extension() {
+        // .txt extension but PNG bytes — magic-byte sniff still detects it.
+        let p = write_temp("sneaky.txt", &png_bytes());
+        let input = format!("see @{}", p.to_string_lossy());
+        let out = expand_with_attachments(&input);
+        assert_eq!(out.attachments.len(), 1);
+        assert_eq!(out.attachments[0].mime_type, "image/png");
     }
 }
