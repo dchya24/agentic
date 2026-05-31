@@ -9,6 +9,7 @@ pub mod run_script;
 pub mod search_files;
 pub mod spawn_subagent;
 pub mod update_memory;
+pub mod web_search;
 pub mod write_file;
 
 pub use edit_file::EditFileTool;
@@ -22,6 +23,7 @@ pub use run_script::RunScriptTool;
 pub use search_files::SearchFilesTool;
 pub use spawn_subagent::{SpawnSubagentTool, DEFAULT_SUBAGENT_MAX_ITERATIONS};
 pub use update_memory::UpdateMemoryTool;
+pub use web_search::WebSearchTool;
 pub use write_file::WriteFileTool;
 
 use std::sync::Arc;
@@ -48,5 +50,6 @@ pub fn builtin_tools_with_tracker(
         Box::new(RunScriptTool::new()),
         Box::new(UpdateMemoryTool::new()),
         Box::new(FetchTool::new()),
+        Box::new(WebSearchTool::new()),
     ]
 }

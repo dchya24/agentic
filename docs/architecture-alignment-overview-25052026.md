@@ -90,7 +90,7 @@ so each commit lands a coherent slice and earlier work compounds.
 | Streaming (text deltas + buffered tool calls) | ✅ pre-existing | `Orchestrator::run_stream` |
 | Concurrent tool execution (read-only batches) | ✅ M2 | `handle_tool_calls_parallel` |
 | Web access — `fetch` (HTML→text + cache) | ✅ M3 | `tools::fetch` |
-| Web access — `web_search` | ⚠️ deferred | needs external API key |
+| Web access — `web_search` | ✅ follow-up | `tools::web_search` (Tavily / Brave / DuckDuckGo) |
 | Persistence — conversation history | ✅ pre-existing | `Memory::persist`/`load`/`list_sessions` |
 | Persistence — project instructions | ✅ M1 | AGENT.md walk-up |
 | Persistence — memory across sessions | ✅ M3 | user + project memory.md, `update_memory` tool |
@@ -136,6 +136,7 @@ core_agentic::AgenticError::Cancelled
 core_agentic::FetchTool
 core_agentic::UpdateMemoryTool
 core_agentic::SpawnSubagentTool
+core_agentic::WebSearchTool
 ```
 
 ### Orchestrator setters
@@ -247,9 +248,7 @@ and the model gets a chance to recover (e.g. switch to `read_file`).
 
 | # | Item | Reason |
 |---|------|--------|
-| — | `web_search` tool | Needs external API key; trivial to add when picking a provider |
-| — | `summarizer_model` in Config | Setter exists; CLI just doesn't read it from config yet |
-| — | Domain allowlist for `fetch` | Existing safety pipeline already gates URLs; allowlist is an enhancement |
+| — | Domain allowlist for `fetch` / `web_search` | Existing safety pipeline already gates URLs; allowlist is an enhancement |
 | — | Concurrent tools in sync `run()` | Intentional — no Tokio context. Concurrent path is in `run_stream()` only |
 | — | LSP integration, prompt caching, file watching | Out of scope per architecture doc ("Production Extensions Beyond This Tutorial") |
 
