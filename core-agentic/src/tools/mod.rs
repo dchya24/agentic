@@ -1,12 +1,14 @@
 pub mod apply_patch;
 pub mod edit_file;
 pub mod fetch;
+pub mod git_query;
 pub mod glob;
 pub mod grep;
 pub mod list_files;
 pub mod read_file;
 pub mod run_command;
 pub mod run_script;
+pub mod run_tests;
 pub mod search_files;
 pub mod spawn_subagent;
 pub mod update_memory;
@@ -16,12 +18,14 @@ pub mod write_file;
 pub use apply_patch::ApplyPatchTool;
 pub use edit_file::EditFileTool;
 pub use fetch::FetchTool;
+pub use git_query::{GitDiffTool, GitStatusTool};
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use list_files::ListFilesTool;
 pub use read_file::ReadFileTool;
 pub use run_command::RunCommandTool;
 pub use run_script::RunScriptTool;
+pub use run_tests::RunTestsTool;
 pub use search_files::SearchFilesTool;
 pub use spawn_subagent::{SpawnSubagentTool, DEFAULT_SUBAGENT_MAX_ITERATIONS};
 pub use update_memory::UpdateMemoryTool;
@@ -64,6 +68,9 @@ pub fn builtin_tools_with(
         Box::new(GrepTool::new()),
         Box::new(SearchFilesTool::new()),
         Box::new(RunScriptTool::new()),
+        Box::new(RunTestsTool::new()),
+        Box::new(GitStatusTool::new()),
+        Box::new(GitDiffTool::new()),
         Box::new(UpdateMemoryTool::new()),
         Box::new(FetchTool::new().with_url_policy(url_policy.clone())),
         Box::new(WebSearchTool::new().with_url_policy(url_policy)),

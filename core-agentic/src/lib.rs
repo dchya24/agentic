@@ -60,7 +60,7 @@ pub use memory_file::{
 pub use tools::{
     EditFileTool, FetchTool, GlobTool, GrepTool, ListFilesTool, ReadFileTool, RunCommandTool,
     WriteFileTool, SearchFilesTool, RunScriptTool, UpdateMemoryTool, SpawnSubagentTool,
-    WebSearchTool, ApplyPatchTool,
+    WebSearchTool, ApplyPatchTool, RunTestsTool, GitStatusTool, GitDiffTool,
 };
 
 // Re-export provider implementations
