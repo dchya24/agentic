@@ -71,6 +71,14 @@ pub struct SafetyConfig {
     pub auto_approve_low_risk: bool,
     #[serde(default)]
     pub blocked_commands: Vec<String>,
+    /// Domain allowlist for URL-taking tools (`fetch`, `web_search`).
+    /// Empty = no restriction. See `core_agentic::safety::UrlPolicy`.
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    /// When the URL allowlist is in effect, also reject URLs that
+    /// resolve to an IP literal. Defaults to `false`.
+    #[serde(default)]
+    pub block_ip_urls: bool,
 }
 
 fn default_auto_approve() -> bool {
@@ -86,6 +94,8 @@ impl Default for SafetyConfig {
                 "mkfs".to_string(),
                 "dd if=".to_string(),
             ],
+            allowed_domains: vec![],
+            block_ip_urls: false,
         }
     }
 }
@@ -154,6 +164,16 @@ struct LegacySingleProvider {
 }
 
 impl Config {
+    /// Build a `core_agentic::safety::UrlPolicy` from the user-facing
+    /// safety config. Returns the unrestricted default when neither
+    /// `allowed_domains` nor `block_ip_urls` is set.
+    pub fn url_policy(&self) -> super::safety::UrlPolicy {
+        super::safety::UrlPolicy::new(
+            self.safety.allowed_domains.clone(),
+            self.safety.block_ip_urls,
+        )
+    }
+
     pub fn config_path() -> PathBuf {
         let home = if cfg!(windows) {
             std::env::var("USERPROFILE")
@@ -456,5 +476,36 @@ mod tests {
             cfg2.agent.summarizer_model.as_deref(),
             Some("gpt-4o-mini")
         );
+    }
+
+    #[test]
+    fn url_policy_defaults_to_unrestricted() {
+        let cfg = Config::fallback();
+        let policy = cfg.url_policy();
+        assert!(policy.is_unrestricted());
+    }
+
+    #[test]
+    fn url_policy_reads_from_safety_config() {
+        let json = r#"{
+            "providers": [{
+                "name": "p",
+                "type": "openai-compatible",
+                "api_base": "https://x",
+                "api_key": "k",
+                "models": [{"model": "m"}]
+            }],
+            "safety": {
+                "allowed_domains": ["docs.rs", "github.com"],
+                "block_ip_urls": true
+            }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).expect("parse");
+        let policy = cfg.url_policy();
+        assert!(!policy.is_unrestricted());
+        assert!(policy.is_allowed("https://docs.rs/x"));
+        assert!(policy.is_allowed("https://api.github.com/x"));
+        assert!(!policy.is_allowed("https://example.com/x"));
+        assert!(!policy.is_allowed("http://192.168.1.1/x"));
     }
 }

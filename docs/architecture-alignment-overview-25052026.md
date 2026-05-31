@@ -79,6 +79,7 @@ so each commit lands a coherent slice and earlier work compounds.
 | Permission modes: `default` / `plan` / `yolo` | ✅ M2 | `PermissionMode` enum + `--mode` CLI flag |
 | Pattern-based blocklist | ✅ pre-existing | `safety::default_risk_patterns()` |
 | Path sandboxing | ✅ pre-existing | `Safety::is_path_allowed` |
+| URL allowlist for `fetch` / `web_search` | ✅ follow-up | `safety::UrlPolicy`, gated in tools, configured via `safety.allowed_domains` + `safety.block_ip_urls` |
 | Per-tool rate limiting | ✅ pre-existing | `Safety::check_rate_limit` |
 | Audit log (ring buffer) | ✅ pre-existing | `Safety::audit_log` |
 
@@ -248,7 +249,6 @@ and the model gets a chance to recover (e.g. switch to `read_file`).
 
 | # | Item | Reason |
 |---|------|--------|
-| — | Domain allowlist for `fetch` / `web_search` | Existing safety pipeline already gates URLs; allowlist is an enhancement |
 | — | Concurrent tools in sync `run()` | Intentional — no Tokio context. Concurrent path is in `run_stream()` only |
 | — | LSP integration, prompt caching, file watching | Out of scope per architecture doc ("Production Extensions Beyond This Tutorial") |
 

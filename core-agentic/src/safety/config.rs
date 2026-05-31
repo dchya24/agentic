@@ -54,6 +54,23 @@ pub struct SafetyConfig {
     #[serde(default)]
     pub sandbox_paths: Vec<String>,
 
+    /// Domain allowlist for URL-taking tools (`fetch`, `web_search`).
+    ///
+    /// Empty = no restriction (current behavior).
+    /// Non-empty = only requests to these hosts (and their subdomains)
+    /// are permitted. Match is case-insensitive on the registered
+    /// domain, with dot-boundary suffix matching (so `github.com`
+    /// allows `api.github.com` but not `evilgithub.com`).
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+
+    /// When the URL allowlist is in effect, also reject URLs that
+    /// resolve to an IP literal (`http://192.168.1.1/...`,
+    /// `http://[::1]/...`). Defaults to `false` so local dev setups
+    /// keep working.
+    #[serde(default)]
+    pub block_ip_urls: bool,
+
     /// Per-tool rate limiting configuration.
     #[serde(default)]
     pub rate_limits: HashMap<String, RateLimit>,
@@ -169,6 +186,8 @@ impl Default for SafetyConfig {
             risk_patterns: default_risk_patterns(),
             allowed_commands: vec![],
             sandbox_paths: vec![],
+            allowed_domains: vec![],
+            block_ip_urls: false,
             rate_limits: HashMap::new(),
             audit_logging: true,
             audit_capacity: 1000,

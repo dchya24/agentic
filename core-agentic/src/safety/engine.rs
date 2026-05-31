@@ -192,6 +192,64 @@ impl Safety {
             .any(|sandbox| resolved.starts_with(sandbox))
     }
 
+    /// Check if a URL's host is permitted by the domain allowlist.
+    ///
+    /// Empty allowlist = everything allowed (matches `sandbox_paths`
+    /// semantics). Non-empty allowlist = only listed domains and their
+    /// subdomains are reachable.
+    ///
+    /// Matching rules:
+    ///   - Case-insensitive on the host.
+    ///   - Exact match: `"github.com"` permits `github.com`.
+    ///   - Subdomain match: `"github.com"` permits `api.github.com`
+    ///     (dot-boundary). It does NOT permit `evilgithub.com`.
+    ///   - Leading `.` on an allowlist entry is tolerated (`".github.com"`).
+    ///   - URLs that don't parse as `<scheme>://<host>...` are rejected
+    ///     when an allowlist is active.
+    ///   - When `block_ip_urls = true`, hosts that look like an IPv4
+    ///     octet sequence or a bracketed IPv6 literal are rejected
+    ///     regardless of the allowlist.
+    pub fn is_url_allowed(&self, url: &str) -> bool {
+        if self.config.allowed_domains.is_empty() && !self.config.block_ip_urls {
+            return true;
+        }
+        let host = match parse_host(url) {
+            Some(h) => h.to_lowercase(),
+            None => {
+                debug!(url = url, "URL rejected: unparseable host");
+                return false;
+            }
+        };
+
+        if self.config.block_ip_urls && is_ip_literal(&host) {
+            debug!(url = url, host = %host, "URL rejected: IP literal blocked");
+            return false;
+        }
+
+        if self.config.allowed_domains.is_empty() {
+            // block_ip_urls was set but no allowlist; the IP check above
+            // is the only filter. Anything else passes.
+            return true;
+        }
+
+        let allowed = self.config.allowed_domains.iter().any(|entry| {
+            let entry = entry.trim_start_matches('.').to_lowercase();
+            if entry.is_empty() {
+                return false;
+            }
+            host == entry || host.ends_with(&format!(".{}", entry))
+        });
+
+        if !allowed {
+            debug!(
+                url = url,
+                host = %host,
+                "URL rejected: host not in allowed_domains"
+            );
+        }
+        allowed
+    }
+
     /// Return a RiskScore for a file operation, incorporating sandbox check.
     pub fn score_file_operation(&self, path: &str, operation: &str) -> RiskScore {
         if !self.is_path_allowed(path) {
@@ -469,6 +527,16 @@ impl Safety {
     pub fn is_enabled(&self) -> bool {
         self.config.enabled
     }
+
+    /// Snapshot of the URL allowlist policy. Cheap to clone; intended
+    /// to be handed to URL-taking tools (`fetch`, `web_search`) so they
+    /// can self-gate without holding a `Safety` reference.
+    pub fn url_policy(&self) -> super::UrlPolicy {
+        super::UrlPolicy::new(
+            self.config.allowed_domains.clone(),
+            self.config.block_ip_urls,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -482,4 +550,74 @@ pub struct SafetyDecision {
     pub allowed: bool,
     pub needs_confirmation: bool,
     pub reason: String,
+}
+
+// ---------------------------------------------------------------------------
+// URL helpers
+// ---------------------------------------------------------------------------
+
+/// Extract the host (case as-given) from a URL string.
+///
+/// Supports the common shapes we see in tools: absolute URLs with a
+/// scheme + authority, optional userinfo, optional port, optional path/
+/// query/fragment. IPv6 literals in brackets are returned with the
+/// brackets stripped. Returns `None` for inputs that don't begin with a
+/// `<scheme>://` or whose authority section is empty.
+///
+/// We avoid pulling in the `url` crate so the safety layer stays
+/// dependency-free; the parsing here is intentionally permissive and
+/// is paired with allowlist matching, not used for canonicalization.
+pub(crate) fn parse_host(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    let scheme_end = trimmed.find("://")?;
+    if scheme_end == 0 {
+        // "://example.com" — empty scheme.
+        return None;
+    }
+    let after_scheme = &trimmed[scheme_end + 3..];
+    if after_scheme.is_empty() {
+        return None;
+    }
+    // Authority ends at the first '/', '?' or '#'.
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+
+    // Strip optional userinfo (`user:pass@`).
+    let host_and_port = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+
+    if host_and_port.is_empty() {
+        return None;
+    }
+
+    // IPv6 literal: `[::1]` or `[::1]:8080`.
+    if let Some(stripped) = host_and_port.strip_prefix('[') {
+        let close = stripped.find(']')?;
+        let host = &stripped[..close];
+        if host.is_empty() {
+            return None;
+        }
+        return Some(host.to_string());
+    }
+
+    // IPv4 / DNS host: drop the optional `:<port>` suffix.
+    let host = host_and_port.split(':').next().unwrap_or(host_and_port);
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+/// True if `host` looks like an IPv4 dotted quad or a parsed IPv6
+/// address (after bracket stripping by `parse_host`).
+pub(crate) fn is_ip_literal(host: &str) -> bool {
+    if host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return true;
+    }
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        return true;
+    }
+    false
 }

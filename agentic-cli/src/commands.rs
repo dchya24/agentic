@@ -113,8 +113,21 @@ impl Commands {
         let provider: Arc<dyn core_agentic::LLMProvider> =
             Arc::new(core_agentic::OpenAIProvider::new(provider_config));
 
+        // Build URL allowlist policy from the user config (defaults to
+        // unrestricted when neither `safety.allowed_domains` nor
+        // `safety.block_ip_urls` is set).
+        let url_policy = self.config.url_policy();
+        if !url_policy.is_unrestricted() {
+            tracing::info!(
+                domains = ?url_policy.allowed_domains,
+                block_ip_urls = url_policy.block_ip_urls,
+                "URL allowlist active"
+            );
+        }
+
+        let tracker = Arc::new(core_agentic::file_tracker::FileTracker::new());
         let tools = ToolRegistry::new();
-        for tool in core_agentic::tools::builtin_tools() {
+        for tool in core_agentic::tools::builtin_tools_with(tracker, url_policy) {
             tools.register(tool);
         }
 
@@ -1268,6 +1281,8 @@ impl Commands {
                     "mkfs".to_string(),
                     "dd if=".to_string(),
                 ],
+                allowed_domains: vec![],
+                block_ip_urls: false,
             },
             output: core_agentic::OutputConfig {
                 color: true,

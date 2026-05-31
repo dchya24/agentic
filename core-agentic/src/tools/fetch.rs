@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use regex::Regex;
 
+use crate::safety::UrlPolicy;
 use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 
 const DEFAULT_MAX_CHARS: usize = 25_000;
@@ -33,17 +34,26 @@ fn cache() -> &'static Mutex<HashMap<String, String>> {
 
 pub struct FetchTool {
     max_chars: usize,
+    url_policy: UrlPolicy,
 }
 
 impl FetchTool {
     pub fn new() -> Self {
         Self {
             max_chars: DEFAULT_MAX_CHARS,
+            url_policy: UrlPolicy::default(),
         }
     }
 
     pub fn with_max_chars(mut self, max: usize) -> Self {
         self.max_chars = max.max(256);
+        self
+    }
+
+    /// Attach a URL allowlist policy. By default the policy is
+    /// unrestricted (matches pre-existing behavior).
+    pub fn with_url_policy(mut self, policy: UrlPolicy) -> Self {
+        self.url_policy = policy;
         self
     }
 }
@@ -114,6 +124,12 @@ impl Tool for FetchTool {
                 "Only http/https URLs are allowed (got: {})",
                 url
             )));
+        }
+
+        // Domain allowlist gate. Skipped silently when the policy is
+        // unrestricted (default) so existing behavior is preserved.
+        if let Some(reason) = self.url_policy.explain_block(url) {
+            return Err(ToolError::new(reason));
         }
 
         let max_chars = args_obj
@@ -319,6 +335,26 @@ mod tests {
             .execute(serde_json::json!({"url": "   "}))
             .expect_err("empty url should be rejected");
         assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn fetch_rejects_url_outside_allowlist() {
+        let policy = UrlPolicy::new(vec!["docs.rs".into()], false);
+        let tool = FetchTool::new().with_url_policy(policy);
+        let err = tool
+            .execute(serde_json::json!({"url": "https://example.com/foo"}))
+            .expect_err("host outside allowlist should be rejected");
+        assert!(err.to_string().contains("allowed_domains"));
+    }
+
+    #[test]
+    fn fetch_rejects_ip_url_when_block_ip_urls_set() {
+        let policy = UrlPolicy::new(vec![], true);
+        let tool = FetchTool::new().with_url_policy(policy);
+        let err = tool
+            .execute(serde_json::json!({"url": "http://192.168.1.1/"}))
+            .expect_err("IP URL should be rejected");
+        assert!(err.to_string().contains("IP-literal"));
     }
 
     #[test]

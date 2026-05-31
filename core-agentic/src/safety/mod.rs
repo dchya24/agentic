@@ -22,6 +22,87 @@ pub use engine::{Safety, SafetyDecision};
 pub use risk::{ConfirmationRequest, PermissionMode, RiskLevel, RiskScore};
 
 // ---------------------------------------------------------------------------
+// URL Policy (tool-side allowlist)
+// ---------------------------------------------------------------------------
+//
+// Tools that take URLs (`fetch`, `web_search`) need a tiny, decoupled view
+// of the URL gate: just the allowlist + IP-literal flag. We keep this as a
+// plain `Clone` value (no `Arc`, no lock) so tools can hold their own copy
+// without coupling to the rest of the safety engine.
+
+/// URL allowlist policy used by URL-taking tools.
+///
+/// `allowed_domains.is_empty() && !block_ip_urls` means “no restriction”
+/// (mirroring `Safety::is_url_allowed` semantics).
+#[derive(Debug, Clone, Default)]
+pub struct UrlPolicy {
+    pub allowed_domains: Vec<String>,
+    pub block_ip_urls: bool,
+}
+
+impl UrlPolicy {
+    pub fn new(allowed_domains: Vec<String>, block_ip_urls: bool) -> Self {
+        Self {
+            allowed_domains,
+            block_ip_urls,
+        }
+    }
+
+    /// True when this policy imposes no restriction at all.
+    pub fn is_unrestricted(&self) -> bool {
+        self.allowed_domains.is_empty() && !self.block_ip_urls
+    }
+
+    /// Mirrors `Safety::is_url_allowed`. Kept as a free method so tools
+    /// can check URLs without holding a `Safety` reference.
+    pub fn is_allowed(&self, url: &str) -> bool {
+        if self.is_unrestricted() {
+            return true;
+        }
+        let host = match engine::parse_host(url) {
+            Some(h) => h.to_lowercase(),
+            None => return false,
+        };
+        if self.block_ip_urls && engine::is_ip_literal(&host) {
+            return false;
+        }
+        if self.allowed_domains.is_empty() {
+            return true;
+        }
+        self.allowed_domains.iter().any(|entry| {
+            let entry = entry.trim_start_matches('.').to_lowercase();
+            if entry.is_empty() {
+                return false;
+            }
+            host == entry || host.ends_with(&format!(".{}", entry))
+        })
+    }
+
+    /// Human-readable description of why a URL was blocked. Returns
+    /// `None` when the URL is allowed.
+    pub fn explain_block(&self, url: &str) -> Option<String> {
+        if self.is_allowed(url) {
+            return None;
+        }
+        let host = engine::parse_host(url);
+        if let Some(ref h) = host {
+            if self.block_ip_urls && engine::is_ip_literal(h) {
+                return Some(format!(
+                    "URL blocked: IP-literal hosts disabled by safety.block_ip_urls ({})",
+                    url
+                ));
+            }
+            Some(format!(
+                "URL blocked: host '{}' is not in safety.allowed_domains ({:?})",
+                h, self.allowed_domains
+            ))
+        } else {
+            Some(format!("URL blocked: unparseable URL ({})", url))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit Tests
 // ---------------------------------------------------------------------------
 
@@ -531,5 +612,153 @@ mod tests {
         s.set_mode(PermissionMode::Plan);
         // Plan mode denies outright — no confirmation needed (or possible).
         assert!(!s.needs_confirmation("write_file", Some("foo.txt")));
+    }
+
+    // ─── URL allowlist ──────────────────────────────────
+
+    fn safety_with_domains(domains: Vec<&str>) -> Safety {
+        let mut config = SafetyConfig::default();
+        config.allowed_domains = domains.into_iter().map(String::from).collect();
+        Safety::with_config(config)
+    }
+
+    #[test]
+    fn url_empty_allowlist_permits_anything() {
+        let s = safety();
+        assert!(s.is_url_allowed("https://anywhere.example/foo"));
+        assert!(s.is_url_allowed("http://192.168.1.1"));
+    }
+
+    #[test]
+    fn url_exact_host_match() {
+        let s = safety_with_domains(vec!["github.com"]);
+        assert!(s.is_url_allowed("https://github.com/foo"));
+        assert!(s.is_url_allowed("http://github.com"));
+    }
+
+    #[test]
+    fn url_subdomain_dot_boundary_match() {
+        let s = safety_with_domains(vec!["github.com"]);
+        assert!(s.is_url_allowed("https://api.github.com/repos"));
+        assert!(s.is_url_allowed("https://raw.api.github.com/x"));
+        // Tricky case: must NOT match suffix without a dot boundary.
+        assert!(!s.is_url_allowed("https://evilgithub.com/foo"));
+    }
+
+    #[test]
+    fn url_disallowed_host_rejected() {
+        let s = safety_with_domains(vec!["docs.rs"]);
+        assert!(!s.is_url_allowed("https://example.com/foo"));
+    }
+
+    #[test]
+    fn url_unparseable_rejected_when_allowlist_active() {
+        let s = safety_with_domains(vec!["docs.rs"]);
+        assert!(!s.is_url_allowed("not-a-url"));
+        assert!(!s.is_url_allowed("://nohost"));
+        assert!(!s.is_url_allowed("http:///path-only"));
+    }
+
+    #[test]
+    fn url_case_insensitive_match() {
+        let s = safety_with_domains(vec!["Docs.RS"]);
+        assert!(s.is_url_allowed("https://docs.rs/x"));
+        assert!(s.is_url_allowed("https://DOCS.rs/x"));
+        assert!(s.is_url_allowed("https://API.docs.rs/x"));
+    }
+
+    #[test]
+    fn url_leading_dot_in_entry_tolerated() {
+        let s = safety_with_domains(vec![".github.com"]);
+        assert!(s.is_url_allowed("https://github.com"));
+        assert!(s.is_url_allowed("https://api.github.com"));
+    }
+
+    #[test]
+    fn url_strips_userinfo_and_port() {
+        let s = safety_with_domains(vec!["example.com"]);
+        assert!(s.is_url_allowed("https://user:pass@example.com:8080/path"));
+        assert!(!s.is_url_allowed("https://user:pass@evil.example/path"));
+    }
+
+    #[test]
+    fn url_block_ip_urls_rejects_ipv4_and_ipv6() {
+        let mut config = SafetyConfig::default();
+        config.block_ip_urls = true;
+        // No allowlist, but IP-block on — only IPs should be rejected.
+        let s = Safety::with_config(config);
+        assert!(!s.is_url_allowed("http://192.168.1.1/admin"));
+        assert!(!s.is_url_allowed("http://[::1]/foo"));
+        assert!(s.is_url_allowed("https://example.com/foo"));
+    }
+
+    #[test]
+    fn url_block_ip_combined_with_allowlist() {
+        let mut config = SafetyConfig::default();
+        config.allowed_domains = vec!["example.com".into()];
+        config.block_ip_urls = true;
+        let s = Safety::with_config(config);
+        assert!(s.is_url_allowed("https://example.com/foo"));
+        assert!(!s.is_url_allowed("https://192.168.1.1/foo"));
+        assert!(!s.is_url_allowed("https://other.example/foo"));
+    }
+}
+
+#[cfg(test)]
+mod url_parser_tests {
+    use super::engine::{is_ip_literal, parse_host};
+
+    #[test]
+    fn parse_host_basic() {
+        assert_eq!(parse_host("https://example.com"), Some("example.com".into()));
+        assert_eq!(
+            parse_host("https://example.com/path"),
+            Some("example.com".into())
+        );
+        assert_eq!(
+            parse_host("http://example.com:8080/p?q=1"),
+            Some("example.com".into())
+        );
+    }
+
+    #[test]
+    fn parse_host_strips_userinfo() {
+        assert_eq!(
+            parse_host("https://u:p@example.com/x"),
+            Some("example.com".into())
+        );
+        assert_eq!(
+            parse_host("https://u@example.com"),
+            Some("example.com".into())
+        );
+    }
+
+    #[test]
+    fn parse_host_ipv6_brackets() {
+        assert_eq!(parse_host("http://[::1]/foo"), Some("::1".into()));
+        assert_eq!(parse_host("http://[::1]:8080"), Some("::1".into()));
+        assert_eq!(
+            parse_host("http://[2001:db8::1]/x"),
+            Some("2001:db8::1".into())
+        );
+    }
+
+    #[test]
+    fn parse_host_rejects_no_scheme_or_no_host() {
+        assert_eq!(parse_host(""), None);
+        assert_eq!(parse_host("not-a-url"), None);
+        assert_eq!(parse_host("://example.com"), None);
+        assert_eq!(parse_host("http:///only-path"), None);
+        assert_eq!(parse_host("http://[]"), None);
+    }
+
+    #[test]
+    fn is_ip_literal_detects_v4_and_v6() {
+        assert!(is_ip_literal("127.0.0.1"));
+        assert!(is_ip_literal("192.168.0.1"));
+        assert!(is_ip_literal("::1"));
+        assert!(is_ip_literal("2001:db8::1"));
+        assert!(!is_ip_literal("example.com"));
+        assert!(!is_ip_literal(""));
     }
 }

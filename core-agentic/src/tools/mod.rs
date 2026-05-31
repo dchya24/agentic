@@ -28,6 +28,7 @@ pub use write_file::WriteFileTool;
 
 use std::sync::Arc;
 use crate::file_tracker::FileTracker;
+use crate::safety::UrlPolicy;
 
 pub fn builtin_tools() -> Vec<Box<dyn crate::tool::Tool + Send + Sync>> {
     builtin_tools_with_tracker(Arc::new(FileTracker::new()))
@@ -37,6 +38,18 @@ pub fn builtin_tools() -> Vec<Box<dyn crate::tool::Tool + Send + Sync>> {
 /// between read_file and edit_file so staleness detection works end-to-end.
 pub fn builtin_tools_with_tracker(
     tracker: Arc<FileTracker>,
+) -> Vec<Box<dyn crate::tool::Tool + Send + Sync>> {
+    builtin_tools_with(tracker, UrlPolicy::default())
+}
+
+/// Build the standard tool set with both a shared [`FileTracker`] and a
+/// URL allowlist policy applied to URL-taking tools (`fetch`, `web_search`).
+///
+/// When `url_policy.is_unrestricted()` returns `true` (the default), this
+/// is equivalent to `builtin_tools_with_tracker`.
+pub fn builtin_tools_with(
+    tracker: Arc<FileTracker>,
+    url_policy: UrlPolicy,
 ) -> Vec<Box<dyn crate::tool::Tool + Send + Sync>> {
     vec![
         Box::new(RunCommandTool::new()),
@@ -49,7 +62,7 @@ pub fn builtin_tools_with_tracker(
         Box::new(SearchFilesTool::new()),
         Box::new(RunScriptTool::new()),
         Box::new(UpdateMemoryTool::new()),
-        Box::new(FetchTool::new()),
-        Box::new(WebSearchTool::new()),
+        Box::new(FetchTool::new().with_url_policy(url_policy.clone())),
+        Box::new(WebSearchTool::new().with_url_policy(url_policy)),
     ]
 }

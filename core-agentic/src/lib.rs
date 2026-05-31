@@ -30,7 +30,7 @@ pub use events::{Event, EventType};
 pub use memory::{Memory, Message, MessageRole, SessionInfo, MemoryConfig, ContextWindow, SummarizedContext, MessageMetadata};
 pub use orchestrator::Orchestrator;
 pub use providers::LLMProvider;
-pub use safety::{ConfirmationRequest, RiskLevel, RiskScore, SafetyDecision, AuditEntry, AuditDecision, RateLimit, PermissionMode};
+pub use safety::{ConfirmationRequest, RiskLevel, RiskScore, SafetyDecision, AuditEntry, AuditDecision, RateLimit, PermissionMode, UrlPolicy};
 pub use tool::{Tool, ToolError, ToolResult, ToolSchema, ToolCall, ToolResultValue};
 pub use mcp::{
     McpClient, McpServerConfig, McpToolAdapter,

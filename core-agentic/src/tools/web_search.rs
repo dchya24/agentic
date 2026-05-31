@@ -33,6 +33,7 @@ use std::time::Duration;
 use regex::Regex;
 use serde::Deserialize;
 
+use crate::safety::UrlPolicy;
 use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 
 const DEFAULT_MAX_RESULTS: usize = 5;
@@ -78,17 +79,27 @@ struct SearchHit {
 
 pub struct WebSearchTool {
     max_results: usize,
+    url_policy: UrlPolicy,
 }
 
 impl WebSearchTool {
     pub fn new() -> Self {
         Self {
             max_results: DEFAULT_MAX_RESULTS,
+            url_policy: UrlPolicy::default(),
         }
     }
 
     pub fn with_max_results(mut self, n: usize) -> Self {
         self.max_results = n.clamp(1, HARD_RESULT_CAP);
+        self
+    }
+
+    /// Attach a URL allowlist policy. Result URLs whose host is not
+    /// permitted are dropped from the response so the model never
+    /// reasons about a URL it can't open. Default is unrestricted.
+    pub fn with_url_policy(mut self, policy: UrlPolicy) -> Self {
+        self.url_policy = policy;
         self
     }
 }
@@ -176,6 +187,13 @@ impl Tool for WebSearchTool {
             Backend::DuckDuckGo => search_duckduckgo(&client, query, max_results)?,
         };
 
+        // Filter result URLs through the allowlist. When the policy is
+        // unrestricted this is a no-op. We track how many were dropped
+        // so the model knows the response was filtered.
+        let total_before_filter = hits.len();
+        let hits = filter_hits_by_policy(hits, &self.url_policy);
+        let filtered_out = total_before_filter - hits.len();
+
         let results: Vec<serde_json::Value> = hits
             .iter()
             .map(|h| {
@@ -192,6 +210,7 @@ impl Tool for WebSearchTool {
             "backend": backend.id(),
             "results": results,
             "result_count": hits.len(),
+            "filtered_by_allowlist": filtered_out,
         }))
     }
 
@@ -322,6 +341,16 @@ fn search_brave(
             snippet: r.description,
         })
         .collect())
+}
+
+/// Apply a URL allowlist policy to a list of search hits. Hits whose
+/// `url` is not permitted are dropped. When the policy is unrestricted
+/// the input is returned unchanged.
+fn filter_hits_by_policy(hits: Vec<SearchHit>, policy: &UrlPolicy) -> Vec<SearchHit> {
+    if policy.is_unrestricted() {
+        return hits;
+    }
+    hits.into_iter().filter(|h| policy.is_allowed(&h.url)).collect()
 }
 
 fn search_duckduckgo(
@@ -581,5 +610,49 @@ mod tests {
         assert_eq!(id, "duckduckgo");
         assert_eq!(Backend::Tavily.id(), "tavily");
         assert_eq!(Backend::Brave.id(), "brave");
+    }
+
+    #[test]
+    fn filter_hits_by_policy_unrestricted_keeps_all() {
+        let hits = vec![
+            SearchHit {
+                title: "a".into(),
+                url: "https://a.example/".into(),
+                snippet: "".into(),
+            },
+            SearchHit {
+                title: "b".into(),
+                url: "https://b.example/".into(),
+                snippet: "".into(),
+            },
+        ];
+        let kept = filter_hits_by_policy(hits, &UrlPolicy::default());
+        assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn filter_hits_by_policy_drops_disallowed() {
+        let hits = vec![
+            SearchHit {
+                title: "keep".into(),
+                url: "https://docs.rs/page".into(),
+                snippet: "".into(),
+            },
+            SearchHit {
+                title: "drop".into(),
+                url: "https://example.com/page".into(),
+                snippet: "".into(),
+            },
+            SearchHit {
+                title: "keep-sub".into(),
+                url: "https://api.docs.rs/page".into(),
+                snippet: "".into(),
+            },
+        ];
+        let policy = UrlPolicy::new(vec!["docs.rs".into()], false);
+        let kept = filter_hits_by_policy(hits, &policy);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].title, "keep");
+        assert_eq!(kept[1].title, "keep-sub");
     }
 }

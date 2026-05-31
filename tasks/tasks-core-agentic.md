@@ -91,6 +91,7 @@
   - [x] 7.6 Per-tool rate limiting
   - [x] 7.7 Audit log (ring buffer)
   - [x] 7.8 Permission modes: `default` / `plan` / `yolo`
+  - [x] 7.9 URL allowlist for `fetch` / `web_search` (`safety.allowed_domains`, `safety.block_ip_urls`)
 
 ### Phase 5 — Compression (✅ done)
 
@@ -140,7 +141,6 @@
 
 ### Open / future work
 
-- [ ] Domain allowlist for `fetch` / `web_search` (existing safety pipeline already gates URLs)
 - [ ] Concurrent tools in sync `run()` — intentional gap; concurrent path is `run_stream` only
 - [ ] LSP integration, prompt caching, file watching — out of scope per architecture doc
 
