@@ -110,7 +110,11 @@ impl AnthropicProviderConfig {
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 enum AnthropicContentBlock {
-    Text { text: String },
+    Text {
+        #[serde(rename = "type")]
+        text_type: String,
+        text: String,
+    },
     ToolUse {
         #[serde(rename = "type")]
         tool_use_type: String,
@@ -125,6 +129,26 @@ enum AnthropicContentBlock {
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
+    },
+    /// Image attachment. Anthropic accepts two `source.type` shapes:
+    ///   - `"base64"` with `media_type` + `data` for inline payloads.
+    ///   - `"url"` with `url` for remote URLs.
+    Image {
+        #[serde(rename = "type")]
+        image_type: String,
+        source: AnthropicImageSource,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicImageSource {
+    Base64 {
+        media_type: String,
+        data: String,
+    },
+    Url {
+        url: String,
     },
 }
 
@@ -288,6 +312,7 @@ impl AnthropicProvider {
                         }
                         if !msg.content.is_empty() {
                             blocks.push(AnthropicContentBlock::Text {
+                                text_type: "text".into(),
                                 text: msg.content.clone(),
                             });
                         }
@@ -301,9 +326,41 @@ impl AnthropicProvider {
                             is_error: None,
                         }]
                     } else {
-                        vec![AnthropicContentBlock::Text {
-                            text: msg.content.clone(),
-                        }]
+                        // Plain user/assistant message. Image attachments
+                        // (when present) ride alongside the text. Anthropic
+                        // is documented to handle the image block before
+                        // the text block, but accepts both orderings; we
+                        // emit images first so the model sees them as
+                        // input context for the prompt that follows.
+                        let mut blocks = Vec::new();
+                        for att in &msg.attachments {
+                            if !matches!(
+                                att.kind,
+                                crate::attachments::AttachmentKind::Image
+                            ) {
+                                continue;
+                            }
+                            let source = match &att.source {
+                                crate::attachments::AttachmentSource::RemoteUrl { url } => {
+                                    AnthropicImageSource::Url { url: url.clone() }
+                                }
+                                _ => AnthropicImageSource::Base64 {
+                                    media_type: att.mime_type.clone(),
+                                    data: att.data_base64.clone(),
+                                },
+                            };
+                            blocks.push(AnthropicContentBlock::Image {
+                                image_type: "image".into(),
+                                source,
+                            });
+                        }
+                        if !msg.content.is_empty() || blocks.is_empty() {
+                            blocks.push(AnthropicContentBlock::Text {
+                                text_type: "text".into(),
+                                text: msg.content.clone(),
+                            });
+                        }
+                        blocks
                     };
 
                     anthropic_messages.push(AnthropicMessageRequest {
@@ -687,5 +744,187 @@ impl LLMProvider for AnthropicProvider {
     fn count_tokens(&self, text: &str) -> usize {
         // Claude uses a different tokenizer, but ~3.5 chars per token is reasonable
         (text.len() as f32 / 3.5) as usize
+    }
+}
+
+#[cfg(test)]
+mod wire_format_tests {
+    use super::{AnthropicContentBlock, AnthropicImageSource, AnthropicProvider, AnthropicProviderConfig};
+    use crate::attachments::{Attachment, AttachmentKind, AttachmentSource};
+    use crate::providers::{ChatMessageRequest, ChatRequest};
+
+    fn provider() -> AnthropicProvider {
+        AnthropicProvider::new(AnthropicProviderConfig::new(
+            "test-id",
+            "test-key",
+            "claude-3-5-sonnet-20241022",
+        ))
+    }
+
+    fn png_attachment() -> Attachment {
+        Attachment {
+            kind: AttachmentKind::Image,
+            mime_type: "image/png".into(),
+            data_base64: "iVBORw0KGgo=".into(),
+            source: AttachmentSource::FilePath {
+                path: "/tmp/x.png".into(),
+            },
+            size_bytes: 8,
+        }
+    }
+
+    fn remote_attachment() -> Attachment {
+        Attachment {
+            kind: AttachmentKind::Image,
+            mime_type: String::new(),
+            data_base64: String::new(),
+            source: AttachmentSource::RemoteUrl {
+                url: "https://example.com/cat.png".into(),
+            },
+            size_bytes: 0,
+        }
+    }
+
+    /// Helper: convert through the public path and JSON-serialize the
+    /// resulting Anthropic request body so tests can assert on the wire
+    /// shape without poking at private structs.
+    fn convert_and_serialize(req: ChatRequest) -> serde_json::Value {
+        let p = provider();
+        let anthropic_req = p.convert_request(req).expect("convert");
+        serde_json::to_value(&anthropic_req).expect("serialize")
+    }
+
+    #[test]
+    fn no_attachment_renders_single_text_block() {
+        let req = ChatRequest::new(
+            "claude-3-5-sonnet-20241022",
+            vec![ChatMessageRequest::user("hello")],
+        );
+        let body = convert_and_serialize(req);
+        let msgs = body["messages"].as_array().expect("messages");
+        assert_eq!(msgs.len(), 1);
+        let blocks = msgs[0]["content"].as_array().expect("content array");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "hello");
+    }
+
+    #[test]
+    fn single_image_renders_image_then_text() {
+        let msg = ChatMessageRequest::user("What's in this?")
+            .with_attachments(vec![png_attachment()]);
+        let req = ChatRequest::new("claude-3-5-sonnet-20241022", vec![msg]);
+        let body = convert_and_serialize(req);
+        let blocks = body["messages"][0]["content"]
+            .as_array()
+            .expect("blocks");
+        assert_eq!(blocks.len(), 2);
+        // Image first so the model sees it as input context.
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        assert_eq!(blocks[0]["source"]["data"], "iVBORw0KGgo=");
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["text"], "What's in this?");
+    }
+
+    #[test]
+    fn empty_text_with_image_omits_text_block() {
+        let msg = ChatMessageRequest::user("").with_attachments(vec![png_attachment()]);
+        let req = ChatRequest::new("claude-3-5-sonnet-20241022", vec![msg]);
+        let body = convert_and_serialize(req);
+        let blocks = body["messages"][0]["content"].as_array().unwrap();
+        // Only the image block — no leading empty text.
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "image");
+    }
+
+    #[test]
+    fn remote_url_attachment_uses_url_source() {
+        let msg = ChatMessageRequest::user("caption")
+            .with_attachments(vec![remote_attachment()]);
+        let req = ChatRequest::new("claude-3-5-sonnet-20241022", vec![msg]);
+        let body = convert_and_serialize(req);
+        let blocks = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "url");
+        assert_eq!(
+            blocks[0]["source"]["url"],
+            "https://example.com/cat.png"
+        );
+        // No `data` field on URL-source images.
+        assert!(blocks[0]["source"]["data"].is_null());
+    }
+
+    #[test]
+    fn multiple_attachments_render_in_order() {
+        let msg = ChatMessageRequest::user("two pics")
+            .with_attachments(vec![png_attachment(), remote_attachment()]);
+        let req = ChatRequest::new("claude-3-5-sonnet-20241022", vec![msg]);
+        let body = convert_and_serialize(req);
+        let blocks = body["messages"][0]["content"].as_array().unwrap();
+        // 2 images + 1 text = 3 blocks; images come first.
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["type"], "url");
+        assert_eq!(blocks[2]["type"], "text");
+    }
+
+    #[test]
+    fn system_messages_are_pulled_out_of_messages_array() {
+        let req = ChatRequest::new(
+            "claude-3-5-sonnet-20241022",
+            vec![
+                ChatMessageRequest::system("sys-prompt"),
+                ChatMessageRequest::user("hi").with_attachments(vec![png_attachment()]),
+            ],
+        );
+        let body = convert_and_serialize(req);
+        // Anthropic puts system prompt at the top level, not in messages.
+        assert_eq!(body["system"], "sys-prompt");
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        // The user turn still carries its image.
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "image");
+    }
+
+    #[test]
+    fn image_source_serializes_with_internal_type_tag() {
+        // Sanity check on the AnthropicImageSource enum: serde tag = type,
+        // snake_case, so `Base64 { media_type, data }` becomes
+        // `{"type": "base64", "media_type": ..., "data": ...}`.
+        let s = AnthropicImageSource::Base64 {
+            media_type: "image/jpeg".into(),
+            data: "abc".into(),
+        };
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["type"], "base64");
+        assert_eq!(v["media_type"], "image/jpeg");
+        assert_eq!(v["data"], "abc");
+
+        let u = AnthropicImageSource::Url {
+            url: "https://x/y".into(),
+        };
+        let v = serde_json::to_value(&u).unwrap();
+        assert_eq!(v["type"], "url");
+        assert_eq!(v["url"], "https://x/y");
+    }
+
+    #[test]
+    fn text_block_emits_explicit_type_field() {
+        // Regression: untagged enum without a type field used to omit
+        // the discriminator, which Anthropic's API requires.
+        let block = AnthropicContentBlock::Text {
+            text_type: "text".into(),
+            text: "hi".into(),
+        };
+        let v = serde_json::to_value(&block).unwrap();
+        assert_eq!(v["type"], "text");
+        assert_eq!(v["text"], "hi");
     }
 }
