@@ -101,32 +101,11 @@ impl AnthropicProviderConfig {
 }
 
 // Anthropic API request types
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AnthropicMessage {
-    #[serde(rename = "type")]
-    msg_type: String,
-    text: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AnthropicToolUse {
-    #[serde(rename = "type")]
-    tool_use_type: String,
-    id: String,
-    name: String,
-    input: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AnthropicToolResult {
-    #[serde(rename = "type")]
-    tool_result_type: String,
-    tool_use_id: String,
-    content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    is_error: Option<bool>,
-}
+//
+// Note: structs for the legacy non-untagged content shape (AnthropicMessage,
+// AnthropicToolUse, AnthropicToolResult) were removed when we switched to
+// the untagged `AnthropicContentBlock` enum. Restore from git history if a
+// future change needs the named-struct form.
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
@@ -246,8 +225,6 @@ pub struct AnthropicStreamEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<AnthropicStreamMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_block: Option<AnthropicStreamContentBlock>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<AnthropicUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<AnthropicErrorDetail>,
@@ -268,18 +245,6 @@ pub struct AnthropicStreamMessage {
     pub r#type: Option<String>,
     pub model: String,
     pub role: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnthropicStreamContentBlock {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    r#type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    input: Option<serde_json::Value>,
 }
 
 impl AnthropicProvider {

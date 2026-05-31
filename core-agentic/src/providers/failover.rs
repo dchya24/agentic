@@ -158,8 +158,8 @@ mod tests {
         assert_eq!(fo.active_provider().provider_id(), "p1");
     }
 
-    #[test]
-    fn test_failover_health_check_any_healthy() {
+    #[tokio::test]
+    async fn test_failover_health_check_any_healthy() {
         let fo = FailoverProvider::new(vec![
             make_provider("p1"),
             make_provider("p2"),
@@ -167,6 +167,10 @@ mod tests {
         // These providers will fail health check (localhost:1), but at least
         // they return Err not panic. The method returns Ok(true) only if one is healthy.
         // Since none can connect, we get Ok(false) not Err.
+        //
+        // Marked tokio::test because the underlying provider's health_check
+        // uses futures::executor::block_on around an async reqwest client,
+        // which needs an active reactor.
         let result = fo.health_check();
         // Should return Ok (not Err), but likely false since localhost:1 won't respond
         assert!(result.is_ok());
@@ -178,12 +182,14 @@ mod tests {
         assert_eq!(fo.provider_type(), "failover");
     }
 
-    #[test]
-    fn test_failover_list_models_aggregates() {
+    #[tokio::test]
+    async fn test_failover_list_models_aggregates() {
         let fo = FailoverProvider::new(vec![
             make_provider("p1"),
             make_provider("p2"),
         ]);
+        // Same caveat as test_failover_health_check_any_healthy: needs an
+        // active tokio reactor for the underlying block_on calls.
         let models = fo.list_models().unwrap();
         // These providers can't connect to list models, so returns empty
         // but the method itself doesn't error

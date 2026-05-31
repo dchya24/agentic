@@ -1,0 +1,485 @@
+//! Safety engine: scoring, sandboxing, rate-limiting, audit logging,
+//! and the `evaluate` decision pipeline used by the orchestrator.
+
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Mutex;
+use tracing::{debug, info, warn};
+
+use super::audit::{AuditDecision, AuditEntry, RateLimitState};
+use super::config::SafetyConfig;
+use super::risk::{
+    is_state_changing_action, ConfirmationRequest, PermissionMode, RiskLevel, RiskScore,
+};
+
+// ---------------------------------------------------------------------------
+// Safety Engine
+// ---------------------------------------------------------------------------
+
+/// Main safety engine. Thread-safe via interior mutability.
+pub struct Safety {
+    config: SafetyConfig,
+    rate_limit_states: Mutex<HashMap<String, RateLimitState>>,
+    audit_log: Mutex<Vec<AuditEntry>>,
+    /// Active permission mode. Defaults to `Default` (ask).
+    mode: Mutex<PermissionMode>,
+}
+
+impl Default for Safety {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Safety {
+    // -----------------------------------------------------------------------
+    // Constructors
+    // -----------------------------------------------------------------------
+
+    pub fn new() -> Self {
+        Self {
+            config: SafetyConfig::default(),
+            rate_limit_states: Mutex::new(HashMap::new()),
+            audit_log: Mutex::new(Vec::new()),
+            mode: Mutex::new(PermissionMode::default()),
+        }
+    }
+
+    pub fn with_config(config: SafetyConfig) -> Self {
+        Self {
+            config,
+            rate_limit_states: Mutex::new(HashMap::new()),
+            audit_log: Mutex::new(Vec::new()),
+            mode: Mutex::new(PermissionMode::default()),
+        }
+    }
+
+    pub fn with_blocked_commands(mut self, commands: Vec<String>) -> Self {
+        self.config.blocked_commands = commands;
+        self
+    }
+
+    pub fn with_allowed_commands(mut self, commands: Vec<String>) -> Self {
+        self.config.allowed_commands = commands;
+        self
+    }
+
+    pub fn with_sandbox_paths(mut self, paths: Vec<String>) -> Self {
+        self.config.sandbox_paths = paths;
+        self
+    }
+
+    pub fn set_require_confirmation(&mut self, require: bool) {
+        self.config.require_confirmation = require;
+    }
+
+    /// Switch the active permission mode at runtime.
+    pub fn set_mode(&self, mode: PermissionMode) {
+        *self.mode.lock().unwrap() = mode;
+    }
+
+    /// Get the active permission mode.
+    pub fn mode(&self) -> PermissionMode {
+        *self.mode.lock().unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // Core Risk Scoring
+    // -----------------------------------------------------------------------
+
+    /// Score a command/action and return a numeric risk assessment.
+    pub fn score_command(&self, action: &str, target: Option<&str>) -> RiskScore {
+        if !self.config.enabled {
+            return RiskScore::low();
+        }
+
+        let target_str = target.unwrap_or("");
+        let combined = format!("{} {}", action, target_str).to_lowercase();
+
+        // 1) Hard blocklist check → automatic critical
+        for blocked in &self.config.blocked_commands {
+            if combined.contains(&blocked.to_lowercase()) {
+                return RiskScore::new(1.0, RiskLevel::Critical);
+            }
+        }
+
+        // 2) Allowed commands allowlist check (if configured)
+        if !self.config.allowed_commands.is_empty() {
+            let cmd_part = target_str
+                .split_whitespace()
+                .next()
+                .unwrap_or(target_str);
+            let is_allowed = self
+                .config
+                .allowed_commands
+                .iter()
+                .any(|a| cmd_part.eq_ignore_ascii_case(a.trim()));
+
+            if !is_allowed && action == "run_command" {
+                return RiskScore::new(0.7, RiskLevel::High);
+            }
+        }
+
+        // 3) Pattern-based scoring — take the highest match
+        let mut best_score = 0.0_f64;
+
+        // We need &mut for lazy regex compilation, so we clone patterns
+        // to avoid borrowing issues. The patterns are compiled once.
+        let mut patterns = self.config.risk_patterns.clone();
+        for pattern in &mut patterns {
+            if pattern.matches(&combined) {
+                if pattern.score > best_score {
+                    best_score = pattern.score;
+                }
+            }
+        }
+
+        // Also score based on action type
+        let action_base = match action {
+            "run_command" => 0.0, // scored by patterns above
+            "write_file" | "edit_file" => 0.2,
+            "delete_file" => 0.35,
+            _ => 0.0,
+        };
+
+        if action_base > best_score {
+            best_score = action_base;
+        }
+
+        // Classify using configurable thresholds
+        let level = if best_score >= self.config.critical_threshold {
+            RiskLevel::Critical
+        } else if best_score >= self.config.high_threshold {
+            RiskLevel::High
+        } else if best_score >= self.config.medium_threshold {
+            RiskLevel::Medium
+        } else {
+            RiskLevel::Low
+        };
+
+        RiskScore::new(best_score, level)
+    }
+
+    /// Legacy compatibility: return RiskLevel for an action.
+    pub fn check_risk(&self, action: &str, target: Option<&str>) -> RiskLevel {
+        self.score_command(action, target).level
+    }
+
+    // -----------------------------------------------------------------------
+    // Path Sandboxing
+    // -----------------------------------------------------------------------
+
+    /// Check if a file path is within allowed sandbox boundaries.
+    /// Returns `true` if the path is allowed (or if no sandbox is configured).
+    pub fn is_path_allowed(&self, path: &str) -> bool {
+        if self.config.sandbox_paths.is_empty() {
+            return true; // no sandbox configured → everything allowed
+        }
+
+        let resolved = Path::new(path);
+
+        // Block traversal attempts
+        if path.contains("..") {
+            debug!(path = path, "Path traversal attempt blocked");
+            return false;
+        }
+
+        self.config
+            .sandbox_paths
+            .iter()
+            .any(|sandbox| resolved.starts_with(sandbox))
+    }
+
+    /// Return a RiskScore for a file operation, incorporating sandbox check.
+    pub fn score_file_operation(&self, path: &str, operation: &str) -> RiskScore {
+        if !self.is_path_allowed(path) {
+            return RiskScore::new(0.9, RiskLevel::Critical);
+        }
+
+        let mut score = self.score_command(operation, Some(path));
+
+        // Extra risk for sensitive system paths
+        let sensitive = [
+            "/etc/",
+            "/usr/",
+            "/boot/",
+            "/sys/",
+            "/proc/",
+            "/dev/",
+            "C:\\Windows\\",
+            "C:\\Program Files\\",
+        ];
+        for prefix in &sensitive {
+            if path.starts_with(prefix) {
+                score.value = (score.value + 0.3).min(1.0);
+                score.level = RiskLevel::from_score(score.value);
+                break;
+            }
+        }
+
+        score
+    }
+
+    // -----------------------------------------------------------------------
+    // Rate Limiting
+    // -----------------------------------------------------------------------
+
+    /// Check rate limit for a tool. Returns `true` if the call is allowed.
+    pub fn check_rate_limit(&self, tool_name: &str) -> bool {
+        let limit = match self.config.rate_limits.get(tool_name) {
+            Some(l) => l,
+            None => return true, // no limit configured → allowed
+        };
+
+        let mut states = self.rate_limit_states.lock().unwrap();
+        let state = states
+            .entry(tool_name.to_string())
+            .or_insert_with(RateLimitState::new);
+
+        state.check_and_record(limit)
+    }
+
+    // -----------------------------------------------------------------------
+    // Confirmation & Decision
+    // -----------------------------------------------------------------------
+
+    /// Should the user be prompted for confirmation?
+    pub fn needs_confirmation(&self, action: &str, target: Option<&str>) -> bool {
+        let mode = *self.mode.lock().unwrap();
+        match mode {
+            // Yolo never asks.
+            PermissionMode::Yolo => false,
+            // Plan denies state-changing actions outright (no confirmation).
+            PermissionMode::Plan if is_state_changing_action(action) => false,
+            _ => {
+                if !self.config.enabled || !self.config.require_confirmation {
+                    return false;
+                }
+                let score = self.score_command(action, target);
+                score.value > self.config.auto_approve_threshold
+            }
+        }
+    }
+
+    /// Full safety evaluation: returns a decision without blocking.
+    /// This is the primary entry point for the orchestrator.
+    pub fn evaluate(&self, action: &str, target: Option<&str>) -> SafetyDecision {
+        let mode = *self.mode.lock().unwrap();
+
+        // Plan mode: hard-deny any state-changing tool. Reads still allowed.
+        if mode == PermissionMode::Plan && is_state_changing_action(action) {
+            let score = RiskScore::new(0.5, RiskLevel::Medium);
+            self.audit(action, target, &score, AuditDecision::Blocked);
+            return SafetyDecision {
+                score,
+                allowed: false,
+                needs_confirmation: false,
+                reason: format!("Blocked by plan mode: {} is a state-changing tool", action),
+            };
+        }
+
+        // Yolo mode: allow everything except the hard blocklist (which is
+        // checked below as part of normal scoring). We bypass confirmation
+        // and rate limiting but keep critical-pattern blocking as a final
+        // safety net.
+        if mode == PermissionMode::Yolo {
+            let score = self.score_command(action, target);
+            if score.level == RiskLevel::Critical {
+                self.audit(action, target, &score, AuditDecision::Blocked);
+                return SafetyDecision {
+                    score,
+                    allowed: false,
+                    needs_confirmation: false,
+                    reason: "Action blocked: critical risk level (yolo mode still blocks blocklist)"
+                        .into(),
+                };
+            }
+            return SafetyDecision {
+                score,
+                allowed: true,
+                needs_confirmation: false,
+                reason: "yolo mode: auto-approved".into(),
+            };
+        }
+
+        if !self.config.enabled {
+            return SafetyDecision {
+                score: RiskScore::low(),
+                allowed: true,
+                needs_confirmation: false,
+                reason: "Safety system disabled".into(),
+            };
+        }
+
+        // 1) Score the action
+        let score = self.score_command(action, target);
+
+        // 2) Critical actions are always blocked
+        if score.level == RiskLevel::Critical {
+            self.audit(action, target, &score, AuditDecision::Blocked);
+            return SafetyDecision {
+                score,
+                allowed: false,
+                needs_confirmation: false,
+                reason: "Action blocked: critical risk level".into(),
+            };
+        }
+
+        // 3) Path sandboxing for file operations
+        if matches!(action, "write_file" | "edit_file" | "delete_file" | "read_file") {
+            if let Some(path) = target {
+                if !self.is_path_allowed(path) {
+                    let file_score = RiskScore::new(0.9, RiskLevel::Critical);
+                    self.audit(action, target, &file_score, AuditDecision::Blocked);
+                    return SafetyDecision {
+                        score: file_score,
+                        allowed: false,
+                        needs_confirmation: false,
+                        reason: "Path outside sandbox boundaries".into(),
+                    };
+                }
+            }
+        }
+
+        // 4) Rate limiting
+        if !self.check_rate_limit(action) {
+            self.audit(action, target, &score, AuditDecision::RateLimited);
+            return SafetyDecision {
+                score,
+                allowed: false,
+                needs_confirmation: false,
+                reason: "Rate limit exceeded".into(),
+            };
+        }
+
+        // 5) Medium/High needs confirmation
+        let needs_confirm =
+            self.config.require_confirmation && score.value > self.config.auto_approve_threshold;
+
+        SafetyDecision {
+            score,
+            allowed: true,
+            needs_confirmation: needs_confirm,
+            reason: String::new(),
+        }
+    }
+
+    /// Create a confirmation request (for the UI / CLI to prompt the user).
+    pub fn create_request(&self, action: &str, description: &str) -> ConfirmationRequest {
+        let score = self.score_command(action, None);
+        ConfirmationRequest {
+            action: action.to_string(),
+            description: description.to_string(),
+            risk_level: score.level,
+            risk_score: score.value,
+            reason: format!(
+                "Risk score: {:.2} ({})",
+                score.value,
+                score.level.as_str()
+            ),
+            timestamp: Utc::now(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Audit Logging
+    // -----------------------------------------------------------------------
+
+    fn audit(
+        &self,
+        action: &str,
+        target: Option<&str>,
+        score: &RiskScore,
+        decision: AuditDecision,
+    ) {
+        if !self.config.audit_logging {
+            return;
+        }
+
+        let entry = AuditEntry {
+            timestamp: Utc::now(),
+            action: action.to_string(),
+            target: target.map(|s| s.to_string()),
+            risk_score: *score,
+            decision,
+            reason: String::new(),
+        };
+
+        let mut log = self.audit_log.lock().unwrap();
+        if log.len() >= self.config.audit_capacity {
+            log.remove(0); // ring buffer
+        }
+        log.push(entry);
+
+        debug!(
+            action = action,
+            target = target.unwrap_or(""),
+            score = score.value,
+            level = score.level.as_str(),
+            decision = ?decision,
+            "Safety audit"
+        );
+    }
+
+    /// Record that a user confirmed or denied an action.
+    pub fn record_confirmation(
+        &self,
+        action: &str,
+        target: Option<&str>,
+        score: &RiskScore,
+        approved: bool,
+    ) {
+        let decision = if approved {
+            AuditDecision::Approved
+        } else {
+            AuditDecision::DeniedByConfirmation
+        };
+        self.audit(action, target, score, decision);
+
+        if approved {
+            info!(action = action, "User approved action");
+        } else {
+            warn!(action = action, "User denied action");
+        }
+    }
+
+    /// Get recent audit entries (newest first).
+    pub fn audit_log(&self) -> Vec<AuditEntry> {
+        let log = self.audit_log.lock().unwrap();
+        let mut entries: Vec<AuditEntry> = log.clone();
+        entries.reverse();
+        entries
+    }
+
+    /// Clear audit log.
+    pub fn clear_audit_log(&self) {
+        self.audit_log.lock().unwrap().clear();
+    }
+
+    // -----------------------------------------------------------------------
+    // Accessors
+    // -----------------------------------------------------------------------
+
+    pub fn config(&self) -> &SafetyConfig {
+        &self.config
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.config.enabled
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Safety Decision (result of evaluate())
+// ---------------------------------------------------------------------------
+
+/// Result of evaluating an action through the safety system.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SafetyDecision {
+    pub score: RiskScore,
+    pub allowed: bool,
+    pub needs_confirmation: bool,
+    pub reason: String,
+}

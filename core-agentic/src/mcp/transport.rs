@@ -438,19 +438,13 @@ impl AsyncMcpTransport for AsyncHttpTransport {
 /// Sends requests via HTTP POST and can listen for server-pushed events.
 pub struct AsyncSseTransport {
     http: AsyncHttpTransport,
-    sse_url: Option<String>,
     connected: bool,
 }
 
 impl AsyncSseTransport {
     pub fn new(url: &str, headers: HashMap<String, String>) -> Result<Self, String> {
-        // SSE endpoint is typically at /sse relative to the base URL
-        let base = url.trim_end_matches('/');
-        let sse_url = format!("{}/sse", base);
-
         Ok(Self {
             http: AsyncHttpTransport::new(url, headers)?,
-            sse_url: Some(sse_url),
             connected: false,
         })
     }
@@ -530,7 +524,7 @@ mod tests {
         let result = AsyncSseTransport::new("http://localhost:3001/mcp", HashMap::new());
         assert!(result.is_ok());
         let transport = result.unwrap();
-        assert_eq!(transport.sse_url, Some("http://localhost:3001/mcp/sse".to_string()));
+        assert!(!transport.connected);
     }
 
     #[test]
