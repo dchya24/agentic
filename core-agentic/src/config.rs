@@ -13,6 +13,25 @@ pub struct Config {
     pub mcp_servers: std::collections::HashMap<String, crate::mcp::types::McpServerConfig>,
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// Agent loop knobs (auto-compact, summarizer model). Optional; when
+    /// absent the orchestrator's compiled-in defaults apply.
+    #[serde(default)]
+    pub agent: AgentLoopConfig,
+}
+
+/// Agent-loop configuration: compaction strategy + summarizer model.
+///
+/// All fields are optional. When `auto_compact_with_llm` is true the
+/// orchestrator asks the provider to summarize older messages instead of
+/// using the heuristic string-truncation path. `summarizer_model`
+/// overrides the model used for that call (recommended: a cheaper/faster
+/// model than the main one).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentLoopConfig {
+    #[serde(default)]
+    pub auto_compact_with_llm: bool,
+    #[serde(default)]
+    pub summarizer_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +229,7 @@ impl Config {
             output: OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
             system_prompt: None,
+            agent: AgentLoopConfig::default(),
         })
     }
 
@@ -233,6 +253,7 @@ impl Config {
             output: OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
             system_prompt: None,
+            agent: AgentLoopConfig::default(),
         })
     }
 
@@ -292,6 +313,7 @@ impl Config {
             output: OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
             system_prompt: None,
+            agent: AgentLoopConfig::default(),
         }
     }
 
@@ -381,4 +403,58 @@ fn normalize_model_name(name: &str) -> String {
 pub struct ModelOutput {
     pub name: String,
     pub model: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_config_defaults_when_omitted() {
+        // Older configs without the `agent` block must still parse.
+        let json = r#"{
+            "providers": [{
+                "name": "p",
+                "type": "openai-compatible",
+                "api_base": "https://x",
+                "api_key": "k",
+                "models": [{"model": "m"}]
+            }]
+        }"#;
+        let cfg: Config = serde_json::from_str(json).expect("parse");
+        assert!(!cfg.agent.auto_compact_with_llm);
+        assert!(cfg.agent.summarizer_model.is_none());
+    }
+
+    #[test]
+    fn agent_config_round_trip() {
+        let json = r#"{
+            "providers": [{
+                "name": "p",
+                "type": "openai-compatible",
+                "api_base": "https://x",
+                "api_key": "k",
+                "models": [{"model": "m"}]
+            }],
+            "agent": {
+                "auto_compact_with_llm": true,
+                "summarizer_model": "gpt-4o-mini"
+            }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).expect("parse");
+        assert!(cfg.agent.auto_compact_with_llm);
+        assert_eq!(
+            cfg.agent.summarizer_model.as_deref(),
+            Some("gpt-4o-mini")
+        );
+
+        // Re-serialize and re-parse to confirm the field round-trips.
+        let out = serde_json::to_string(&cfg).expect("serialize");
+        let cfg2: Config = serde_json::from_str(&out).expect("reparse");
+        assert!(cfg2.agent.auto_compact_with_llm);
+        assert_eq!(
+            cfg2.agent.summarizer_model.as_deref(),
+            Some("gpt-4o-mini")
+        );
+    }
 }

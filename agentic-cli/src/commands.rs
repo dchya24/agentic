@@ -173,6 +173,19 @@ impl Commands {
             );
         }
 
+        // Apply agent-loop knobs from config: LLM-based autocompact +
+        // optional summarizer model override. When neither is set the
+        // orchestrator's compiled-in defaults (heuristic compaction,
+        // main model as summarizer) apply.
+        if self.config.agent.auto_compact_with_llm {
+            orchestrator.set_auto_compact_with_llm(true);
+            tracing::info!("LLM-based autocompact enabled");
+        }
+        if let Some(ref summarizer) = self.config.agent.summarizer_model {
+            orchestrator.set_summarizer_model(summarizer.clone());
+            tracing::info!(model = %summarizer, "Summarizer model override");
+        }
+
         orchestrator.set_confirmation_handler(|request| {
             if ALWAYS_CONFIRM.load(Ordering::Relaxed) {
                 return true;
@@ -1186,7 +1199,8 @@ impl Commands {
                 show_tool_calls: true,
             },
             mcp_servers: std::collections::HashMap::new(),
-            system_prompt: None
+            system_prompt: None,
+            agent: core_agentic::AgentLoopConfig::default(),
         };
 
         // Summary
@@ -1266,7 +1280,8 @@ impl Commands {
             safety: core_agentic::SafetyConfig::default(),
             output: core_agentic::OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
-            system_prompt: None
+            system_prompt: None,
+            agent: core_agentic::AgentLoopConfig::default(),
         };
 
         Ok(config)
