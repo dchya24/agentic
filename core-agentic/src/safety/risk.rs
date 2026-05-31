@@ -169,4 +169,11 @@ pub struct ConfirmationRequest {
     pub risk_score: f64,
     pub reason: String,
     pub timestamp: DateTime<Utc>,
+    /// Optional unified-diff preview of the change about to be made.
+    /// Populated for state-changing tools (`write_file`, `edit_file`,
+    /// `apply_patch`) so the user sees the exact change before they
+    /// approve it. `None` for non-file actions or when the preview
+    /// could not be computed (e.g. file unreadable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_diff: Option<String>,
 }

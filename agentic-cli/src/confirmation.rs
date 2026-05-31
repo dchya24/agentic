@@ -5,6 +5,7 @@ use ratatui::{
 };
 
 use crate::widgets::components::{panel, BoxStyle};
+use crate::widgets::diff as diff_widget;
 use crate::widgets::inline;
 
 pub enum ConfirmationResponse {
@@ -65,6 +66,29 @@ pub fn prompt_confirmation(request: &ConfirmationRequest) -> Option<Confirmation
 
     inline::print_blank();
     inline::print_lines(&lines);
+
+    // For state-changing file tools the orchestrator attaches a
+    // preview of the unified diff to the confirmation request. Render
+    // it through the shared diff widget so the operator sees the
+    // exact change before approving.
+    if let Some(ref diff_text) = request.preview_diff {
+        const MAX_PREVIEW_LINES: usize = 60;
+        inline::print_blank();
+        inline::print_line(&diff_widget::summary_line(diff_text));
+        let diff_lines = diff_widget::render(diff_text);
+        if diff_lines.len() > MAX_PREVIEW_LINES {
+            inline::print_lines(&diff_lines[..MAX_PREVIEW_LINES]);
+            let remaining = diff_lines.len() - MAX_PREVIEW_LINES;
+            inline::print_line(&Line::from(Span::styled(
+                format!("    … {} more diff line(s) hidden", remaining),
+                Style::default().add_modifier(Modifier::DIM),
+            )));
+        } else {
+            inline::print_lines(&diff_lines);
+        }
+        inline::print_blank();
+    }
+
     inline::print_line(&Line::from(Span::styled(
         "  > ",
         dim,

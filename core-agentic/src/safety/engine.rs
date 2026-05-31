@@ -438,6 +438,7 @@ impl Safety {
                 score.level.as_str()
             ),
             timestamp: Utc::now(),
+            preview_diff: None,
         }
     }
 
