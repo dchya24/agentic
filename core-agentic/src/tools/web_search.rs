@@ -194,23 +194,65 @@ impl Tool for WebSearchTool {
         let hits = filter_hits_by_policy(hits, &self.url_policy);
         let filtered_out = total_before_filter - hits.len();
 
-        let results: Vec<serde_json::Value> = hits
-            .iter()
+        // Run a prompt-injection scan over each result's title +
+        // snippet. We don't pull the full page (that's `fetch`'s job),
+        // but the snippets themselves are a known injection vector
+        // (e.g. SEO-poisoned pages whose excerpt contains "ignore
+        // previous instructions…"). Per-hit warnings are attached so
+        // the model gets a localized cue, plus an aggregate summary.
+        let mut hit_warnings: Vec<serde_json::Value> = Vec::new();
+        let mut max_severity: f32 = 0.0;
+        let scanned: Vec<(SearchHit, crate::safety::InjectionScan)> = hits
+            .into_iter()
             .map(|h| {
-                serde_json::json!({
+                let combined = format!("{}\n{}", h.title, h.snippet);
+                let scan = crate::safety::scan_injection(&combined);
+                if scan.max_severity > max_severity {
+                    max_severity = scan.max_severity;
+                }
+                (h, scan)
+            })
+            .collect();
+
+        let results: Vec<serde_json::Value> = scanned
+            .iter()
+            .map(|(h, scan)| {
+                let mut obj = serde_json::json!({
                     "title": h.title,
                     "url": h.url,
                     "snippet": h.snippet,
-                })
+                });
+                if !scan.is_clean() {
+                    obj["prompt_injection_warning"] = serde_json::json!({
+                        "matches": scan.matches.clone(),
+                        "max_severity": scan.max_severity,
+                    });
+                    hit_warnings.push(serde_json::json!({
+                        "url": h.url,
+                        "matches": scan.matches.clone(),
+                    }));
+                }
+                obj
             })
             .collect();
+
+        let result_count = results.len();
 
         Ok(serde_json::json!({
             "query": query,
             "backend": backend.id(),
             "results": results,
-            "result_count": hits.len(),
+            "result_count": result_count,
             "filtered_by_allowlist": filtered_out,
+            "prompt_injection_warning": if hit_warnings.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!({
+                    "affected_hits": hit_warnings.len(),
+                    "max_severity": max_severity,
+                    "hits": hit_warnings,
+                })
+            },
         }))
     }
 

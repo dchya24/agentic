@@ -14,11 +14,13 @@
 mod audit;
 mod config;
 mod engine;
+pub mod injection;
 mod risk;
 
 pub use audit::{AuditDecision, AuditEntry, RateLimit};
 pub use config::{RiskPattern, SafetyConfig};
 pub use engine::{Safety, SafetyDecision};
+pub use injection::{scan as scan_injection, InjectionMatch, InjectionScan};
 pub use risk::{ConfirmationRequest, PermissionMode, RiskLevel, RiskScore};
 
 // ---------------------------------------------------------------------------

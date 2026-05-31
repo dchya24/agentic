@@ -194,6 +194,24 @@ impl Tool for FetchTool {
 
         let total = cleaned.len();
         let truncated = total > max_chars;
+
+        // Scan the cleaned body (pre-truncation, but capped at the
+        // first 25k chars to bound regex work) for prompt-injection
+        // patterns. Done before `cleaned` is consumed by the truncation
+        // branch below.
+        let scan = {
+            let scan_window: &str = if cleaned.len() > 25_000 {
+                let mut end = 25_000;
+                while end > 0 && !cleaned.is_char_boundary(end) {
+                    end -= 1;
+                }
+                &cleaned[..end]
+            } else {
+                &cleaned
+            };
+            crate::safety::scan_injection(scan_window)
+        };
+
         let body_out = if truncated {
             // Slice on a UTF-8 boundary.
             let mut end = max_chars;
@@ -210,12 +228,26 @@ impl Tool for FetchTool {
             cleaned
         };
 
+        // When the scan flags something, prepend a short reminder so
+        // the model gets a clear cue this content is data not
+        // instructions. The structured `prompt_injection_warning`
+        // field carries the same info for programmatic consumers.
+        let body_out = if scan.is_clean() {
+            body_out
+        } else {
+            format!("{}{}", scan.reminder_prefix(), body_out)
+        };
+
         Ok(serde_json::json!({
             "url": url,
             "content": body_out,
             "total_chars": total,
             "truncated": truncated,
             "cached": cached,
+            "prompt_injection_warning": if scan.is_clean() { serde_json::Value::Null } else { serde_json::json!({
+                "matches": scan.matches,
+                "max_severity": scan.max_severity,
+            }) },
         }))
     }
 
@@ -356,6 +388,11 @@ mod tests {
             .expect_err("IP URL should be rejected");
         assert!(err.to_string().contains("IP-literal"));
     }
+
+    // Note: the prompt-injection wiring is exercised end-to-end via the
+    // injection module's own tests plus the web_search filter test below.
+    // Hitting fetch() requires a network call; the injection scan path is
+    // stand-alone in `safety::injection`.
 
     #[test]
     fn is_htmlish_detects_content_type() {
