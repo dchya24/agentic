@@ -230,6 +230,20 @@ impl Orchestrator {
     pub fn clear_memory(&self) {
         self.memory.lock().unwrap().clear();
     }
+
+    /// Search the conversation memory for messages whose content contains
+    /// the given query (case-insensitive). Returns owned snippets so the
+    /// caller doesn't need to hold the memory lock.
+    ///
+    /// Each result is `(role, content)`. The newest matches come last,
+    /// matching insertion order in `Memory`.
+    pub fn search_memory(&self, query: &str) -> Vec<(crate::memory::MessageRole, String)> {
+        let mem = self.memory.lock().unwrap();
+        mem.search(query)
+            .into_iter()
+            .map(|m| (m.role.clone(), m.content.clone()))
+            .collect()
+    }
 }
 
 #[cfg(test)]

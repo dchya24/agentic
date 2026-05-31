@@ -556,6 +556,83 @@ impl Commands {
         }
     }
 
+    // ── Memory search (for REPL /search) ────────────────────
+
+    /// Render a `/search <query>` result against the current orchestrator's
+    /// conversation memory. No-op (with a hint) if the orchestrator hasn't
+    /// been initialized yet — i.e. before the first turn.
+    pub fn search_memory_inline(&self, query: &str) {
+        let query = query.trim();
+        if query.is_empty() {
+            inline::print_blank();
+            inline::print_line(&components::warning_badge("Search query is empty."));
+            inline::print_blank();
+            return;
+        }
+
+        let orch = match self.orchestrator.as_ref() {
+            Some(o) => o,
+            None => {
+                inline::print_blank();
+                inline::print_line(&components::warning_badge(
+                    "No conversation history yet — send a message first.",
+                ));
+                inline::print_blank();
+                return;
+            }
+        };
+
+        let hits = orch.search_memory(query);
+
+        inline::print_blank();
+        inline::print_line(&components::section_header(
+            "🔍",
+            &format!("Memory search: \"{}\" — {} match(es)", query, hits.len()),
+            RColor::Cyan,
+        ));
+        inline::print_blank();
+
+        if hits.is_empty() {
+            inline::print_line(&components::warning_badge(
+                "No messages match. Try a shorter query or different keyword.",
+            ));
+            inline::print_blank();
+            return;
+        }
+
+        let bold = RStyle::default().add_modifier(RModifier::BOLD);
+        let dim = RStyle::default().add_modifier(RModifier::DIM);
+
+        for (i, (role, content)) in hits.iter().enumerate() {
+            let (role_label, role_color) = match role {
+                core_agentic::MessageRole::User => ("user", RColor::Cyan),
+                core_agentic::MessageRole::Assistant => ("assistant", RColor::Green),
+                core_agentic::MessageRole::System => ("system", RColor::Yellow),
+                core_agentic::MessageRole::Tool { tool_name, .. } => {
+                    (tool_name.as_str(), RColor::Magenta)
+                }
+            };
+
+            inline::print_line(&RLine::from(vec![
+                RSpan::styled(format!("  [{}] ", i + 1), dim),
+                RSpan::styled(
+                    role_label.to_string(),
+                    RStyle::default()
+                        .fg(role_color)
+                        .add_modifier(RModifier::BOLD),
+                ),
+            ]));
+
+            for snippet in extract_match_snippets(content, query, 80, 2) {
+                inline::print_line(&RLine::from(vec![
+                    RSpan::raw("      "),
+                    RSpan::styled(snippet, bold),
+                ]));
+            }
+            inline::print_blank();
+        }
+    }
+
     // ── Examples ────────────────────────────────────────────
 
     pub fn examples(&self) {
@@ -1781,4 +1858,136 @@ fn print_error(text: &str, _color_enabled: bool) {
 
 fn print_info(text: &str) {
     inline::print_line(&components::info_badge(text));
+}
+
+/// Extract up to `max_snippets` short windows around occurrences of
+/// `query` in `content`. Each window is bounded by `max_chars`, breaks
+/// on UTF-8 boundaries, and is prefixed/suffixed with an ellipsis when
+/// truncated.
+///
+/// The match itself is preserved verbatim; we don't attempt to highlight
+/// the matched substring inside the snippet (that would require a richer
+/// span builder than the rest of the inline renderer expects).
+fn extract_match_snippets(
+    content: &str,
+    query: &str,
+    max_chars: usize,
+    max_snippets: usize,
+) -> Vec<String> {
+    if query.is_empty() {
+        return vec![truncate_one_line(content, max_chars)];
+    }
+
+    let lower_content = content.to_lowercase();
+    let lower_query = query.to_lowercase();
+
+    let mut out = Vec::with_capacity(max_snippets);
+    let mut search_from = 0usize;
+    let context = max_chars / 2;
+
+    while out.len() < max_snippets {
+        let Some(rel) = lower_content[search_from..].find(&lower_query) else {
+            break;
+        };
+        let match_start = search_from + rel;
+        let match_end = match_start + lower_query.len();
+
+        // Window: pad `context` chars before/after the match, snapped to
+        // UTF-8 boundaries.
+        let start = floor_char_boundary(content, match_start.saturating_sub(context));
+        let end = ceil_char_boundary(content, (match_end + context).min(content.len()));
+        let mut snippet = String::new();
+        if start > 0 {
+            snippet.push_str("…");
+        }
+        snippet.push_str(content[start..end].replace('\n', " ").trim());
+        if end < content.len() {
+            snippet.push('…');
+        }
+        out.push(snippet);
+
+        // Advance past this match so we don't loop on the same hit.
+        search_from = match_end;
+    }
+
+    if out.is_empty() {
+        out.push(truncate_one_line(content, max_chars));
+    }
+    out
+}
+
+fn truncate_one_line(s: &str, max_chars: usize) -> String {
+    let one = s.replace('\n', " ");
+    if one.chars().count() <= max_chars {
+        return one;
+    }
+    let cut = floor_char_boundary(&one, max_chars);
+    format!("{}…", &one[..cut])
+}
+
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
+    let len = s.len();
+    if i >= len {
+        return len;
+    }
+    while i < len && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+#[cfg(test)]
+mod search_snippet_tests {
+    use super::*;
+
+    #[test]
+    fn extract_finds_substring_case_insensitive() {
+        let s = "Hello WORLD, this is a test. The world is round.";
+        let snips = extract_match_snippets(s, "world", 40, 5);
+        assert_eq!(snips.len(), 2);
+        assert!(snips[0].to_lowercase().contains("world"));
+        assert!(snips[1].to_lowercase().contains("world"));
+    }
+
+    #[test]
+    fn extract_respects_max_snippets() {
+        let s = "foo ".repeat(50);
+        let snips = extract_match_snippets(&s, "foo", 40, 3);
+        assert_eq!(snips.len(), 3);
+    }
+
+    #[test]
+    fn extract_falls_back_to_truncated_line_when_no_match() {
+        let s = "some content with no needle";
+        let snips = extract_match_snippets(s, "needle", 10, 2);
+        // "needle" *is* in s; ensure positive case still works.
+        assert_eq!(snips.len(), 1);
+        assert!(snips[0].to_lowercase().contains("needle"));
+
+        let snips = extract_match_snippets("unrelated text", "missing", 8, 2);
+        assert_eq!(snips.len(), 1);
+        // Truncated to ~8 chars + ellipsis.
+        assert!(snips[0].chars().count() <= 9);
+    }
+
+    #[test]
+    fn extract_handles_utf8_boundaries() {
+        let s = "你好世界 你好世界";
+        let snips = extract_match_snippets(s, "世界", 6, 5);
+        assert!(!snips.is_empty());
+        // Must not panic and must contain the query.
+        for snip in &snips {
+            assert!(snip.contains("世界"));
+        }
+    }
 }

@@ -924,6 +924,9 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                     print_response_summary(&stats, elapsed.as_millis());
                                 }
                             }
+                            ReplAction::Search(query) => {
+                                commands.search_memory_inline(&query);
+                            }
                         }
                     }
                     continue;
@@ -1034,6 +1037,7 @@ enum ReplAction {
     ModelsSwitch(String),
     Mcp,
     Plan(String),
+    Search(String),
 }
 
 fn handle_slash_command(input: &str) -> Option<ReplAction> {
@@ -1083,6 +1087,15 @@ fn handle_slash_command(input: &str) -> Option<ReplAction> {
         "/plan" => {
             inline::print_blank();
             inline::print_line(&components::warning_badge("Usage: /plan <goal>"));
+            inline::print_blank();
+            None
+        }
+        "/search" | "/find" if !arg.is_empty() => Some(ReplAction::Search(arg)),
+        "/search" | "/find" => {
+            inline::print_blank();
+            inline::print_line(&components::warning_badge(
+                "Usage: /search <query>  (case-insensitive substring match over conversation memory)",
+            ));
             inline::print_blank();
             None
         }
@@ -1288,6 +1301,7 @@ fn print_help() {
 - `/save <file>`       Export conversation to file
 - `/load <file>`       Load conversation from file
 - `/plan <goal>`       Create a plan for a goal
+- `/search <query>`    Search conversation memory (case-insensitive)
 - `/provider <name>`   Switch provider (not yet supported)
 - `/models`            List & switch models (interactive picker)
 - `/models <name>`     Switch to model by name (partial match ok)
