@@ -1,3 +1,4 @@
+pub mod apply_patch;
 pub mod edit_file;
 pub mod fetch;
 pub mod glob;
@@ -12,6 +13,7 @@ pub mod update_memory;
 pub mod web_search;
 pub mod write_file;
 
+pub use apply_patch::ApplyPatchTool;
 pub use edit_file::EditFileTool;
 pub use fetch::FetchTool;
 pub use glob::GlobTool;
@@ -56,6 +58,7 @@ pub fn builtin_tools_with(
         Box::new(ReadFileTool::with_tracker(tracker.clone())),
         Box::new(WriteFileTool::new()),
         Box::new(EditFileTool::with_tracker(tracker.clone())),
+        Box::new(ApplyPatchTool::with_tracker(tracker.clone())),
         Box::new(ListFilesTool::new()),
         Box::new(GlobTool::new()),
         Box::new(GrepTool::new()),
