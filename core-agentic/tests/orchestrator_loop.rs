@@ -164,37 +164,6 @@ fn cancel_flag_aborts_loop_at_iteration_boundary() {
     );
 }
 
-/// Budget cap: pre-load cumulative cost over budget; the next iteration
-/// must bail before calling the provider.
-#[test]
-fn budget_cap_aborts_loop_when_exceeded() {
-    let provider: Arc<dyn LLMProvider> =
-        Arc::new(ScriptedProvider::new(vec![support::text_response_with_usage(
-            "should never reach me",
-            0,
-            0,
-        )]));
-
-    let tools = ToolRegistry::new();
-    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
-        tools.register(t);
-    }
-
-    let mut orch = Orchestrator::new(provider, tools);
-    orch.set_model("gpt-4o-mini");
-    orch.set_budget_usd(Some(0.001));
-    // Pre-charge well past the cap.
-    orch.record_usage(1_000_000, 1_000_000); // ~$0.75
-
-    let err = orch.run("anything").expect_err("budget should block");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("Budget exceeded"),
-        "expected budget error, got: {}",
-        msg
-    );
-}
-
 /// Event emission: every tool call must surface as a ToolCall event
 /// followed by a ToolOutput event, in the same order as execution.
 #[test]
@@ -294,13 +263,13 @@ fn memory_records_full_turn_history() {
     );
 }
 
-/// Safety record + reset: clearing memory and cumulative cost should
-/// give a fresh state without re-creating the orchestrator.
+/// Safety record + reset: clearing memory should give a fresh state
+/// without re-creating the orchestrator.
 #[test]
-fn restart_session_workflow_resets_memory_and_cost() {
+fn restart_session_workflow_resets_memory() {
     let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
-        support::text_response_with_usage("first", 1_000, 500),
-        support::text_response_with_usage("second", 500, 250),
+        support::text_response("first"),
+        support::text_response("second"),
     ]));
 
     let tools = ToolRegistry::new();
@@ -308,27 +277,17 @@ fn restart_session_workflow_resets_memory_and_cost() {
         tools.register(t);
     }
 
-    let mut orch = Orchestrator::new(provider, tools);
-    orch.set_model("gpt-4o-mini");
+    let orch = Orchestrator::new(provider, tools);
     orch.set_permission_mode(PermissionMode::Yolo);
 
     let _ = orch.run("first turn").expect("ok");
-    let cost_after_first = orch.cumulative_cost_usd().unwrap();
-    assert!(cost_after_first > 0.0);
     assert!(!orch.search_memory("first turn").is_empty());
 
     // Simulate the /restart slash command's effect.
     orch.clear_memory();
-    orch.reset_cumulative_cost();
-
     assert!(orch.search_memory("first turn").is_empty());
-    assert_eq!(orch.cumulative_cost_usd(), Some(0.0));
 
     // Second turn uses a fresh memory.
     let answer = orch.run("second turn").expect("ok");
     assert_eq!(answer, "second");
-    let cost_after_second = orch.cumulative_cost_usd().unwrap();
-    // Cost is fresh from the reset, not cumulative.
-    assert!(cost_after_second > 0.0);
-    assert!(cost_after_second < cost_after_first);
 }

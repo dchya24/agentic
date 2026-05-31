@@ -84,36 +84,29 @@
 - [x] 8.0 `/search <query>` slash command surfaces `Memory::search`
 - [x] 8.1 Snippet renderer with role badges + UTF-8-safe windowing
 
-### Phase 6 — Cost tracking (✅ done)
+### Phase 6 — Confirmation UX (✅ done)
 
-- [x] 9.0 Status-bar `💰` segment showing cumulative provider cost
-- [x] 9.1 `/stats` Cost subsection with $X.XXXX / `-` for unknown
-- [x] 9.2 Mirrors `Orchestrator::cumulative_cost_usd()` after each turn
-
-### Phase 7 — Confirmation UX (✅ done)
-
-- [x] 10.0 Diff preview in the confirmation prompt for `write_file` /
+- [x] 9.0 Diff preview in the confirmation prompt for `write_file` /
       `edit_file` / `apply_patch` (rendered through `widgets::diff`)
-- [x] 10.1 60-line cap with `… N more diff line(s) hidden` notice
+- [x] 9.1 60-line cap with `… N more diff line(s) hidden` notice
 
-### Phase 8 — Session control + context indicators (✅ done)
+### Phase 7 — Session control + context indicators (✅ done)
 
-- [x] 11.0 `/restart` (alias `/reset`) slash command
-  - [x] 11.1 Drops conversation memory in-place
-  - [x] 11.2 Resets cumulative cost to zero (clears any "unknown pricing" poisoning)
-  - [x] 11.3 Clears pending cancel flag + accumulated event handlers
-  - [x] 11.4 Keeps provider, tools, system prompt, AGENT.md, persistent memory loaded
-  - [x] 11.5 SessionStats `reset()` zeroes status-bar counters
-- [x] 12.0 Status-line indicators for AGENT.md + persistent memory
-  - [x] 12.1 `Commands` records `agent_md_path` + `memory_md_loaded` during init
-  - [x] 12.2 Banner panel shows a `🔗 ctx  📄 AGENT.md  ·  🧠 memory.md` line when present
-  - [x] 12.3 Status bar shows the same chips on a second row when present
+- [x] 10.0 `/restart` (alias `/reset`) slash command
+  - [x] 10.1 Drops conversation memory in-place
+  - [x] 10.2 Clears pending cancel flag + accumulated event handlers
+  - [x] 10.3 Keeps provider, tools, system prompt, AGENT.md, persistent memory loaded
+  - [x] 10.4 SessionStats `reset()` zeroes status-bar counters
+- [x] 11.0 Status-line indicators for AGENT.md + persistent memory
+  - [x] 11.1 `Commands` records `agent_md_path` + `memory_md_loaded` during init
+  - [x] 11.2 Banner panel shows a `🔗 ctx  📄 AGENT.md  ·  🧠 memory.md` line when present
+  - [x] 11.3 Status bar shows the same chips on a second row when present
 
-### Phase 9 — Testing & docs
+### Phase 8 — Testing & docs
 
-- [x] 13.0 Unit tests for argument parsing + widget helpers
-- [x] 13.1 README in `agentic-cli/`
-- [ ] 13.2 End-to-end smoke test for `agentic run` against a mock provider
+- [x] 12.0 Unit tests for argument parsing + widget helpers
+- [x] 12.1 README in `agentic-cli/`
+- [ ] 12.2 End-to-end smoke test for `agentic run` against a mock provider
 
 ### Open / future work
 

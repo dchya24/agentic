@@ -2,8 +2,6 @@
 
 pub mod openai;
 pub mod anthropic;
-pub mod zai;
-pub mod failover;
 
 pub use openai::{OpenAIProvider, OpenAIProviderConfig};
 pub use anthropic::{
@@ -19,8 +17,6 @@ pub use anthropic::{
     AnthropicStreamDelta,
     AnthropicUsage,
 };
-pub use zai::{ZaiProvider, ZaiProviderConfig, ZaiModelConfig};
-pub use failover::FailoverProvider;
 
 use serde::{Deserialize, Serialize};
 

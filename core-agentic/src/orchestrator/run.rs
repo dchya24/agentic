@@ -69,20 +69,6 @@ impl Orchestrator {
                 return Err(AgenticError::Cancelled);
             }
 
-            if self.budget_exceeded() {
-                let cap = self.budget_usd.unwrap_or(0.0);
-                let spent = self.cumulative_cost_usd().unwrap_or(0.0);
-                tracing::warn!(
-                    cap_usd = cap,
-                    spent_usd = spent,
-                    "Budget exceeded; cancelling agent loop"
-                );
-                return Err(AgenticError::Provider(format!(
-                    "Budget exceeded: ${:.4} spent of ${:.4} cap",
-                    spent, cap
-                )));
-            }
-
             self.maybe_autocompact();
 
             let messages = self.build_messages();
@@ -96,11 +82,6 @@ impl Orchestrator {
                 .provider
                 .chat(request)
                 .map_err(|e| AgenticError::Provider(e.to_string()))?;
-
-            // Record usage + emit event before processing the response.
-            if let Some(usage) = response.usage.as_ref() {
-                self.record_usage(usage.prompt_tokens, usage.completion_tokens);
-            }
 
             let content = response.message.content.clone().unwrap_or_default();
 
@@ -199,20 +180,6 @@ impl Orchestrator {
                 return Err(AgenticError::Cancelled);
             }
 
-            if self.budget_exceeded() {
-                let cap = self.budget_usd.unwrap_or(0.0);
-                let spent = self.cumulative_cost_usd().unwrap_or(0.0);
-                tracing::warn!(
-                    cap_usd = cap,
-                    spent_usd = spent,
-                    "Budget exceeded; cancelling agent stream loop"
-                );
-                return Err(AgenticError::Provider(format!(
-                    "Budget exceeded: ${:.4} spent of ${:.4} cap",
-                    spent, cap
-                )));
-            }
-
             self.maybe_autocompact();
 
             let messages = self.build_messages();
@@ -250,15 +217,6 @@ impl Orchestrator {
                                     if let Some(args) = tc.function_arguments {
                                         entry.2.push_str(&args);
                                     }
-                                }
-                                // Final chunk usage — emit Event::Usage and
-                                // update cumulative-cost. Provider drivers
-                                // attach this on the last delta of a turn.
-                                if let Some(usage) = chunk.usage {
-                                    self.record_usage(
-                                        usage.prompt_tokens,
-                                        usage.completion_tokens,
-                                    );
                                 }
                             }
                             Err(e) => {

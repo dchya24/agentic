@@ -2,7 +2,7 @@
 //! integration tests.
 
 use core_agentic::providers::{
-    ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, ChatUsage, LLMProvider,
+    ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, LLMProvider,
     ProviderError, ProviderResult, StreamResult, ToolCallFunction, ToolCallResponse,
 };
 use std::sync::Mutex;
@@ -101,18 +101,6 @@ pub fn text_response(s: &str) -> ChatResponse {
         finish_reason: Some("stop".to_string()),
         usage: None,
     }
-}
-
-/// Same as [`text_response`] but attaches usage so cost-tracking tests
-/// can drive the cumulative-cost path through `record_usage`.
-pub fn text_response_with_usage(s: &str, in_tok: u32, out_tok: u32) -> ChatResponse {
-    let mut r = text_response(s);
-    r.usage = Some(ChatUsage {
-        prompt_tokens: in_tok,
-        completion_tokens: out_tok,
-        total_tokens: in_tok + out_tok,
-    });
-    r
 }
 
 /// Per-test temp dir under the system tmp. Avoids collisions with

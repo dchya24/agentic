@@ -18,7 +18,7 @@
 - `core-agentic/src/memory/` — Context/memory (mod, types, store, compaction, persist)
 - `core-agentic/src/safety/` — Risk + permissions (mod, risk, config, audit, engine)
 - `core-agentic/src/events.rs` — Event emitter + types
-- `core-agentic/src/providers/` — `openai`, `anthropic`, `failover`
+- `core-agentic/src/providers/` — `openai`, `anthropic`
 - `core-agentic/src/tools/` — Built-in tools (read, write, edit, list, search, glob, grep, run_command, run_script, fetch, web_search, update_memory, spawn_subagent)
 - `core-agentic/src/prompts.rs` — Default system prompt + AGENT.md loading
 - `core-agentic/src/file_tracker.rs` — Read/edit staleness detection
@@ -137,26 +137,13 @@
 
 - [x] 15.0 Unit tests (290+ across the crate; see milestone docs)
 - [x] 15.1 Integration tests for the orchestrator agent loop
-      (`tests/orchestrator_loop.rs`: 8 end-to-end tests covering happy
-      path, max-iterations, plan-mode denial, cancel, budget cap, event
-      emission, memory recording, restart workflow)
+      (`tests/orchestrator_loop.rs`: 7 end-to-end tests covering happy
+      path, max-iterations, plan-mode denial, cancel, event emission,
+      memory recording, restart workflow)
 - [x] 16.0 Architecture docs
   - [x] 16.1 `AGENT_ARCHITECTURE.md` reference
   - [x] 16.2 Three milestone docs (foundational / quality-of-life / additions)
   - [x] 16.3 Architecture alignment overview
-
-### Phase 9 — Cost & budget (✅ done)
-
-- [x] 17.0 Per-token pricing module (`pricing.rs`)
-  - [x] 17.1 Built-in rates for OpenAI / Anthropic / DeepSeek / GLM
-  - [x] 17.2 Longest-`contains` fallback for vendor-suffixed model names
-  - [x] 17.3 `Config.agent.pricing` per-model overrides
-- [x] 18.0 Cost tracking on `Orchestrator`
-  - [x] 18.1 `record_usage()` updates cumulative cost on every chat call
-  - [x] 18.2 `Event::Usage { model, input_tokens, output_tokens, cost_usd, cumulative_cost_usd }`
-  - [x] 18.3 Soft USD budget cap (`Config.agent.budget_usd`)
-  - [x] 18.4 Loop bails with `"Budget exceeded"` at next iteration when over cap
-  - [x] 18.5 Streaming providers attach `usage` to the final chunk
 
 ### Open / future work
 

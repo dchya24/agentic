@@ -19,7 +19,6 @@ pub mod tool_registry;
 pub mod mcp;
 pub mod tools;
 pub mod planner;
-pub mod pricing;
 pub mod prompts;
 pub mod attachments;
 pub mod capabilities;
@@ -67,8 +66,6 @@ pub use tools::{
 // Re-export provider implementations
 pub use providers::openai::OpenAIProvider;
 pub use providers::anthropic::AnthropicProvider;
-pub use providers::zai::ZaiProvider;
-pub use providers::failover::FailoverProvider;
 pub use providers::{ModelInfo, ModelCapability};
 
 pub type Result<T> = std::result::Result<T, AgenticError>;

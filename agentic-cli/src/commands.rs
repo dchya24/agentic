@@ -213,17 +213,6 @@ impl Commands {
             orchestrator.set_summarizer_model(summarizer.clone());
             tracing::info!(model = %summarizer, "Summarizer model override");
         }
-        if let Some(budget) = self.config.agent.budget_usd {
-            orchestrator.set_budget_usd(Some(budget));
-            tracing::info!(budget_usd = budget, "Cost budget cap active");
-        }
-        if !self.config.agent.pricing.is_empty() {
-            orchestrator.set_pricing_overrides(self.config.agent.pricing.clone());
-            tracing::info!(
-                count = self.config.agent.pricing.len(),
-                "Loaded pricing overrides"
-            );
-        }
 
         orchestrator.set_confirmation_handler(|request| {
             if ALWAYS_CONFIRM.load(Ordering::Relaxed) {
@@ -365,16 +354,6 @@ impl Commands {
 
     // ── List tools (for REPL /tools) ────────────────────────
 
-    /// Cumulative provider cost in USD since the orchestrator was
-    /// initialized for this `Commands` instance. Returns `None` if the
-    /// orchestrator hasn't run yet, or if any turn used a model with
-    /// unknown pricing and no override was supplied.
-    pub fn cumulative_cost_usd(&self) -> Option<f64> {
-        self.orchestrator
-            .as_ref()
-            .and_then(|o| o.cumulative_cost_usd())
-    }
-
     /// Path to the `AGENT.md` that was loaded into the system prompt for
     /// this session, or `None` when no project instructions were found.
     /// Set during the first `ensure_orchestrator()` call.
@@ -503,7 +482,6 @@ impl Commands {
     pub fn restart_session(&mut self) {
         if let Some(orch) = self.orchestrator.as_ref() {
             orch.clear_memory();
-            orch.reset_cumulative_cost();
             orch.reset_cancel();
             orch.clear_event_handlers();
         }

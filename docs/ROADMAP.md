@@ -37,21 +37,21 @@ Foundation is complete; coverage of the architecture spec is at ~95%.
 
 | Layer | Surface |
 |-------|---------|
-| Loop | `Orchestrator::run` (sync) and `run_stream` (async, with concurrent read-only batches). Max-iterations cap. Cooperative cancel via shared `Arc<AtomicBool>`. Soft USD budget cap. |
+| Loop | `Orchestrator::run` (sync) and `run_stream` (async, with concurrent read-only batches). Max-iterations cap. Cooperative cancel via shared `Arc<AtomicBool>`. |
 | Tools | read / write / edit / list / glob / grep / search / run_command / run_script / fetch / web_search / update_memory / spawn_subagent / apply_patch (14 builtins). |
 | Memory | Token-budget context window, message pinning, session isolation, disk persistence, keyword search, optional tiktoken backend. |
 | Safety | Risk scoring (0.0–1.0), pattern-based detection, hard blocklist, path sandboxing, URL allowlist (+ optional IP-literal block), per-tool rate limiting, audit log, permission modes (`default` / `plan` / `yolo`). Prompt-injection scanner for content brought in by `fetch` / `web_search`. |
 | Compression | Three-layer pipeline: tool-result truncation → older tool-result clearing → autocompact (heuristic or LLM-driven) at ~85% of token budget. |
-| Providers | OpenAI (+ compatible), Anthropic, ZAI, failover wrapper. Streaming usage on the final chunk. |
+| Providers | OpenAI-compatible, Anthropic-compatible. |
+| Vision | Image attachments (PNG/JPEG/GIF/WebP) flow through `core_agentic::Attachment`; OpenAI-compatible providers serialize them as multimodal content. Per-model `ModelCapabilities` gate the request before dispatch. |
 | MCP | stdio + HTTP + SSE transports. |
-| Cost | Built-in pricing for OpenAI / Anthropic / DeepSeek / GLM. Per-model overrides via config. `Event::Usage` per chat call. |
 
 ### CLI (`agentic-cli`)
 
 | Layer | Surface |
 |-------|---------|
 | Modes | `agentic run`, `agentic interactive`, `agentic tui`, `agentic config …`. `--mode default|plan|yolo`. |
-| REPL | Reedline + slash commands (`/help`, `/clear`, `/config`, `/history`, `/tools`, `/stats`, `/mcp`, `/save`, `/load`, `/provider`, `/models`, `/plan`, `/search`, `/quit`). `@` file completion, `/` command completion. Resize-safe full-width prompt. Status bar surfaces model / provider / tokens / cost / elapsed. |
+| REPL | Reedline + slash commands (`/help`, `/clear`, `/config`, `/history`, `/tools`, `/stats`, `/mcp`, `/save`, `/load`, `/provider`, `/models`, `/plan`, `/search`, `/image`, `/restart`, `/quit`). `@` file completion (auto-detects images for vision channel), `/` command completion. Resize-safe full-width prompt. Status bar surfaces model / provider / tokens / vision indicator / elapsed. |
 | Widgets | One ratatui-based stack used by inline + TUI: markdown, spinner, progress, panels, badges, headers, tool-call panel, unified-diff renderer. Capability detection (`NO_COLOR`, `TERM=dumb`, isatty, `--color`). Zero raw `\x1b[` escapes in the source. |
 | Safety UX | Risk-coloured confirmation panel. Diff preview in the confirmation prompt for `write_file` / `edit_file` / `apply_patch`. |
 | Cancel | Two-stage Ctrl+C → cooperative cancel (process-global `Arc<AtomicBool>`). |
@@ -67,7 +67,7 @@ Sized by effort. Each item has its own home in
 ### Quick wins (under a day each)
 
 - [x] **`/restart` REPL command.** Mid-session reset of memory + cancel
-      flag + cumulative cost, without quitting the process.
+      flag, without quitting the process.
       *(landed; alias `/reset`)*
 - [x] **Status-line indicators for `AGENT.md` + persistent memory.**
       Banner + status bar surface `📄 AGENT.md` / `🧠 memory.md`
@@ -75,14 +75,13 @@ Sized by effort. Each item has its own home in
 
 ### Medium (2–4 days)
 
-- [x] **Integration tests for the orchestrator agent loop.** 8 tests in
+- [x] **Integration tests for the orchestrator agent loop.** 7 tests in
       `core-agentic/tests/orchestrator_loop.rs` covering happy-path tool
       execution, max-iterations cap, plan-mode denial, cooperative
-      cancel, budget cap, event emission, memory recording, and the
+      cancel, event emission, memory recording, and the
       `/restart` workflow.
-- [ ] **Streaming markdown polish.** Today the streaming path renders code
-      fences as plain text; the parser exists in `widgets::markdown` but
-      isn't applied to delta chunks.
+- [x] **Streaming markdown polish.** `MarkdownContent::parse_partial`
+      auto-closes unclosed code fences for in-flight delta streams.
 - [ ] **End-to-end smoke test** for `agentic run` against a mock provider,
       so refactors flag regressions before they hit a release.
 
