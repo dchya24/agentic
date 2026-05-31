@@ -706,6 +706,145 @@ impl Commands {
         }
     }
 
+    // ── Plan (for REPL /plan) ───────────────────────────
+
+    /// Plan a goal through `core_agentic::PlannerAgent`: ask the model
+    /// for a step-by-step plan, render it for the operator, and ask for
+    /// approval before executing the steps.
+    ///
+    /// This replaces the older 'just-prefix-the-prompt' fallback. The
+    /// orchestrator and tool registry are reused from the current
+    /// session so plan steps run with the same safety + permissions as
+    /// regular turns.
+    pub async fn plan_inline(&mut self, goal: &str) -> anyhow::Result<()> {
+        let goal = goal.trim();
+        if goal.is_empty() {
+            inline::print_blank();
+            inline::print_line(&components::warning_badge("Plan goal is empty."));
+            inline::print_blank();
+            return Ok(());
+        }
+
+        self.ensure_orchestrator()?;
+
+        // Build a fresh PlannerAgent against the same provider.
+        let provider_config = self
+            .config
+            .to_provider_config()
+            .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
+        let provider: std::sync::Arc<dyn core_agentic::LLMProvider> =
+            std::sync::Arc::new(core_agentic::OpenAIProvider::new(provider_config));
+        let planner = core_agentic::PlannerAgent::new(provider);
+
+        // Reuse the orchestrator's tool registry so steps see the same
+        // tool surface (including allowlist + tracker).
+        let tools = match self.orchestrator.as_ref() {
+            Some(o) => o.tool_registry().clone(),
+            None => {
+                let tracker = std::sync::Arc::new(
+                    core_agentic::file_tracker::FileTracker::new(),
+                );
+                let registry = ToolRegistry::new();
+                for t in core_agentic::tools::builtin_tools_with(
+                    tracker,
+                    self.config.url_policy(),
+                ) {
+                    registry.register(t);
+                }
+                registry
+            }
+        };
+
+        inline::print_blank();
+        inline::print_line(&components::section_header(
+            "🗺️",
+            &format!("Planning: {}", goal),
+            RColor::Cyan,
+        ));
+        inline::print_blank();
+
+        let plan = match planner.create_plan(goal, &tools) {
+            Ok(p) => p,
+            Err(e) => {
+                inline::print_line(&components::error_badge(&format!(
+                    "Failed to create plan: {}",
+                    e
+                )));
+                inline::print_blank();
+                return Ok(());
+            }
+        };
+
+        // Render the plan as a numbered list.
+        let dim = RStyle::default().add_modifier(RModifier::DIM);
+        let bold = RStyle::default().add_modifier(RModifier::BOLD);
+        for (i, step) in plan.steps.iter().enumerate() {
+            let mut spans = vec![
+                RSpan::styled(format!("  {:>2}. ", i + 1), dim),
+                RSpan::styled(step.description.clone(), bold),
+            ];
+            if let Some(ref tool) = step.tool {
+                spans.push(RSpan::styled(
+                    format!("  [↳ {}]", tool),
+                    RStyle::default().fg(RColor::Cyan),
+                ));
+            }
+            inline::print_line(&RLine::from(spans));
+            if !step.depends_on.is_empty() {
+                inline::print_line(&RLine::from(vec![
+                    RSpan::raw("      "),
+                    RSpan::styled(
+                        format!("depends on steps: {:?}", step.depends_on),
+                        dim,
+                    ),
+                ]));
+            }
+        }
+        inline::print_blank();
+
+        // Approval prompt. Re-use the existing dialoguer Confirm
+        // since the planner's approval is binary.
+        let proceed = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Execute this plan?")
+            .default(false)
+            .interact()
+            .unwrap_or(false);
+        if !proceed {
+            inline::print_line(&components::warning_badge("Plan rejected. Nothing executed."));
+            inline::print_blank();
+            return Ok(());
+        }
+
+        // Execute. The planner emits ToolCall/ToolOutput events; we don't
+        // hook them up here for inline mode (keeping output simple for
+        // the first cut). Future work can pipe them through the same
+        // event renderer the run() path uses.
+        let mut plan = plan;
+        match planner.execute_plan(&mut plan, &tools) {
+            Ok(result) => {
+                inline::print_blank();
+                inline::print_line(&components::section_header(
+                    "✅",
+                    &format!(
+                        "Plan complete — {} succeeded, {} failed",
+                        result.steps_completed, result.steps_failed
+                    ),
+                    RColor::Green,
+                ));
+                inline::print_blank();
+            }
+            Err(e) => {
+                inline::print_blank();
+                inline::print_line(&components::error_badge(&format!(
+                    "Plan execution failed: {}",
+                    e
+                )));
+                inline::print_blank();
+            }
+        }
+        Ok(())
+    }
+
     // ── Examples ────────────────────────────────────────────
 
     pub fn examples(&self) {

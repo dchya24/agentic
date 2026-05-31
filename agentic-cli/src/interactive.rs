@@ -954,11 +954,8 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                 stats.increment_messages();
 
                                 print_turn_separator();
-                                // commands.run() owns its own transient spinner now.
                                 let start = Instant::now();
-                                if let Err(e) =
-                                    commands.run(&format!("Create a plan for: {}", goal)).await
-                                {
+                                if let Err(e) = commands.plan_inline(&goal).await {
                                     inline::print_blank();
                                     inline::print_line(&components::error_badge(&e.to_string()));
                                     inline::print_blank();
@@ -967,7 +964,7 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                     conversation.push(ConversationEntry {
                                         role: "assistant".into(),
                                         content: format!(
-                                            "(plan created in {:.1}s)",
+                                            "(plan executed in {:.1}s)",
                                             elapsed.as_secs_f64()
                                         ),
                                         timestamp: chrono::Local::now(),

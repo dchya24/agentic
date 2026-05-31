@@ -321,6 +321,13 @@ impl Orchestrator {
         self.memory.lock().unwrap().clear();
     }
 
+    /// Borrow the orchestrator's tool registry. Useful for callers that
+    /// want to reuse the same builtin set + URL policy + tracker (e.g.
+    /// the planner's `execute_plan`).
+    pub fn tool_registry(&self) -> &ToolRegistry {
+        &self.tools
+    }
+
     /// Search the conversation memory for messages whose content contains
     /// the given query (case-insensitive). Returns owned snippets so the
     /// caller doesn't need to hold the memory lock.
