@@ -25,6 +25,77 @@ impl MarkdownContent {
             lines: renderer.lines,
         }
     }
+
+    /// Parse a possibly-incomplete markdown string. Used for streaming
+    /// chunks where the model may have emitted a code fence that hasn't
+    /// been closed yet (` ```rust\nfn foo()` with no trailing ` ``` `).
+    /// Without this, pulldown-cmark treats the unclosed block as plain
+    /// text and the user loses the code-block styling until the model
+    /// finishes the turn.
+    ///
+    /// Strategy: detect an unclosed fenced block by counting ` ``` `
+    /// markers at the start of a line (per the CommonMark spec), and
+    /// append a synthetic closing fence before parsing. The renderer
+    /// then sees a complete document and emits the boxed code-block
+    /// styling immediately.
+    pub fn parse_partial(markdown: &str) -> Self {
+        let patched = close_unclosed_fence(markdown);
+        Self::parse(&patched)
+    }
+}
+
+/// If `s` ends with an unclosed fenced code block, append a closing
+/// ` ``` ` line so pulldown-cmark will treat it as a code block. Returns
+/// the input unchanged when the document is already balanced.
+///
+/// Detection rule (CommonMark-ish): we count fence opens (` ``` ` or
+/// `~~~` at the start of a line, possibly indented up to 3 spaces) and
+/// fence closes (the same marker on its own line). When opens > closes,
+/// we append the matching closer.
+fn close_unclosed_fence(s: &str) -> String {
+    let mut depth: i32 = 0;
+    let mut last_marker: Option<&'static str> = None;
+    for line in s.lines() {
+        let trimmed = line.trim_start_matches(' ');
+        // Indent must be < 4 spaces; CommonMark treats 4+ as code
+        // already, not a fence.
+        if line.len() - trimmed.len() >= 4 {
+            continue;
+        }
+        let marker = if trimmed.starts_with("```") {
+            Some("```")
+        } else if trimmed.starts_with("~~~") {
+            Some("~~~")
+        } else {
+            None
+        };
+        if let Some(m) = marker {
+            if depth == 0 {
+                depth = 1;
+                last_marker = Some(m);
+            } else if last_marker == Some(m) {
+                // Closing the current block. The closing fence may not
+                // carry an info string, but we don't enforce that
+                // strictly — a same-marker line is enough to count.
+                depth = 0;
+                last_marker = None;
+            }
+        }
+    }
+
+    if depth == 0 {
+        return s.to_string();
+    }
+
+    let closer = last_marker.unwrap_or("```");
+    let mut out = String::with_capacity(s.len() + closer.len() + 2);
+    out.push_str(s);
+    if !s.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(closer);
+    out.push('\n');
+    out
 }
 
 /// Internal markdown renderer
@@ -416,5 +487,64 @@ mod tests {
             .map(|s| s.content.to_string())
             .collect();
         assert!(all_text.contains("│"));
+    }
+
+    // ── close_unclosed_fence ──────────────────────────────
+
+    #[test]
+    fn close_unclosed_fence_passes_balanced_doc_through() {
+        let s = "intro\n```rust\nfn x() {}\n```\noutro";
+        assert_eq!(close_unclosed_fence(s), s);
+    }
+
+    #[test]
+    fn close_unclosed_fence_appends_backtick_closer() {
+        let s = "intro\n```rust\nfn x() {}";
+        let out = close_unclosed_fence(s);
+        assert!(out.ends_with("```\n"), "got: {:?}", out);
+        assert!(out.contains("fn x() {}"));
+    }
+
+    #[test]
+    fn close_unclosed_fence_appends_tilde_closer_for_tilde_open() {
+        let s = "~~~python\nprint(1)";
+        let out = close_unclosed_fence(s);
+        assert!(out.ends_with("~~~\n"), "got: {:?}", out);
+    }
+
+    #[test]
+    fn close_unclosed_fence_ignores_indented_4_space_blocks() {
+        // 4-space indent is a code block, not a fence — must not
+        // count as an open.
+        let s = "    ```\nplain text";
+        assert_eq!(close_unclosed_fence(s), s);
+    }
+
+    #[test]
+    fn parse_partial_recovers_unclosed_code_block() {
+        // Without parse_partial this would render as one big fenced
+        // line; with it, we get the boxed code-block header.
+        let mid_stream = "Here:\n```rust\nfn main() {\n    println!(\"hi\");";
+        let content = MarkdownContent::parse_partial(mid_stream);
+        let all_text: String = content
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        // Code-block frame characters indicate the fenced renderer ran.
+        assert!(
+            all_text.contains("┌─") || all_text.contains("│"),
+            "expected code-block frame, got: {:?}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn parse_partial_matches_parse_when_balanced() {
+        let s = "Hello\n```\nx = 1\n```\nWorld";
+        let a = MarkdownContent::parse(s);
+        let b = MarkdownContent::parse_partial(s);
+        assert_eq!(a.lines.len(), b.lines.len());
     }
 }

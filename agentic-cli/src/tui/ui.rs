@@ -224,7 +224,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
         ]));
 
-        let md_content = MarkdownContent::parse(&app.current_response);
+        let md_content = MarkdownContent::parse_partial(&app.current_response);
         for line in md_content.lines {
             all_lines.push(line);
         }
