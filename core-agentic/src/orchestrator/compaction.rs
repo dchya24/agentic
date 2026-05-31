@@ -86,6 +86,7 @@ impl Orchestrator {
             content: prompt.to_string(),
             tool_call_id: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let request = ChatRequest::new(&model, messages);
         let response = self

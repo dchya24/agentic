@@ -1434,6 +1434,7 @@ impl Commands {
                 display_name: None,
                 temperature: 0.7,
                 max_tokens: 8192,
+                    capabilities: None,
             }
         } else {
             let model_labels: Vec<String> = preset
@@ -1454,6 +1455,7 @@ impl Commands {
                 display_name: Some(preset.models[model_idx].1.to_string()),
                 temperature: 0.7,
                 max_tokens: 8192,
+                    capabilities: None,
             }
         };
 
@@ -1547,12 +1549,14 @@ impl Commands {
                 display_name: Some(display.to_string()),
                 temperature: 0.7,
                 max_tokens: 8192,
+                    capabilities: None,
             })
             .unwrap_or(core_agentic::ModelConfig {
                 model: "gpt-4o".to_string(),
                 display_name: Some("GPT-4o".to_string()),
                 temperature: 0.7,
                 max_tokens: 8192,
+                    capabilities: None,
             });
 
         print_info(&format!(

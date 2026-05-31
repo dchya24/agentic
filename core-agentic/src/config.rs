@@ -66,6 +66,21 @@ pub struct ModelConfig {
     pub temperature: f32,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    /// Override the built-in capability lookup for this model. Useful
+    /// for self-hosted endpoints (e.g. an OpenAI-compatible server
+    /// proxying a vision-enabled local model). When `None`, the
+    /// runtime falls back to `capabilities::resolve(&model)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<crate::capabilities::ModelCapabilities>,
+}
+
+impl ModelConfig {
+    /// Effective capabilities: the explicit `capabilities` override
+    /// when set, otherwise the built-in lookup.
+    pub fn effective_capabilities(&self) -> crate::capabilities::ModelCapabilities {
+        self.capabilities
+            .unwrap_or_else(|| crate::capabilities::resolve(&self.model))
+    }
 }
 
 fn default_temperature() -> f32 {
@@ -254,6 +269,7 @@ impl Config {
                     display_name: None,
                     temperature: legacy.model.temperature.unwrap_or(0.7),
                     max_tokens: legacy.model.max_tokens.unwrap_or(8192),
+                    capabilities: None,
                 }],
             }],
             safety: SafetyConfig::default(),
@@ -278,6 +294,7 @@ impl Config {
                     display_name: None,
                     temperature: legacy.temperature.unwrap_or(0.7),
                     max_tokens: legacy.max_tokens.unwrap_or(8192),
+                    capabilities: None,
                 }],
             }],
             safety: SafetyConfig::default(),
@@ -338,6 +355,7 @@ impl Config {
                     display_name: Some("GPT-4o".to_string()),
                     temperature: 0.7,
                     max_tokens: 8192,
+                    capabilities: None,
                 }],
             }],
             safety: SafetyConfig::default(),

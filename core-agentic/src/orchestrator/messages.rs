@@ -70,6 +70,7 @@ pub(crate) fn build_request_messages(
                 content,
                 tool_call_id,
                 tool_calls,
+                attachments: m.metadata.attachments.clone(),
             }
         })
         .collect();
@@ -398,6 +399,7 @@ mod orchestrator_unit_tests {
                     },
                 })
                 .collect(),
+            attachments: vec![],
         }
     }
 
@@ -407,6 +409,7 @@ mod orchestrator_unit_tests {
             content: content.to_string(),
             tool_call_id: Some(id.to_string()),
             tool_calls: vec![],
+            attachments: vec![],
         }
     }
 
@@ -416,6 +419,7 @@ mod orchestrator_unit_tests {
             content: content.to_string(),
             tool_call_id: None,
             tool_calls: vec![],
+            attachments: vec![],
         }
     }
 
@@ -500,6 +504,7 @@ mod orchestrator_unit_tests {
                 content: "".into(),
                 tool_call_id: None,
                 tool_calls: vec![],
+            attachments: vec![],
             },
         ];
         let out = sanitize_for_provider(input);
@@ -517,6 +522,7 @@ mod orchestrator_unit_tests {
                 content: "hi from a previous turn".into(),
                 tool_call_id: None,
                 tool_calls: vec![],
+            attachments: vec![],
             },
             user_msg("hello"),
         ];
@@ -534,6 +540,7 @@ mod orchestrator_unit_tests {
                 content: "you are helpful".into(),
                 tool_call_id: None,
                 tool_calls: vec![],
+            attachments: vec![],
             },
             user_msg("hi"),
         ];
@@ -551,12 +558,14 @@ mod orchestrator_unit_tests {
                 content: "rule 1".into(),
                 tool_call_id: None,
                 tool_calls: vec![],
+            attachments: vec![],
             },
             ChatMessageRequest {
                 role: "system".into(),
                 content: "rule 2".into(),
                 tool_call_id: None,
                 tool_calls: vec![],
+            attachments: vec![],
             },
             user_msg("hi"),
         ];

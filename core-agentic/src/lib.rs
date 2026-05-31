@@ -21,6 +21,8 @@ pub mod tools;
 pub mod planner;
 pub mod pricing;
 pub mod prompts;
+pub mod attachments;
+pub mod capabilities;
 pub mod file_tracker;
 pub mod memory_file;
 
@@ -45,6 +47,11 @@ pub use prompts::{
     DEFAULT_SYSTEM_PROMPT, PROJECT_INSTRUCTION_FILES,
 };
 pub use file_tracker::{FileTracker, Freshness};
+pub use attachments::{
+    Attachment, AttachmentError, AttachmentKind, AttachmentLimits, AttachmentSource,
+    ALLOWED_IMAGE_MIME, DEFAULT_MAX_BYTES,
+};
+pub use capabilities::ModelCapabilities;
 pub use memory_file::{
     append_project_memory, append_user_memory, assemble_memory_section, find_project_memory,
     load_project_memory, load_user_memory, user_memory_path, PROJECT_MEMORY_FILE,

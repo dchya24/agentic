@@ -245,13 +245,15 @@ impl OpenAIProvider {
             content: system_content,
             tool_call_id: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
 
         messages.extend(request.messages.iter().cloned());
 
+        let wire_messages = serialize_messages_for_wire(&messages);
         let mut body = serde_json::json!({
             "model": request.model,
-            "messages": messages,
+            "messages": wire_messages,
         });
 
         if let Some(temp) = request.temperature {
@@ -389,13 +391,15 @@ impl LLMProvider for OpenAIProvider {
             content: system_content,
             tool_call_id: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
 
         messages.extend(request.messages.iter().cloned());
 
+        let wire_messages = serialize_messages_for_wire(&messages);
         let mut body = serde_json::json!({
             "model": request.model,
-            "messages": messages,
+            "messages": wire_messages,
             "stream": true,
         });
 
@@ -544,5 +548,171 @@ impl LLMProvider for OpenAIProvider {
     fn count_tokens(&self, text: &str) -> usize {
         // OpenAI uses BPE, ~4 chars per token is a decent approximation
         text.len() / 4
+    }
+}
+
+/// Serialize a list of `ChatMessageRequest`s into the OpenAI wire
+/// format, expanding any image attachments into the multimodal content
+/// shape that vision-capable models expect:
+///
+/// ```json
+/// {
+///   "role": "user",
+///   "content": [
+///     {"type": "text", "text": "What's in this image?"},
+///     {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+///   ]
+/// }
+/// ```
+///
+/// Messages without attachments serialize through the existing
+/// `Serialize` impl (string content) so the wire format stays unchanged
+/// for the common case. Tool calls + tool_call_id are forwarded
+/// verbatim.
+fn serialize_messages_for_wire(
+    messages: &[super::ChatMessageRequest],
+) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .map(|m| {
+            if m.attachments.is_empty() {
+                // Common path: delegate to the existing string-content
+                // Serialize impl.
+                serde_json::to_value(m).unwrap_or(serde_json::Value::Null)
+            } else {
+                let mut parts: Vec<serde_json::Value> = Vec::new();
+                if !m.content.is_empty() {
+                    parts.push(serde_json::json!({
+                        "type": "text",
+                        "text": m.content,
+                    }));
+                }
+                for att in &m.attachments {
+                    let url = match &att.source {
+                        crate::attachments::AttachmentSource::RemoteUrl { url } => {
+                            url.clone()
+                        }
+                        _ => att.as_data_url(),
+                    };
+                    parts.push(serde_json::json!({
+                        "type": "image_url",
+                        "image_url": { "url": url },
+                    }));
+                }
+                let mut obj = serde_json::Map::new();
+                obj.insert("role".into(), serde_json::json!(m.role));
+                obj.insert("content".into(), serde_json::json!(parts));
+                if let Some(ref id) = m.tool_call_id {
+                    obj.insert("tool_call_id".into(), serde_json::json!(id));
+                }
+                if !m.tool_calls.is_empty() {
+                    obj.insert("tool_calls".into(), serde_json::json!(m.tool_calls));
+                }
+                serde_json::Value::Object(obj)
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod wire_format_tests {
+    use super::serialize_messages_for_wire;
+    use super::super::ChatMessageRequest;
+    use crate::attachments::{Attachment, AttachmentKind, AttachmentSource};
+
+    fn png_attachment() -> Attachment {
+        Attachment {
+            kind: AttachmentKind::Image,
+            mime_type: "image/png".into(),
+            data_base64: "iVBORw0KGgo=".into(),
+            source: AttachmentSource::FilePath {
+                path: "/tmp/x.png".into(),
+            },
+            size_bytes: 8,
+        }
+    }
+
+    fn remote_attachment() -> Attachment {
+        Attachment {
+            kind: AttachmentKind::Image,
+            mime_type: String::new(),
+            data_base64: String::new(),
+            source: AttachmentSource::RemoteUrl {
+                url: "https://example.com/cat.png".into(),
+            },
+            size_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn no_attachment_falls_back_to_string_content() {
+        let msg = ChatMessageRequest::user("hello");
+        let wire = serialize_messages_for_wire(&[msg]);
+        assert_eq!(wire.len(), 1);
+        // String content for the common path.
+        assert_eq!(wire[0]["content"], "hello");
+    }
+
+    #[test]
+    fn single_image_produces_text_plus_image_url_parts() {
+        let msg = ChatMessageRequest::user("What's in this?")
+            .with_attachments(vec![png_attachment()]);
+        let wire = serialize_messages_for_wire(&[msg]);
+        let parts = wire[0]["content"].as_array().expect("array content");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "What's in this?");
+        assert_eq!(parts[1]["type"], "image_url");
+        let url = parts[1]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn empty_text_with_image_omits_text_part() {
+        let msg = ChatMessageRequest::user("").with_attachments(vec![png_attachment()]);
+        let wire = serialize_messages_for_wire(&[msg]);
+        let parts = wire[0]["content"].as_array().expect("array content");
+        // Only the image part — no leading empty text part.
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "image_url");
+    }
+
+    #[test]
+    fn remote_url_attachment_passes_url_through() {
+        let msg = ChatMessageRequest::user("caption")
+            .with_attachments(vec![remote_attachment()]);
+        let wire = serialize_messages_for_wire(&[msg]);
+        let parts = wire[0]["content"].as_array().unwrap();
+        assert_eq!(
+            parts[1]["image_url"]["url"],
+            "https://example.com/cat.png"
+        );
+    }
+
+    #[test]
+    fn multiple_attachments_render_in_order() {
+        let msg = ChatMessageRequest::user("two pics")
+            .with_attachments(vec![png_attachment(), remote_attachment()]);
+        let wire = serialize_messages_for_wire(&[msg]);
+        let parts = wire[0]["content"].as_array().unwrap();
+        // text + 2 images = 3 parts
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[2]["type"], "image_url");
+        assert!(parts[1]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:"));
+        assert_eq!(
+            parts[2]["image_url"]["url"],
+            "https://example.com/cat.png"
+        );
+    }
+
+    #[test]
+    fn role_passes_through() {
+        let msg = ChatMessageRequest::user("x").with_attachments(vec![png_attachment()]);
+        let wire = serialize_messages_for_wire(&[msg]);
+        assert_eq!(wire[0]["role"], "user");
     }
 }

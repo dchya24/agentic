@@ -60,6 +60,16 @@ pub struct ChatMessageRequest {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCallResponse>,
+    /// Image (and future binary) attachments riding along with this
+    /// message. Each provider serializes these into its own multipart
+    /// shape — the field stays in core so memory + safety + cost can
+    /// reason about them in one place.
+    ///
+    /// Skipped from on-the-wire serialization here; providers consume
+    /// it directly when building their request bodies (see
+    /// `providers::openai::serialize_request_with_attachments` etc.).
+    #[serde(default, skip)]
+    pub attachments: Vec<crate::attachments::Attachment>,
 }
 
 impl Serialize for ChatMessageRequest {
@@ -110,6 +120,7 @@ impl ChatMessageRequest {
             content: content.into(),
             tool_call_id: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }
     }
 
@@ -119,6 +130,7 @@ impl ChatMessageRequest {
             content: content.into(),
             tool_call_id: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }
     }
 
@@ -128,7 +140,25 @@ impl ChatMessageRequest {
             content: content.into(),
             tool_call_id: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }
+    }
+
+    /// Builder helper: attach one or more images to this message.
+    /// Replaces any previously-set attachments.
+    pub fn with_attachments(
+        mut self,
+        attachments: Vec<crate::attachments::Attachment>,
+    ) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
+    /// Convenience: this message carries at least one image.
+    pub fn has_images(&self) -> bool {
+        self.attachments
+            .iter()
+            .any(|a| matches!(a.kind, crate::attachments::AttachmentKind::Image))
     }
 }
 
@@ -351,6 +381,7 @@ mod tests {
             content: "".into(),
             tool_call_id: None,
             tool_calls: vec![tool_call("call-1")],
+            attachments: vec![],
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["role"], "assistant");
@@ -367,6 +398,7 @@ mod tests {
             content: "thinking out loud".into(),
             tool_call_id: None,
             tool_calls: vec![tool_call("call-1")],
+            attachments: vec![],
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["content"], "thinking out loud");
@@ -382,6 +414,7 @@ mod tests {
             content: "".into(),
             tool_call_id: None,
             tool_calls: vec![],
+            attachments: vec![],
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["content"], "");
@@ -394,6 +427,7 @@ mod tests {
             content: "result".into(),
             tool_call_id: Some("call-1".into()),
             tool_calls: vec![],
+            attachments: vec![],
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["tool_call_id"], "call-1");
@@ -407,6 +441,7 @@ mod tests {
             content: "hi".into(),
             tool_call_id: None,
             tool_calls: vec![],
+            attachments: vec![],
         };
         let json = serde_json::to_value(&msg).unwrap();
         let obj = json.as_object().unwrap();

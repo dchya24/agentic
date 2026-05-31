@@ -46,6 +46,11 @@ pub struct MessageMetadata {
     /// to their parent assistant call (per OpenAI spec).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCallResponse>,
+    /// Image attachments riding along with this message. Survives
+    /// memory persistence (saved as base64) so a `/load`-ed session can
+    /// resume mid-conversation with image context intact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::attachments::Attachment>,
 }
 
 impl Message {
