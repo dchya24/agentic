@@ -75,10 +75,11 @@ Sized by effort. Each item has its own home in
 
 ### Medium (2–4 days)
 
-- [ ] **Integration tests for the orchestrator agent loop.** Mock provider,
-      scripted tool-call sequences, assert memory + safety + cancel +
-      budget behaviour. The only unchecked item in `tasks-core-agentic`
-      Phase 8.
+- [x] **Integration tests for the orchestrator agent loop.** 8 tests in
+      `core-agentic/tests/orchestrator_loop.rs` covering happy-path tool
+      execution, max-iterations cap, plan-mode denial, cooperative
+      cancel, budget cap, event emission, memory recording, and the
+      `/restart` workflow.
 - [ ] **Streaming markdown polish.** Today the streaming path renders code
       fences as plain text; the parser exists in `widgets::markdown` but
       isn't applied to delta chunks.

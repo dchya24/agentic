@@ -136,7 +136,10 @@
 ### Phase 8 — Testing & docs
 
 - [x] 15.0 Unit tests (290+ across the crate; see milestone docs)
-- [ ] 15.1 Integration tests for the orchestrator agent loop
+- [x] 15.1 Integration tests for the orchestrator agent loop
+      (`tests/orchestrator_loop.rs`: 8 end-to-end tests covering happy
+      path, max-iterations, plan-mode denial, cancel, budget cap, event
+      emission, memory recording, restart workflow)
 - [x] 16.0 Architecture docs
   - [x] 16.1 `AGENT_ARCHITECTURE.md` reference
   - [x] 16.2 Three milestone docs (foundational / quality-of-life / additions)

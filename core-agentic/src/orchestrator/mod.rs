@@ -230,7 +230,7 @@ impl Orchestrator {
     /// Record a provider usage report. Updates the cumulative-cost
     /// running total and emits an `Event::Usage`. Returns the cost in
     /// USD for this single call (`None` if pricing unavailable).
-    pub(super) fn record_usage(&self, input_tokens: u32, output_tokens: u32) -> Option<f64> {
+    pub fn record_usage(&self, input_tokens: u32, output_tokens: u32) -> Option<f64> {
         let pricing = self.lookup_pricing(&self.model);
         let call_cost = pricing.map(|p| p.cost_usd(input_tokens, output_tokens));
 
