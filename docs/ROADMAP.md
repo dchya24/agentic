@@ -66,11 +66,12 @@ Sized by effort. Each item has its own home in
 
 ### Quick wins (under a day each)
 
-- [ ] **`/restart` REPL command.** Mid-session reset of memory + cancel
+- [x] **`/restart` REPL command.** Mid-session reset of memory + cancel
       flag + cumulative cost, without quitting the process.
-- [ ] **Status-line indicators for `AGENT.md` + persistent memory.** The
-      orchestrator already loads them silently; show `📄 AGENT.md` /
-      `🧠 memory.md` chips so users know the context is in effect.
+      *(landed; alias `/reset`)*
+- [x] **Status-line indicators for `AGENT.md` + persistent memory.**
+      Banner + status bar surface `📄 AGENT.md` / `🧠 memory.md`
+      chips when those sources are folded into the system prompt.
 
 ### Medium (2–4 days)
 
@@ -121,9 +122,11 @@ from end-to-end tests.
 
 ## Recent history
 
-The 11 commits that landed this session, in order:
+The 13 commits that landed this session, in order:
 
 ```
+(in progress)  feat(cli): /restart slash command + AGENT.md/memory.md indicators
+722b32c  docs: drop Tauri/Termul-flavored plans, consolidate into ROADMAP
 3b1f740  feat(safety+cli): interactive diff preview in confirmation prompt
 72a7edf  feat(safety): prompt-injection detector for fetch / web_search
 3685965  feat(tools): add apply_patch tool for unified-diff application

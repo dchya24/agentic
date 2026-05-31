@@ -203,6 +203,13 @@ impl Orchestrator {
         *self.cumulative_cost_usd.lock().unwrap()
     }
 
+    /// Reset the cumulative-cost running total to zero. Useful when
+    /// restarting a session in-place so the budget cap and the
+    /// status-bar segment start fresh.
+    pub fn reset_cumulative_cost(&self) {
+        *self.cumulative_cost_usd.lock().unwrap() = Some(0.0);
+    }
+
     /// Replace the per-model pricing override map.
     pub fn set_pricing_overrides(
         &mut self,
@@ -511,6 +518,26 @@ mod cost_tracking_tests {
         // Big spend, no budget — still allowed.
         o.record_usage(10_000_000, 10_000_000);
         assert!(!o.budget_exceeded());
+    }
+
+    #[test]
+    fn reset_cumulative_cost_zeroes_total() {
+        let o = make_orch("gpt-4o-mini", vec![]);
+        o.record_usage(1_000_000, 1_000_000);
+        assert!(o.cumulative_cost_usd().unwrap() > 0.0);
+        o.reset_cumulative_cost();
+        assert_eq!(o.cumulative_cost_usd(), Some(0.0));
+    }
+
+    #[test]
+    fn reset_cumulative_cost_clears_unknown_pricing_state() {
+        let o = make_orch("some-unlisted-model", vec![]);
+        o.record_usage(1_000, 1_000);
+        // Unknown model poisoned the total.
+        assert!(o.cumulative_cost_usd().is_none());
+        o.reset_cumulative_cost();
+        // After reset, back to a known zero.
+        assert_eq!(o.cumulative_cost_usd(), Some(0.0));
     }
 
     #[test]

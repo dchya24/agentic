@@ -62,6 +62,17 @@ impl SessionStats {
         self.messages_sent.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Reset all counters in place. Used by `/restart` so the status bar
+    /// reflects the fresh session immediately. The session_start clock
+    /// also resets so "session 12s" doesn't stay misleading.
+    fn reset(&self) {
+        self.messages_sent.store(0, Ordering::Relaxed);
+        self.tool_calls.store(0, Ordering::Relaxed);
+        self.total_input_tokens.store(0, Ordering::Relaxed);
+        self.total_output_tokens.store(0, Ordering::Relaxed);
+        self.set_cost_usd(Some(0.0));
+    }
+
     #[allow(dead_code)]
     fn increment_tool_calls(&self) {
         self.tool_calls.fetch_add(1, Ordering::Relaxed);
@@ -160,6 +171,8 @@ const SLASH_COMMANDS: &[(&str, &[&str], &str)] = &[
     ("load", &["l"], "Load conversation from file"),
     ("mcp", &[], "Show MCP server status"),
     ("plan", &["p"], "Create a plan for a goal"),
+    ("search", &["find"], "Search conversation memory"),
+    ("restart", &["reset"], "Restart session (clear memory + cost)"),
     ("stats", &[], "Show session statistics"),
     ("quit", &["q", "exit"], "Exit interactive mode"),
 ];
@@ -965,6 +978,24 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                             ReplAction::Search(query) => {
                                 commands.search_memory_inline(&query);
                             }
+                            ReplAction::Restart => {
+                                commands.restart_session();
+                                conversation.clear();
+                                stats.reset();
+                                inline::print_blank();
+                                inline::print_line(&components::success_badge(
+                                    "Session restarted — memory cleared, cost reset.",
+                                ));
+                                inline::print_line(&Line::from(vec![
+                                    RSpan::raw("  "),
+                                    RSpan::styled(
+                                        "AGENT.md and persistent memory remain loaded.",
+                                        RStyle::default().add_modifier(Modifier::DIM),
+                                    ),
+                                ]));
+                                inline::print_blank();
+                                print_status_bar(&model_info, &stats);
+                            }
                         }
                     }
                     continue;
@@ -1054,14 +1085,26 @@ struct ModelInfo {
     provider: String,
     model: String,
     api_base: String,
+    /// File name of the loaded AGENT.md (e.g. `AGENT.md`). `None` when
+    /// the walk-up didn't find one.
+    agent_md_name: Option<String>,
+    /// `true` when at least one persistent memory file was folded into
+    /// the system prompt.
+    memory_md_loaded: bool,
 }
 
 fn get_model_info(commands: &Commands) -> ModelInfo {
     let (provider, model, api_base) = commands.model_info();
+    let agent_md_name = commands
+        .agent_md_path()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string());
     ModelInfo {
         provider,
         model,
         api_base,
+        agent_md_name,
+        memory_md_loaded: commands.memory_md_loaded(),
     }
 }
 
@@ -1082,6 +1125,7 @@ enum ReplAction {
     Mcp,
     Plan(String),
     Search(String),
+    Restart,
 }
 
 fn handle_slash_command(input: &str) -> Option<ReplAction> {
@@ -1143,6 +1187,7 @@ fn handle_slash_command(input: &str) -> Option<ReplAction> {
             inline::print_blank();
             None
         }
+        "/restart" | "/reset" => Some(ReplAction::Restart),
         _ => {
             inline::print_blank();
             inline::print_line(&components::error_badge(
@@ -1227,6 +1272,41 @@ fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
         ]),
     ];
 
+    // Add a 'context' line when AGENT.md or persistent memory is loaded
+    // so users see at boot which extra sources are influencing the agent.
+    let mut info_lines = info_lines;
+    if model_info.agent_md_name.is_some() || model_info.memory_md_loaded {
+        let mut spans: Vec<RSpan<'static>> = vec![
+            RSpan::styled("🔗 ", RStyle::default()),
+            RSpan::styled("ctx  ", RStyle::default().add_modifier(Modifier::DIM)),
+        ];
+        let mut first = true;
+        if let Some(ref name) = model_info.agent_md_name {
+            spans.push(RSpan::styled(
+                format!("📄 {}", name),
+                RStyle::default()
+                    .fg(Color::Rgb(176, 196, 222))
+                    .add_modifier(Modifier::BOLD),
+            ));
+            first = false;
+        }
+        if model_info.memory_md_loaded {
+            if !first {
+                spans.push(RSpan::styled(
+                    "  ·  ",
+                    RStyle::default().add_modifier(Modifier::DIM),
+                ));
+            }
+            spans.push(RSpan::styled(
+                "🧠 memory.md",
+                RStyle::default()
+                    .fg(Color::Rgb(176, 196, 222))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        info_lines.push(Line::from(spans));
+    }
+
     let panel_lines = components::panel(
         "Welcome",
         &info_lines,
@@ -1286,6 +1366,34 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
             RStyle::default().fg(Color::Rgb(46, 204, 113)),
         ),
     ]));
+
+    // Context-source indicator row. Only printed when at least one of
+    // AGENT.md / persistent memory was loaded — keeps the main status
+    // bar uncluttered for plain runs.
+    let has_agent_md = model_info.agent_md_name.is_some();
+    if has_agent_md || model_info.memory_md_loaded {
+        let mut chips: Vec<RSpan<'static>> = vec![RSpan::raw("  ")];
+        if let Some(ref name) = model_info.agent_md_name {
+            chips.push(RSpan::styled(
+                format!("📄 {}", name),
+                RStyle::default().fg(Color::Rgb(176, 196, 222)),
+            ));
+        }
+        if model_info.memory_md_loaded {
+            if has_agent_md {
+                chips.push(RSpan::styled(
+                    "  ·  ",
+                    RStyle::default().fg(Color::Rgb(60, 60, 80)),
+                ));
+            }
+            chips.push(RSpan::styled(
+                "🧠 memory.md",
+                RStyle::default().fg(Color::Rgb(176, 196, 222)),
+            ));
+        }
+        inline::print_line(&Line::from(chips));
+    }
+
     inline::print_line(&components::dashed_separator(Color::Rgb(60, 60, 80)));
     inline::print_blank();
 }
@@ -1356,6 +1464,7 @@ fn print_help() {
 - `/load <file>`       Load conversation from file
 - `/plan <goal>`       Create a plan for a goal
 - `/search <query>`    Search conversation memory (case-insensitive)
+- `/restart`           Restart session (clear memory + cost; AGENT.md stays)
 - `/provider <name>`   Switch provider (not yet supported)
 - `/models`            List & switch models (interactive picker)
 - `/models <name>`     Switch to model by name (partial match ok)

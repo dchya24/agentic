@@ -96,17 +96,28 @@
       `edit_file` / `apply_patch` (rendered through `widgets::diff`)
 - [x] 10.1 60-line cap with `… N more diff line(s) hidden` notice
 
-### Phase 8 — Testing & docs
+### Phase 8 — Session control + context indicators (✅ done)
 
-- [x] 11.0 Unit tests for argument parsing + widget helpers
-- [x] 11.1 README in `agentic-cli/`
-- [ ] 11.2 End-to-end smoke test for `agentic run` against a mock provider
+- [x] 11.0 `/restart` (alias `/reset`) slash command
+  - [x] 11.1 Drops conversation memory in-place
+  - [x] 11.2 Resets cumulative cost to zero (clears any "unknown pricing" poisoning)
+  - [x] 11.3 Clears pending cancel flag + accumulated event handlers
+  - [x] 11.4 Keeps provider, tools, system prompt, AGENT.md, persistent memory loaded
+  - [x] 11.5 SessionStats `reset()` zeroes status-bar counters
+- [x] 12.0 Status-line indicators for AGENT.md + persistent memory
+  - [x] 12.1 `Commands` records `agent_md_path` + `memory_md_loaded` during init
+  - [x] 12.2 Banner panel shows a `🔗 ctx  📄 AGENT.md  ·  🧠 memory.md` line when present
+  - [x] 12.3 Status bar shows the same chips on a second row when present
+
+### Phase 9 — Testing & docs
+
+- [x] 13.0 Unit tests for argument parsing + widget helpers
+- [x] 13.1 README in `agentic-cli/`
+- [ ] 13.2 End-to-end smoke test for `agentic run` against a mock provider
 
 ### Open / future work
 
 - [ ] Markdown rendering polish for streaming responses (richer code-fence handling on delta chunks, copy hints)
-- [ ] `/restart` slash command (clear orchestrator state mid-session: memory + cancel + cumulative cost)
-- [ ] Status-line indicators for `AGENT.md` + persistent `memory.md` detection
 
 > **Architecture reference:** [docs/shared-widgets-architecture-26052026.md](../docs/shared-widgets-architecture-26052026.md)
 > **Roadmap:** [docs/ROADMAP.md](../docs/ROADMAP.md)

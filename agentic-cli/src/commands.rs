@@ -69,6 +69,12 @@ pub struct Commands {
     color_enabled: bool,
     debug_enabled: bool,
     permission_mode: core_agentic::PermissionMode,
+    /// Path to the `AGENT.md` discovered by walk-up at orchestrator init,
+    /// or `None` when no project instructions were found.
+    agent_md_path: Option<std::path::PathBuf>,
+    /// `true` when at least one persistent memory file (user-global or
+    /// project-local) was loaded and folded into the system prompt.
+    memory_md_loaded: bool,
 }
 
 impl Commands {
@@ -80,6 +86,8 @@ impl Commands {
             color_enabled: true,
             debug_enabled: false,
             permission_mode: core_agentic::PermissionMode::Default,
+            agent_md_path: None,
+            memory_md_loaded: false,
         }
     }
 
@@ -160,6 +168,7 @@ impl Commands {
                     bytes = content.len(),
                     "Loaded project instructions"
                 );
+                self.agent_md_path = Some(path);
                 content
             });
 
@@ -171,6 +180,7 @@ impl Commands {
 
         // Append cross-session memory (user-global + project-local) if present.
         let memory_section = core_agentic::assemble_memory_section(&cwd);
+        self.memory_md_loaded = memory_section.is_some();
         let final_prompt = match memory_section {
             Some(mem) => format!("{}\n\n---\n# Persistent Memory\n\n{}", assembled, mem),
             None => assembled,
@@ -358,6 +368,35 @@ impl Commands {
         self.orchestrator
             .as_ref()
             .and_then(|o| o.cumulative_cost_usd())
+    }
+
+    /// Path to the `AGENT.md` that was loaded into the system prompt for
+    /// this session, or `None` when no project instructions were found.
+    /// Set during the first `ensure_orchestrator()` call.
+    pub fn agent_md_path(&self) -> Option<&std::path::Path> {
+        self.agent_md_path.as_deref()
+    }
+
+    /// `true` when at least one persistent memory file (user-global or
+    /// project-local) was loaded into the system prompt.
+    pub fn memory_md_loaded(&self) -> bool {
+        self.memory_md_loaded
+    }
+
+    /// Restart the agent session in-place: drops the conversation memory,
+    /// clears any pending cancel flag, drops accumulated event handlers,
+    /// and resets cumulative cost. The provider, tool registry, system
+    /// prompt, AGENT.md and persistent memory section all stay loaded —
+    /// the user does NOT pay the re-init cost (or another wizard prompt).
+    ///
+    /// No-op when the orchestrator hasn't been initialized yet.
+    pub fn restart_session(&mut self) {
+        if let Some(orch) = self.orchestrator.as_ref() {
+            orch.clear_memory();
+            orch.reset_cumulative_cost();
+            orch.reset_cancel();
+            orch.clear_event_handlers();
+        }
     }
 
     pub fn list_tools(&self) {
