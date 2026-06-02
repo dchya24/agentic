@@ -7,6 +7,7 @@ mod confirmation;
 mod error;
 mod file_ref;
 mod interactive;
+mod model_picker;
 mod tui;
 mod widgets;
 

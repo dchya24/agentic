@@ -102,6 +102,11 @@ impl Commands {
         self
     }
 
+    /// Get a reference to the config
+    pub(crate) fn get_config(&self) -> &Config {
+        &self.config
+    }
+
     pub fn with_debug(mut self, enabled: bool) -> Self {
         self.debug_enabled = enabled;
         self
@@ -591,84 +596,10 @@ impl Commands {
         Ok((active_provider, active_model))
     }
 
-    /// Interactive model picker using dialoguer.
+    /// Interactive model picker using ratatui full-screen TUI.
     /// Returns (provider_name, model_name) if switched, None if cancelled.
     pub fn pick_model_interactive(&mut self) -> Option<(String, String)> {
-        use dialoguer::{theme::ColorfulTheme, FuzzySelect};
-
-        // Build flat list of (rendered_label, provider_idx, model_idx, is_active).
-        //
-        // Each label is composed as a ratatui `Line<Span>` so styling stays
-        // consistent with the rest of the CLI, then converted to an ANSI
-        // string for dialoguer (which only accepts `&str`). `line_to_ansi`
-        // honors capability detection, so labels stay plain when stdout
-        // isn't a TTY or `--color=never` was passed.
-        let mut items: Vec<(String, usize, usize, bool)> = Vec::new();
-        let active_provider = self.config.active_provider().map(|p| p.name.clone());
-        let active_model = self.config.active_model().map(|m| m.model.clone());
-
-        let active_marker_style = RStyle::default()
-            .fg(RColor::Green)
-            .add_modifier(RModifier::BOLD);
-        let dim = RStyle::default().add_modifier(RModifier::DIM);
-
-        for (pi, provider) in self.config.providers.iter().enumerate() {
-            for (mi, model) in provider.models.iter().enumerate() {
-                let display = model.display_name.as_deref().unwrap_or(&model.model);
-                let is_active = active_provider.as_deref() == Some(&provider.name)
-                    && active_model.as_deref() == Some(&model.model);
-
-                let marker = if is_active {
-                    RSpan::styled("✓ ", active_marker_style)
-                } else {
-                    RSpan::raw("  ")
-                };
-
-                let line = RLine::from(vec![
-                    marker,
-                    RSpan::raw(display.to_string()),
-                    RSpan::raw(" "),
-                    RSpan::styled(format!("[{}]", provider.name), dim),
-                ]);
-
-                items.push((inline::line_to_ansi(&line), pi, mi, is_active));
-            }
-        }
-
-        if items.is_empty() {
-            inline::print_blank();
-            inline::print_line(&components::warning_badge("No models configured."));
-            inline::print_blank();
-            return None;
-        }
-
-        // Default to the active model's row — by structured flag, not by
-        // string scanning the (possibly ANSI-prefixed) label.
-        let default = items
-            .iter()
-            .position(|(_, _, _, is_active)| *is_active)
-            .unwrap_or(0);
-
-        let labels: Vec<&str> = items.iter().map(|(l, _, _, _)| l.as_str()).collect();
-
-        let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
-            .with_prompt("Select model")
-            .default(default)
-            .items(&labels)
-            .interact_opt()
-            .ok()??;
-
-        let (_, pi, mi, _) = &items[selection];
-        let name = self.config.providers[*pi].models[*mi].model.clone();
-        match self.switch_model(&name) {
-            Ok(result) => Some(result),
-            Err(e) => {
-                inline::print_blank();
-                inline::print_line(&components::error_badge(&e));
-                inline::print_blank();
-                None
-            }
-        }
+        crate::model_picker::run(self)
     }
 
     // ── MCP status (for REPL /mcp) ──────────────────────────

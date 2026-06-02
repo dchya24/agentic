@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+    "core-agentic",
+    "agentic-cli",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+authors = ["Termul Team"]
