@@ -51,7 +51,7 @@ Foundation is complete; coverage of the architecture spec is at ~95%.
 | Layer | Surface |
 |-------|---------|
 | Modes | `agentic run`, `agentic interactive`, `agentic tui`, `agentic config …`. `--mode default|plan|yolo`. |
-| REPL | Reedline + slash commands (`/help`, `/clear`, `/config`, `/history`, `/tools`, `/stats`, `/mcp`, `/save`, `/load`, `/provider`, `/models`, `/plan`, `/search`, `/image`, `/restart`, `/quit`). `@` file completion (auto-detects images for vision channel), `/` command completion. Resize-safe full-width prompt. Status bar surfaces model / provider / tokens / vision indicator / elapsed. |
+| REPL | Reedline + slash commands (`/help`, `/new`, `/config`, `/history`, `/tools`, `/stats`, `/mcp`, `/sessions`, `/models`, `/plan`, `/search`, `/image`, `/provider`, `/quit`). `@` file completion (auto-detects images for vision channel), `/` command completion, `/models ` model name completion. Sessions auto-saved to `~/.config/agentic/sessions/`. Inline fuzzy-select model picker (dialoguer). Resize-safe full-width prompt. Status bar surfaces model / provider / tokens / vision indicator / elapsed. |
 | Widgets | One ratatui-based stack used by inline + TUI: markdown, spinner, progress, panels, badges, headers, tool-call panel, unified-diff renderer. Capability detection (`NO_COLOR`, `TERM=dumb`, isatty, `--color`). Zero raw `\x1b[` escapes in the source. |
 | Safety UX | Risk-coloured confirmation panel. Diff preview in the confirmation prompt for `write_file` / `edit_file` / `apply_patch`. |
 | Cancel | Two-stage Ctrl+C → cooperative cancel (process-global `Arc<AtomicBool>`). |
@@ -66,12 +66,15 @@ Sized by effort. Each item has its own home in
 
 ### Quick wins (under a day each)
 
-- [x] **`/restart` REPL command.** Mid-session reset of memory + cancel
-      flag, without quitting the process.
-      *(landed; alias `/reset`)*
+- [x] **`/new` REPL command.** Mid-session reset: saves current session,
+      creates fresh one, clears conversation + memory + cost.
+      Aliases `/n`, `n`. Replaces `/clear` and `/restart`.
 - [x] **Status-line indicators for `AGENT.md` + persistent memory.**
       Banner + status bar surface `📄 AGENT.md` / `🧠 memory.md`
       chips when those sources are folded into the system prompt.
+- [x] **Session management.** Auto-save conversations to
+      `~/.config/agentic/sessions/` as JSON. `/sessions` to list,
+      `/sessions <id>` to resume. No more `history.txt`.
 
 ### Medium (2–4 days)
 
@@ -121,9 +124,13 @@ from end-to-end tests.
 
 ## Recent history
 
-The 13 commits that landed this session, in order:
+Key changes that landed recently:
 
 ```
+(latest)     feat(cli): session system — auto-save, /new, /sessions, /sessions <id>
+(latest)     refactor(cli): replace ratatui model_picker with dialoguer inline fuzzy-select
+(latest)     feat(cli): /models auto-complete via reedline completer
+(latest)     fix(cli): terminal width calculation for split terminals
 (in progress)  feat(cli): /restart slash command + AGENT.md/memory.md indicators
 722b32c  docs: drop Tauri/Termul-flavored plans, consolidate into ROADMAP
 3b1f740  feat(safety+cli): interactive diff preview in confirmation prompt

@@ -7,7 +7,7 @@ mod confirmation;
 mod error;
 mod file_ref;
 mod interactive;
-mod model_picker;
+mod session;
 mod tui;
 mod widgets;
 
@@ -213,5 +213,3 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-
-

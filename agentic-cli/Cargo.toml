@@ -31,7 +31,7 @@ comfy-table = "7"
 chrono = "0.4"
 console = "0.15"
 # rustyline removed - using reedline for interactive mode
-reedline = "0.47"
+reedline = { version = "0.47", features = ["sqlite"] }
 nu-ansi-term = "0.50"
 uuid = { version = "1", features = ["v4"] }
 

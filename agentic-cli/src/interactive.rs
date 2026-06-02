@@ -14,7 +14,7 @@ use ratatui::{
     text::{Line, Span as RSpan},
 };
 use reedline::{
-    default_emacs_keybindings, Completer, DescriptionMenu, EditCommand, Emacs, FileBackedHistory,
+    default_emacs_keybindings, Completer, DescriptionMenu, EditCommand, Emacs,
     Highlighter, Hinter, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
     PromptHistorySearch, PromptHistorySearchStatus, Reedline, ReedlineEvent, ReedlineMenu, Signal,
     Span, StyledText, Suggestion, ValidationResult, Validator,
@@ -121,19 +121,17 @@ impl SessionStats {
 
 const SLASH_COMMANDS: &[(&str, &[&str], &str)] = &[
     ("help", &["h", "?"], "Show help message"),
-    ("clear", &["cls", "c"], "Clear screen"),
+    ("new", &["n", "clear", "cls"], "Start a new session"),
     ("config", &["cfg"], "Show current configuration"),
     ("history", &["hist"], "Show conversation history"),
     ("tools", &["t"], "List available tools"),
     ("models", &["m"], "List all models from all providers"),
     ("provider", &["prov"], "Switch or show provider"),
-    ("save", &["s"], "Save conversation to file"),
-    ("load", &["l"], "Load conversation from file"),
+    ("sessions", &["ss"], "List and resume previous sessions"),
     ("mcp", &[], "Show MCP server status"),
     ("plan", &["p"], "Create a plan for a goal"),
     ("search", &["find"], "Search conversation memory"),
     ("image", &["img"], "Attach an image for the next turn"),
-    ("restart", &["reset"], "Restart session (clear memory + cost)"),
     ("stats", &[], "Show session statistics"),
     ("quit", &["q", "exit"], "Exit interactive mode"),
 ];
@@ -159,7 +157,16 @@ impl Completer for AgenticCompleter {
         let pos = pos.min(line.len());
         let before_cursor = &line[..pos];
 
-        // ── Case 1: `/` command completion ──
+        // ── Case 1: `/models <query>` - complete model names ──
+        if line.starts_with("/models ") || line.starts_with("/m ") {
+            let query_start = line.find(' ').unwrap() + 1;
+            if pos >= query_start {
+                let query = &line[query_start..pos];
+                return complete_model_suggestions(query);
+            }
+        }
+
+        // ── Case 2: `/` command completion ──
         if line.starts_with('/') {
             if let Some(space_pos) = line.find(' ') {
                 if pos <= space_pos {
@@ -170,7 +177,7 @@ impl Completer for AgenticCompleter {
             }
         }
 
-        // ── Case 2: `@` file completion ──
+        // ── Case 3: `@` file completion ──
         if let Some(at_pos) = find_at_trigger(before_cursor) {
             let query = &before_cursor[at_pos + 1..];
             return complete_file_path_suggestions(query, at_pos);
@@ -236,6 +243,82 @@ fn complete_slash_command_suggestions(partial: &str) -> Vec<Suggestion> {
             }
         })
         .collect()
+}
+
+/// Complete model names for `/models <query>`.
+/// Returns suggestions from all configured providers.
+fn complete_model_suggestions(query: &str) -> Vec<Suggestion> {
+    let query_lower = query.to_lowercase();
+    let mut results = Vec::new();
+
+    // Load config to get all available models
+    let config = match core_agentic::Config::load() {
+        Some(c) => c,
+        None => return results,
+    };
+
+    let active_provider = config.active_provider().map(|p| p.name.clone());
+    let active_model = config.active_model().map(|m| m.model.clone());
+
+    for provider in &config.providers {
+        for model in &provider.models {
+            let display_name = model.display_name.as_deref().unwrap_or(&model.model);
+            let model_name = &model.model;
+
+            // Filter by query (match display name or model ID)
+            if !query.is_empty()
+                && !display_name.to_lowercase().contains(&query_lower)
+                && !model_name.to_lowercase().contains(&query_lower)
+                && !provider.name.to_lowercase().contains(&query_lower)
+            {
+                continue;
+            }
+
+            let is_active = active_provider.as_deref() == Some(&provider.name)
+                && active_model.as_deref() == Some(model_name);
+
+            let caps = model.effective_capabilities();
+            let vision_icon = if caps.vision { " 👁" } else { "" };
+            let active_marker = if is_active { " ●" } else { "" };
+
+            let display = format!(
+                "{}{} [{}]{}",
+                display_name, vision_icon, provider.name, active_marker
+            );
+
+            let description = format!(
+                "{} ({}){}",
+                model_name,
+                provider.name,
+                if is_active { " - active" } else { "" }
+            );
+
+            results.push(Suggestion {
+                value: model_name.clone(),
+                display_override: Some(display),
+                description: Some(description),
+                style: None,
+                extra: None,
+                span: Span::new(0, query.len()),
+                append_whitespace: false,
+                match_indices: None,
+            });
+        }
+    }
+
+    // Sort: active first, then alphabetically
+    results.sort_by(|a, b| {
+        let a_active = a.description.as_ref().map_or(false, |d| d.contains("active"));
+        let b_active = b.description.as_ref().map_or(false, |d| d.contains("active"));
+
+        match (a_active, b_active) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.value.cmp(&b.value),
+        }
+    });
+
+    results
 }
 
 /// Complete file paths and return Suggestions.
@@ -706,7 +789,17 @@ struct ConversationEntry {
 
 pub async fn run(mut commands: Commands) -> Result<()> {
     let stats = SessionStats::new();
-    let model_info = get_model_info(&commands);
+    let mut model_info = get_model_info(&commands);
+
+    // Initialize session
+    let cwd = std::env::current_dir()
+        .unwrap_or_default()
+        .display().to_string();
+    let mut current_session = crate::session::create(
+        &cwd,
+        &model_info.provider,
+        &model_info.model,
+    );
 
     print_banner(&model_info, &stats);
 
@@ -717,19 +810,9 @@ pub async fn run(mut commands: Commands) -> Result<()> {
     let validator = Box::new(AgenticValidator);
     let prompt = AgenticPrompt::new(&model_info);
 
-    // File-backed history
-    let history_path = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".config")
-        .join("agentic")
-        .join("history.txt");
-
-    if let Some(parent) = history_path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-
+    // In-memory command history (no file)
     let history = Box::new(
-        FileBackedHistory::with_file(1000, history_path.clone())
+        reedline::SqliteBackedHistory::in_memory()
             .map_err(|e| anyhow::anyhow!("Failed to create history: {}", e))?,
     );
 
@@ -821,12 +904,40 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                     if let Some(action) = handle_slash_command(&input) {
                         match action {
                             ReplAction::Quit => break,
-                            ReplAction::Clear => {
+                            ReplAction::NewSession => {
+                                // Save current session before clearing
+                                if !current_session.messages.is_empty() {
+                                    if let Err(e) = crate::session::save(&current_session) {
+                                        inline::print_line(&components::warning_badge(
+                                            &format!("Could not auto-save session: {}", e),
+                                        ));
+                                    }
+                                }
+                                // Start fresh
+                                let cwd = std::env::current_dir()
+                                    .unwrap_or_default()
+                                    .display().to_string();
+                                current_session = crate::session::create(
+                                    &cwd,
+                                    &model_info.provider,
+                                    &model_info.model,
+                                );
+                                conversation.clear();
+                                stats.reset();
+                                commands.restart_session();
+
                                 crossterm::execute!(
                                     std::io::stdout(),
                                     crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
                                     crossterm::cursor::MoveTo(0, 0)
                                 ).ok();
+                                let model_info = get_model_info(&commands);
+                                print_banner(&model_info, &stats);
+                                inline::print_blank();
+                                inline::print_line(&components::success_badge(
+                                    "New session started.",
+                                ));
+                                inline::print_blank();
                                 print_status_bar(&model_info, &stats);
                             }
                             ReplAction::Config => {
@@ -841,17 +952,52 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                             ReplAction::Stats => {
                                 show_stats(&stats, &model_info);
                             }
-                            ReplAction::Save(file) => {
-                                save_conversation(&conversation, &file);
+                            ReplAction::Sessions => {
+                                show_sessions();
                             }
-                            ReplAction::Load(file) => {
-                                if let Ok(entries) = load_conversation(&file) {
-                                    conversation = entries;
-                                    inline::print_blank();
-                                    inline::print_line(&components::success_badge(
-                                        &format!("Conversation loaded from: {}", file),
-                                    ));
-                                    inline::print_blank();
+                            ReplAction::SessionsResume(id) => {
+                                match crate::session::load(&id) {
+                                    Ok(loaded) => {
+                                        // Save current first
+                                        if !current_session.messages.is_empty() {
+                                            let _ = crate::session::save(&current_session);
+                                        }
+                                        // Restore loaded session
+                                        conversation.clear();
+                                        for msg in &loaded.messages {
+                                            conversation.push(ConversationEntry {
+                                                role: msg.role.clone(),
+                                                content: msg.content.clone(),
+                                                timestamp: chrono::DateTime::parse_from_rfc3339(&msg.timestamp)
+                                                    .map(|dt| dt.with_timezone(&chrono::Local))
+                                                    .unwrap_or_else(|_| chrono::Local::now()),
+                                            });
+                                        }
+                                        current_session = loaded;
+                                        commands.restart_session();
+                                        stats.reset();
+
+                                        crossterm::execute!(
+                                            std::io::stdout(),
+                                            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                                            crossterm::cursor::MoveTo(0, 0)
+                                        ).ok();
+                                        let model_info = get_model_info(&commands);
+                                        print_banner(&model_info, &stats);
+                                        inline::print_blank();
+                                        inline::print_line(&components::success_badge(
+                                            &format!("Resumed: {} ({} messages)", current_session.title, current_session.messages.len()),
+                                        ));
+                                        inline::print_blank();
+                                        print_status_bar(&model_info, &stats);
+                                    }
+                                    Err(e) => {
+                                        inline::print_blank();
+                                        inline::print_line(&components::error_badge(
+                                            &format!("Failed to load session: {}", e),
+                                        ));
+                                        inline::print_blank();
+                                    }
                                 }
                             }
                             ReplAction::Provider(name) => {
@@ -871,12 +1017,15 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                 let _ = &name;
                             }
                             ReplAction::Models => {
-                                if let Some((provider, model)) = commands.pick_model_interactive() {
+                                if let Some((provider, model)) = commands.pick_model_interactive_inline() {
+                                    // Update model_info after switch
+                                    let model_info = get_model_info(&commands);
                                     inline::print_blank();
                                     inline::print_line(&components::success_badge(
                                         &format!("Switched to {} / {}", provider, model),
                                     ));
                                     inline::print_blank();
+                                    print_status_bar(&model_info, &stats);
                                 }
                             }
                             ReplAction::ModelsSwitch(name) => {
@@ -936,24 +1085,6 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                             ReplAction::Search(query) => {
                                 commands.search_memory_inline(&query);
                             }
-                            ReplAction::Restart => {
-                                commands.restart_session();
-                                conversation.clear();
-                                stats.reset();
-                                inline::print_blank();
-                                inline::print_line(&components::success_badge(
-                                    "Session restarted — memory cleared, cost reset.",
-                                ));
-                                inline::print_line(&Line::from(vec![
-                                    RSpan::raw("  "),
-                                    RSpan::styled(
-                                        "AGENT.md and persistent memory remain loaded.",
-                                        RStyle::default().add_modifier(Modifier::DIM),
-                                    ),
-                                ]));
-                                inline::print_blank();
-                                print_status_bar(&model_info, &stats);
-                            }
                             ReplAction::Image(path) => {
                                 commands.attach_image_inline(&path);
                             }
@@ -966,12 +1097,35 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                 match input.to_lowercase().as_str() {
                     "exit" | "quit" | "q" => break,
                     "help" | "h" => print_help(),
-                    "clear" => {
+                    "new" | "n" => {
+                        // Save current session before clearing
+                        if !current_session.messages.is_empty() {
+                            let _ = crate::session::save(&current_session);
+                        }
+                        let cwd = std::env::current_dir()
+                            .unwrap_or_default()
+                            .display().to_string();
+                        current_session = crate::session::create(
+                            &cwd,
+                            &model_info.provider,
+                            &model_info.model,
+                        );
+                        conversation.clear();
+                        stats.reset();
+                        commands.restart_session();
+
                         crossterm::execute!(
                             std::io::stdout(),
                             crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
                             crossterm::cursor::MoveTo(0, 0)
                         ).ok();
+                        model_info = get_model_info(&commands);
+                        print_banner(&model_info, &stats);
+                        inline::print_blank();
+                        inline::print_line(&components::success_badge(
+                            "New session started.",
+                        ));
+                        inline::print_blank();
                         print_status_bar(&model_info, &stats);
                     }
                     _ => {
@@ -981,6 +1135,13 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                             timestamp: chrono::Local::now(),
                         });
                         stats.increment_messages();
+
+                        // Push to session and auto-save
+                        crate::session::push_message(
+                            &mut current_session,
+                            "user",
+                            &input,
+                        );
 
                         // Visual break between user input (drawn by reedline)
                         // and the assistant turn.
@@ -1008,6 +1169,17 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                 ),
                                 timestamp: chrono::Local::now(),
                             });
+
+                            // Push assistant response to session
+                            crate::session::push_message(
+                                &mut current_session,
+                                "assistant",
+                                &format!("(response in {:.1}s)", elapsed.as_secs_f64()),
+                            );
+
+                            // Auto-save session
+                            let _ = crate::session::save(&current_session);
+
                             print_response_summary(&stats, elapsed.as_millis());
                         }
                     }
@@ -1028,6 +1200,11 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                 break;
             }
         }
+    }
+
+    // Auto-save session on exit
+    if !current_session.messages.is_empty() {
+        let _ = crate::session::save(&current_session);
     }
 
     print_goodbye(&stats);
@@ -1070,20 +1247,19 @@ fn get_model_info(commands: &Commands) -> ModelInfo {
 
 enum ReplAction {
     Quit,
-    Clear,
+    NewSession,
     Config,
     History,
     Tools,
     Stats,
-    Save(String),
-    Load(String),
     Provider(String),
     Models,
     ModelsSwitch(String),
+    Sessions,
+    SessionsResume(String),
     Mcp,
     Plan(String),
     Search(String),
-    Restart,
     Image(String),
 }
 
@@ -1101,26 +1277,12 @@ fn handle_slash_command(input: &str) -> Option<ReplAction> {
             print_help();
             None
         }
-        "/clear" | "/c" | "/cls" => Some(ReplAction::Clear),
+        "/new" | "/n" | "/clear" | "/cls" => Some(ReplAction::NewSession),
         "/config" | "/cfg" => Some(ReplAction::Config),
         "/history" | "/hist" => Some(ReplAction::History),
         "/tools" | "/t" => Some(ReplAction::Tools),
-        "/stats" | "/s" => Some(ReplAction::Stats),
+        "/stats" => Some(ReplAction::Stats),
         "/mcp" => Some(ReplAction::Mcp),
-        "/save" if !arg.is_empty() => Some(ReplAction::Save(arg)),
-        "/save" => {
-            inline::print_blank();
-            inline::print_line(&components::warning_badge("Usage: /save <file>"));
-            inline::print_blank();
-            None
-        }
-        "/load" if !arg.is_empty() => Some(ReplAction::Load(arg)),
-        "/load" => {
-            inline::print_blank();
-            inline::print_line(&components::warning_badge("Usage: /load <file>"));
-            inline::print_blank();
-            None
-        }
         "/provider" if !arg.is_empty() => Some(ReplAction::Provider(arg)),
         "/provider" => {
             inline::print_blank();
@@ -1130,6 +1292,8 @@ fn handle_slash_command(input: &str) -> Option<ReplAction> {
         }
         "/models" | "/m" if !arg.is_empty() => Some(ReplAction::ModelsSwitch(arg)),
         "/models" | "/m" => Some(ReplAction::Models),
+        "/sessions" | "/ss" if !arg.is_empty() => Some(ReplAction::SessionsResume(arg)),
+        "/sessions" | "/ss" => Some(ReplAction::Sessions),
         "/plan" if !arg.is_empty() => Some(ReplAction::Plan(arg)),
         "/plan" => {
             inline::print_blank();
@@ -1146,7 +1310,6 @@ fn handle_slash_command(input: &str) -> Option<ReplAction> {
             inline::print_blank();
             None
         }
-        "/restart" | "/reset" => Some(ReplAction::Restart),
         "/image" | "/img" if !arg.is_empty() => Some(ReplAction::Image(arg)),
         "/image" | "/img" => {
             inline::print_blank();
@@ -1420,26 +1583,25 @@ fn print_help() {
 
 **Slash commands:**
 - `/help`              Show this help
-- `/clear`             Clear screen
+- `/new`               Start a new session (clears conversation)
 - `/config`            Show current configuration
 - `/history`           Show conversation history
 - `/tools`             List available tools
 - `/stats`             Show session statistics
 - `/mcp`               Show MCP server status
-- `/save <file>`       Export conversation to file
-- `/load <file>`       Load conversation from file
+- `/sessions`          List previous sessions
+- `/sessions <id>`     Resume a previous session
 - `/plan <goal>`       Create a plan for a goal
 - `/search <query>`    Search conversation memory (case-insensitive)
 - `/image <path>`      Attach image for next turn (path | data: | http(s) URL)
-- `/restart`           Restart session (clear memory + cost; AGENT.md stays)
 - `/provider <name>`   Switch provider (not yet supported)
-- `/models`            List & switch models (interactive picker)
-- `/models <name>`     Switch to model by name (partial match ok)
+- `/models`            Pick model interactively
+- `/models <name>`     Switch to model by name (supports auto-complete)
 - `/quit`              Exit interactive mode
 
 **Shortcuts:**
 - `help`, `h`          Show help
-- `clear`              Clear screen
+- `new`, `n`           New session
 - `exit`, `q`          Exit
 
 **Completion & Hints:**
@@ -1708,85 +1870,79 @@ fn print_goodbye(stats: &SessionStats) {
 
 // ── Save/Load conversation ──────────────────────────────────
 
-fn save_conversation(conversation: &[ConversationEntry], file: &str) {
-    let data = serde_json::json!({
-        "version": 1,
-        "exported_at": chrono::Local::now().to_rfc3339(),
-        "message_count": conversation.len(),
-        "messages": conversation.iter().map(|e| {
-            serde_json::json!({
-                "role": e.role,
-                "content": e.content,
-                "timestamp": e.timestamp.to_rfc3339(),
-            })
-        }).collect::<Vec<_>>(),
-    });
+fn show_sessions() {
+    inline::print_blank();
 
-    let content = match serde_json::to_string_pretty(&data) {
-        Ok(c) => c,
+    let sessions = match crate::session::list() {
+        Ok(s) => s,
         Err(e) => {
-            inline::print_blank();
-            inline::print_line(&components::error_badge(&format!("Failed to serialize: {}", e)));
+            inline::print_line(&components::error_badge(
+                &format!("Failed to list sessions: {}", e),
+            ));
             inline::print_blank();
             return;
         }
     };
 
-    match std::fs::write(file, content) {
-        Ok(_) => {
-            inline::print_blank();
-            inline::print_line(&components::success_badge(&format!(
-                "Conversation saved to: {} ({} messages)",
-                file,
-                conversation.len()
-            )));
-            inline::print_blank();
-        }
-        Err(e) => {
-            inline::print_blank();
-            inline::print_line(&components::error_badge(&format!("Failed to save: {}", e)));
-            inline::print_blank();
-        }
-    }
-}
-
-fn load_conversation(file: &str) -> Result<Vec<ConversationEntry>> {
-    let content = std::fs::read_to_string(file)
-        .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
-
-    let data: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("Invalid JSON: {}", e))?;
-
-    let messages = data
-        .get("messages")
-        .and_then(|m| m.as_array())
-        .ok_or_else(|| anyhow::anyhow!("No 'messages' array found in file"))?;
-
-    let mut entries = Vec::new();
-    for msg in messages {
-        let role = msg
-            .get("role")
-            .and_then(|r| r.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let content = msg
-            .get("content")
-            .and_then(|c| c.as_str())
-            .unwrap_or("")
-            .to_string();
-        let timestamp = msg
-            .get("timestamp")
-            .and_then(|t| t.as_str())
-            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-            .map(|dt| dt.with_timezone(&chrono::Local))
-            .unwrap_or_else(chrono::Local::now);
-
-        entries.push(ConversationEntry {
-            role,
-            content,
-            timestamp,
-        });
+    if sessions.is_empty() {
+        inline::print_line(&components::warning_badge("No previous sessions found."));
+        inline::print_blank();
+        return;
     }
 
-    Ok(entries)
+    inline::print_line(&components::section_header(
+        "📜",
+        &format!("Sessions ({})", sessions.len()),
+        Color::Rgb(64, 224, 208),
+    ));
+    inline::print_blank();
+
+    let bold = RStyle::default().add_modifier(Modifier::BOLD);
+    let dim = RStyle::default().add_modifier(Modifier::DIM);
+
+    for (i, s) in sessions.iter().enumerate().take(20) {
+        let time = crate::session::format_relative_time(&s.updated_at);
+
+        let title = if s.title.is_empty() {
+            "Untitled"
+        } else {
+            &s.title
+        };
+
+        inline::print_line(&Line::from(vec![
+            RSpan::styled(format!("  {:2}. ", i + 1), dim.clone()),
+            RSpan::styled(title.to_string(), bold.clone()),
+            RSpan::styled(format!("  {} msgs", s.message_count), dim.clone()),
+            RSpan::raw("  "),
+            RSpan::styled(time, RStyle::default().fg(Color::Rgb(135, 206, 250))),
+        ]));
+        inline::print_line(&Line::from(vec![
+            RSpan::styled("      ", RStyle::default()),
+            RSpan::styled(format!("{}", s.id), dim.clone()),
+            RSpan::styled(format!(" · {} · {}/{}", s.directory, s.provider, s.model), dim.clone()),
+        ]));
+        inline::print_blank();
+    }
+
+    if sessions.len() > 20 {
+        inline::print_line(&Line::from(vec![
+            RSpan::styled(
+                format!("  ... and {} more", sessions.len() - 20),
+                dim.clone(),
+            ),
+        ]));
+        inline::print_blank();
+    }
+
+    inline::print_line(&Line::from(vec![
+        RSpan::styled("💡 ", RStyle::default()),
+        RSpan::styled("Tip: ", RStyle::default().add_modifier(Modifier::DIM)),
+        RSpan::raw("Use "),
+        RSpan::styled(
+            "/sessions <id>",
+            RStyle::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD),
+        ),
+        RSpan::raw(" to resume a session"),
+    ]));
+    inline::print_blank();
 }

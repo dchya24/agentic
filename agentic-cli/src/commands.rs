@@ -598,8 +598,153 @@ impl Commands {
 
     /// Interactive model picker using ratatui full-screen TUI.
     /// Returns (provider_name, model_name) if switched, None if cancelled.
-    pub fn pick_model_interactive(&mut self) -> Option<(String, String)> {
-        crate::model_picker::run(self)
+    /// Display available models inline (non-modal).
+    pub fn list_models_inline(&self) {
+        inline::print_blank();
+        inline::print_line(&components::section_header(
+            "🤖",
+            "Available Models",
+            RColor::Cyan,
+        ));
+        inline::print_blank();
+
+        let active_provider = self.config.active_provider().map(|p| p.name.clone());
+        let active_model = self.config.active_model().map(|m| m.model.clone());
+
+        for provider in &self.config.providers {
+            let provider_style = RStyle::default()
+                .fg(RColor::Rgb(255, 215, 0))
+                .add_modifier(RModifier::BOLD);
+
+            inline::print_line(&RLine::from(vec![
+                RSpan::raw("  "),
+                RSpan::styled(format!("📡 {}", provider.name), provider_style),
+            ]));
+
+            for model in &provider.models {
+                let is_active = active_provider.as_deref() == Some(&provider.name)
+                    && active_model.as_deref() == Some(&model.model);
+
+                let display = model.display_name.as_deref().unwrap_or(&model.model);
+                let caps = model.effective_capabilities();
+
+                let mut spans = vec![RSpan::raw("    ")];
+
+                if is_active {
+                    spans.push(RSpan::styled(
+                        "● ",
+                        RStyle::default().fg(RColor::Green),
+                    ));
+                } else {
+                    spans.push(RSpan::raw("  "));
+                }
+
+                spans.push(RSpan::styled(
+                    display.to_string(),
+                    RStyle::default().fg(RColor::Rgb(180, 180, 200)),
+                ));
+
+                if caps.vision {
+                    spans.push(RSpan::styled(
+                        "  👁",
+                        RStyle::default().fg(RColor::Rgb(135, 206, 250)),
+                    ));
+                }
+
+                spans.push(RSpan::styled(
+                    format!("  ({})", model.model),
+                    RStyle::default().fg(RColor::Rgb(100, 100, 120)).add_modifier(RModifier::DIM),
+                ));
+
+                inline::print_line(&RLine::from(spans));
+            }
+            inline::print_blank();
+        }
+
+        inline::print_line(&RLine::from(vec![
+            RSpan::styled("💡 ", RStyle::default()),
+            RSpan::styled("Tip: ", RStyle::default().add_modifier(RModifier::DIM)),
+            RSpan::raw("Use "),
+            RSpan::styled(
+                "/models <name>",
+                RStyle::default().fg(RColor::Rgb(255, 215, 0)).add_modifier(RModifier::BOLD),
+            ),
+            RSpan::raw(" to switch. Type "),
+            RSpan::styled(
+                "/models ",
+                RStyle::default().fg(RColor::Rgb(255, 215, 0)),
+            ),
+            RSpan::raw("then press "),
+            RSpan::styled(
+                "Tab",
+                RStyle::default().fg(RColor::Rgb(135, 206, 250)).add_modifier(RModifier::BOLD),
+            ),
+            RSpan::raw(" for completion"),
+        ]));
+        inline::print_blank();
+    }
+
+    /// Interactive model picker using dialoguer (fuzzy searchable).
+    pub fn pick_model_interactive_inline(&mut self) -> Option<(String, String)> {
+        use dialoguer::{FuzzySelect, theme::ColorfulTheme};
+
+        let active_provider = self.config.active_provider().map(|p| p.name.clone());
+        let active_model = self.config.active_model().map(|m| m.model.clone());
+
+        // Build list of (display_string, provider_name, model_name)
+        let mut items: Vec<(String, String, String)> = Vec::new();
+        let mut default_idx = 0;
+
+        for provider in &self.config.providers {
+            for model in &provider.models {
+                let display_name = model.display_name.as_deref().unwrap_or(&model.model);
+                let caps = model.effective_capabilities();
+                let vision_icon = if caps.vision { " 👁" } else { "" };
+
+                let is_active = active_provider.as_deref() == Some(&provider.name)
+                    && active_model.as_deref() == Some(&model.model);
+
+                if is_active {
+                    default_idx = items.len();
+                }
+
+                let display = format!(
+                    "{}{} [{}]{}",
+                    display_name,
+                    vision_icon,
+                    provider.name,
+                    if is_active { " ●" } else { "" }
+                );
+
+                items.push((display, provider.name.clone(), model.model.clone()));
+            }
+        }
+
+        if items.is_empty() {
+            inline::print_blank();
+            inline::print_line(&components::warning_badge("No models configured."));
+            inline::print_blank();
+            return None;
+        }
+
+        inline::print_blank();
+
+        let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
+            .with_prompt("🤖 Select Model (type to filter, ↑↓ to navigate, Enter to select, Esc to cancel)")
+            .items(&items.iter().map(|(d, _, _)| d.as_str()).collect::<Vec<_>>())
+            .default(default_idx)
+            .interact_opt();
+
+        match selection {
+            Ok(Some(idx)) => {
+                let (_, _, model) = &items[idx];
+                match self.switch_model(model) {
+                    Ok(result) => Some(result),
+                    Err(_) => None,
+                }
+            }
+            Ok(None) | Err(_) => None,
+        }
     }
 
     // ── MCP status (for REPL /mcp) ──────────────────────────
