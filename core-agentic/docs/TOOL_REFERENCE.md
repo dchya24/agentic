@@ -1,235 +1,312 @@
-# opencode Tools Reference
+# Agentic Tools Reference
 
-The `packages/opencode/src/tool/` directory contains **19 registered tools** (plus supporting utilities). Each tool follows the `Tool.define(id, Effect<Init>)` pattern with Zod schemas for parameters.
+The `core-agentic/src/tools/` directory contains **18 registered builtin tools**.
+Each tool implements the `Tool` trait (`core-agentic/src/tool.rs`) with
+`name()`, `description()`, `schema()`, `execute()`, and `is_read_only()`.
 
 ## Architecture
 
-| File                    | Purpose                                                                                                        |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `tool.ts`               | Core `Tool.define()` / `Tool.init()` functions, `Def`/`Context`/`ExecuteResult` types                          |
-| `registry.ts`           | `ToolRegistry` service that registers all builtin tools, discovers plugin tools, and filters by model/provider |
-| `schema.ts`             | `ToolID` branded schema                                                                                        |
-| `truncate.ts`           | Output truncation service (max lines/bytes)                                                                    |
-| `external-directory.ts` | External directory guard for file tools                                                                        |
-| `mcp-exa.ts`            | Exa AI MCP client for web/code search                                                                          |
+| File                    | Purpose                                                                 |
+| ----------------------- | ----------------------------------------------------------------------- |
+| `tool.rs`               | `Tool` trait, `ToolSchema`, `ToolParam`, `ToolCall`, `ToolResultValue`  |
+| `tool_registry.rs`      | `ToolRegistry` — register, execute, list, `RwLock`-based concurrency   |
+| `mod.rs`                | `builtin_tools()` — assembles the standard 18-tool set                  |
+
+### Tool classification
+
+| Category | Tools | `is_read_only` |
+|----------|-------|:-:|
+| File read | `read_file`, `list_files`, `glob`, `grep`, `search_files` | ✅ |
+| VCS read | `git_status`, `git_diff` | ✅ |
+| Web read | `fetch`, `web_search` | ✅ |
+| Interactive | `question` | ✅ |
+| File write | `write_file`, `edit_file`, `apply_patch` | ❌ |
+| Execution | `run_command`, `run_script`, `run_tests` | ❌ |
+| Agent | `spawn_subagent`, `update_memory`, `todowrite` | ❌ |
+
+Read-only tools may be batched and executed concurrently by the orchestrator's
+`handle_tool_calls_parallel` path. Mutating tools always run sequentially.
 
 ---
 
 ## Tool List
 
-### bash
+### run_command
 
-Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures. Supports git, npm, docker, etc. OS/Shell-aware (Bash, PowerShell).
+Execute a shell command and return its output.
 
-| Parameter   | Type   | Required | Description                                                        |
-| ----------- | ------ | -------- | ------------------------------------------------------------------ |
-| command     | string | yes      | The command to execute                                             |
-| timeout     | number | no       | Optional timeout in milliseconds                                   |
-| workdir     | string | no       | The working directory to run the command in                        |
-| description | string | yes      | Clear, concise description of what this command does in 5-10 words |
-
----
-
-### read
-
-Read a file or directory from the local filesystem. Supports text files, images, and PDFs. Returns up to 2000 lines by default with line numbers.
-
-| Parameter | Type   | Required | Description                                            |
-| --------- | ------ | -------- | ------------------------------------------------------ |
-| filePath  | string | yes      | The absolute path to the file or directory to read     |
-| offset    | number | no       | The line number to start reading from (1-indexed)      |
-| limit     | number | no       | The maximum number of lines to read (defaults to 2000) |
+| Parameter | Type   | Required | Description                          |
+| --------- | ------ | -------- | ------------------------------------ |
+| command   | string | yes      | The command to execute               |
+| cwd       | string | no       | Working directory for execution      |
+| timeout   | number | no       | Optional timeout in milliseconds     |
 
 ---
 
-### edit
+### read_file
 
-Performs exact string replacements in files. Uses fuzzy matching strategies (trimmed lines, block anchors, whitespace normalization, escape normalization, etc.) for robust matching.
+Read the contents of a file. Supports text files. Returns content with line tracking.
+Integrates with `FileTracker` for staleness detection (edit_file rejects edits to files modified externally since last read).
 
-| Parameter  | Type    | Required | Description                                                    |
-| ---------- | ------- | -------- | -------------------------------------------------------------- |
-| filePath   | string  | yes      | The absolute path to the file to modify                        |
-| oldString  | string  | yes      | The text to replace                                            |
-| newString  | string  | yes      | The text to replace it with (must be different from oldString) |
-| replaceAll | boolean | no       | Replace all occurrences of oldString (default false)           |
-
----
-
-### write
-
-Writes a file to the local filesystem. Overwrites existing files. Triggers LSP diagnostics after write.
-
-| Parameter | Type   | Required | Description                                               |
-| --------- | ------ | -------- | --------------------------------------------------------- |
-| content   | string | yes      | The content to write to the file                          |
-| filePath  | string | yes      | The absolute path to the file to write (must be absolute) |
+| Parameter | Type   | Required | Description               |
+| --------- | ------ | -------- | ------------------------- |
+| path      | string | yes      | Absolute path to the file |
+| offset    | number | no       | Start line (1-indexed)    |
+| limit     | number | no       | Max lines to return       |
 
 ---
 
-### glob
+### edit_file
 
-Fast file pattern matching tool. Supports glob patterns like `**/*.js`. Returns matching file paths sorted by modification time. Limited to 100 results.
+Performs exact string replacements in files. Rejects edits to stale files
+(files modified externally since the agent last read them).
 
-| Parameter | Type   | Required | Description                                  |
-| --------- | ------ | -------- | -------------------------------------------- |
-| pattern   | string | yes      | The glob pattern to match files against      |
-| path      | string | no       | The directory to search in (defaults to cwd) |
-
----
-
-### grep
-
-Fast content search tool using regular expressions. Filter files by pattern with the include parameter. Returns file paths and line numbers with matches sorted by modification time.
-
-| Parameter | Type   | Required | Description                                                       |
-| --------- | ------ | -------- | ----------------------------------------------------------------- |
-| pattern   | string | yes      | The regex pattern to search for in file contents                  |
-| path      | string | no       | The directory to search in (defaults to cwd)                      |
-| include   | string | no       | File pattern to include in the search (e.g. `*.js`, `*.{ts,tsx}`) |
+| Parameter   | Type    | Required | Description                                                    |
+| ----------- | ------- | -------- | -------------------------------------------------------------- |
+| file_path   | string  | yes      | Absolute path to the file to modify                            |
+| old_string  | string  | yes      | The text to replace                                            |
+| new_string  | string  | yes      | The text to replace it with (must differ from `old_string`)    |
+| replace_all | boolean | no       | Replace all occurrences (default: first match only)            |
 
 ---
 
-### task
+### write_file
 
-Launch a new agent to handle complex, multistep tasks autonomously. Creates a sub-session with the specified agent type. Dynamic description includes available agent types.
+Write content to a file. Overwrites existing files. Creates parent directories.
 
-| Parameter     | Type   | Required | Description                                        |
-| ------------- | ------ | -------- | -------------------------------------------------- |
-| description   | string | yes      | A short (3-5 words) description of the task        |
-| prompt        | string | yes      | The task for the agent to perform                  |
-| subagent_type | string | yes      | The type of specialized agent to use for this task |
-| task_id       | string | no       | Set to resume a previous task's subagent session   |
-| command       | string | no       | The command that triggered this task               |
-
----
-
-### question
-
-Ask the user questions during execution. Gather preferences, clarify instructions, get decisions on implementation choices. Enabled only for app/cli/desktop clients.
-
-| Parameter | Type  | Required | Description                                                                                                 |
-| --------- | ----- | -------- | ----------------------------------------------------------------------------------------------------------- |
-| questions | array | yes      | Questions to ask (array of Question.Prompt objects with question, header, options, custom, multiple fields) |
-
----
-
-### webfetch
-
-Fetches content from a specified URL. Converts HTML to markdown by default. Supports text, markdown, and html output formats. Handles images as attachments.
-
-| Parameter | Type   | Required | Description                                                                              |
-| --------- | ------ | -------- | ---------------------------------------------------------------------------------------- |
-| url       | string | yes      | The URL to fetch content from                                                            |
-| format    | enum   | no       | The format to return the content in (`text`, `markdown`, `html`). Defaults to `markdown` |
-| timeout   | number | no       | Optional timeout in seconds (max 120)                                                    |
-
----
-
-### websearch
-
-Search the web using Exa AI. Performs real-time web searches with configurable result counts and live crawling modes.
-
-| Parameter            | Type   | Required | Description                                            |
-| -------------------- | ------ | -------- | ------------------------------------------------------ |
-| query                | string | yes      | Websearch query                                        |
-| numResults           | number | no       | Number of search results to return (default: 8)        |
-| livecrawl            | enum   | no       | Live crawl mode: `fallback` or `preferred`             |
-| type                 | enum   | no       | Search type: `auto`, `fast`, or `deep`                 |
-| contextMaxCharacters | number | no       | Maximum characters for context string (default: 10000) |
-
----
-
-### todowrite
-
-Create and manage a structured task list for the current coding session. Track progress, organize complex tasks. Each todo has content, status, and priority.
-
-| Parameter | Type  | Required | Description                                                            |
-| --------- | ----- | -------- | ---------------------------------------------------------------------- |
-| todos     | array | yes      | The updated todo list (array of `{content, status, priority}` objects) |
-
----
-
-### skill
-
-Load a specialized skill that provides domain-specific instructions and workflows. Injects the skill's instructions, resources, and file listing into the conversation.
-
-| Parameter | Type   | Required | Description                                 |
-| --------- | ------ | -------- | ------------------------------------------- |
-| name      | string | yes      | The name of the skill from available_skills |
+| Parameter | Type   | Required | Description                        |
+| --------- | ------ | -------- | ---------------------------------- |
+| path      | string | yes      | Absolute path to the file          |
+| content   | string | yes      | Content to write                   |
 
 ---
 
 ### apply_patch
 
-Apply a patch to one or more files using a stripped-down, file-oriented diff format. Supports Add File, Delete File, and Update File (with optional rename) operations. Only available for GPT models.
+Apply a unified diff to one or more files atomically. Multi-file changes
+expressed as a single tool call. All-or-nothing: failure halfway through
+leaves the disk untouched.
+
+| Parameter | Type   | Required | Description                              |
+| --------- | ------ | -------- | ---------------------------------------- |
+| patch     | string | yes      | Full unified diff text describing changes |
+
+---
+
+### list_files
+
+List files in a directory.
+
+| Parameter | Type   | Required | Description                     |
+| --------- | ------ | -------- | ------------------------------- |
+| path      | string | no       | Directory path (defaults to .)  |
+
+---
+
+### glob
+
+Fast file pattern matching. Returns matching file paths sorted by modification time.
+
+| Parameter | Type   | Required | Description                            |
+| --------- | ------ | -------- | -------------------------------------- |
+| pattern   | string | yes      | Glob pattern (e.g. `**/*.rs`)          |
+| path      | string | no       | Directory to search in (defaults to .) |
+
+---
+
+### grep
+
+Fast content search using regular expressions.
+
+| Parameter | Type   | Required | Description                                              |
+| --------- | ------ | -------- | -------------------------------------------------------- |
+| pattern   | string | yes      | Regex pattern to search for                              |
+| path      | string | no       | Directory to search in (defaults to .)                   |
+| include   | string | no       | File pattern filter (e.g. `*.rs`, `*.{ts,tsx}`)          |
+
+---
+
+### search_files
+
+Full-text content search across files. Case-insensitive.
+
+| Parameter | Type   | Required | Description                                        |
+| --------- | ------ | -------- | -------------------------------------------------- |
+| query     | string | yes      | Text to search for                                 |
+| path      | string | no       | Directory to search in (defaults to .)             |
+
+---
+
+### run_script
+
+Execute multi-line scripts with optional timeout.
+
+| Parameter | Type   | Required | Description                              |
+| --------- | ------ | -------- | ---------------------------------------- |
+| script    | string | yes      | Script content to execute                |
+| cwd       | string | no       | Working directory                        |
+| timeout   | number | no       | Optional timeout in milliseconds         |
+
+---
+
+### run_tests
+
+Auto-detect the project's test runner and execute it. Returns structured output
+(passed / failed / duration / stdout). Detection: Cargo → npm/pnpm/yarn → pytest → go test.
+
+| Parameter | Type   | Required | Description                                  |
+| --------- | ------ | -------- | -------------------------------------------- |
+| filter    | string | no       | Test filter forwarded to the underlying runner |
+| workdir   | string | no       | Working directory (defaults to .)              |
+
+---
+
+### git_status
+
+Structured `git status --porcelain` output. Returns parsed entries with path, index status, and worktree status.
+
+| Parameter | Type   | Required | Description                      |
+| --------- | ------ | -------- | -------------------------------- |
+| workdir   | string | no       | Working directory (defaults to .) |
+
+---
+
+### git_diff
+
+Structured `git diff` output with configurable scope. Capped at 25K chars.
 
 | Parameter | Type   | Required | Description                                               |
 | --------- | ------ | -------- | --------------------------------------------------------- |
-| patchText | string | yes      | The full patch text that describes all changes to be made |
+| staged    | boolean | no      | Show staged changes instead of unstaged (default: false) |
+| workdir   | string  | no      | Working directory (defaults to .)                         |
 
 ---
 
-### codesearch
+### fetch
 
-Search and get relevant context for any programming task using Exa Code API. Returns code examples, documentation, and API references.
+Fetch a URL and return cleaned text content. HTML is stripped to plain text.
+Process-wide in-memory cache avoids re-fetching the same URL within a session.
 
-| Parameter | Type   | Required | Description                                            |
-| --------- | ------ | -------- | ------------------------------------------------------ |
-| query     | string | yes      | Search query for APIs, Libraries, and SDKs             |
-| tokensNum | number | no       | Number of tokens to return (1000-50000, default: 5000) |
-
----
-
-### lsp
-
-Interact with Language Server Protocol servers for code intelligence: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, goToImplementation, prepareCallHierarchy, incomingCalls, outgoingCalls. Experimental (requires `OPENCODE_EXPERIMENTAL_LSP_TOOL` flag).
-
-| Parameter | Type   | Required | Description                                                                                                                                                                          |
-| --------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| operation | enum   | yes      | The LSP operation (`goToDefinition`, `findReferences`, `hover`, `documentSymbol`, `workspaceSymbol`, `goToImplementation`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`) |
-| filePath  | string | yes      | The absolute or relative path to the file                                                                                                                                            |
-| line      | number | yes      | The line number (1-based)                                                                                                                                                            |
-| character | number | yes      | The character offset (1-based)                                                                                                                                                       |
+| Parameter | Type   | Required | Description                                        |
+| --------- | ------ | -------- | -------------------------------------------------- |
+| url       | string | yes      | URL to fetch (http/https only)                     |
+| max_chars | number | no       | Max output chars (default: 25,000)                 |
+| raw       | boolean | no      | Skip HTML cleaning (default: false)               |
 
 ---
 
-### plan_exit
+### web_search
 
-Exit plan agent mode. Asks the user if they want to switch to the build agent to start implementing the plan. Only available in CLI with experimental plan mode enabled.
+Search the web. Multi-backend: Tavily → Brave → DuckDuckGo (fallback).
 
-| Parameter | Type | Required | Description |
-| --------- | ---- | -------- | ----------- |
-| _(none)_  |      |          |             |
-
----
-
-### invalid
-
-Internal tool for handling invalid tool call arguments. Not intended for direct use.
-
-| Parameter | Type   | Required | Description                   |
-| --------- | ------ | -------- | ----------------------------- |
-| tool      | string | yes      | The tool name that was called |
-| error     | string | yes      | The error message             |
+| Parameter    | Type   | Required | Description                             |
+| ------------ | ------ | -------- | --------------------------------------- |
+| query        | string | yes      | Search query                            |
+| max_results  | number | no       | Max results (default: 5, hard cap: 20)  |
 
 ---
 
-## Additional (not registered in builtin list)
+### spawn_subagent
 
-| Name      | File           | Notes                                                                          |
-| --------- | -------------- | ------------------------------------------------------------------------------ |
-| multiedit | `multiedit.ts` | Multiple sequential edits to a single file. Defined but not in builtin list    |
-| mcp-exa   | `mcp-exa.ts`   | Helper module providing Exa AI MCP client used by `websearch` and `codesearch` |
+Spawn a subagent with an isolated conversation history. The parent only sees
+the subagent's final text answer. Shared: provider, tools, safety policy, cancel flag.
+Isolated: conversation memory, truncation/compaction state.
+
+| Parameter       | Type   | Required | Description                                    |
+| --------------- | ------ | -------- | ---------------------------------------------- |
+| task            | string | yes      | Self-contained task description                 |
+| max_iterations  | number | no       | Loop cap for the subagent (default: 12)         |
 
 ---
 
-## Conditional Availability
+### update_memory
 
-| Tool                     | Condition                                                              |
-| ------------------------ | ---------------------------------------------------------------------- |
-| `question`               | Only when `OPENCODE_ENABLE_QUESTION_TOOL` or client is app/cli/desktop |
-| `apply_patch`            | Only for GPT models (excludes GPT-4 and OSS variants)                  |
-| `edit` / `write`         | Hidden when `apply_patch` is active                                    |
-| `lsp`                    | Requires `OPENCODE_EXPERIMENTAL_LSP_TOOL` flag                         |
-| `plan_exit`              | Requires `OPENCODE_EXPERIMENTAL_PLAN_MODE` + CLI client                |
-| `websearch`/`codesearch` | Requires opencode provider or `OPENCODE_ENABLE_EXA` flag               |
+Append a timestamped note to persistent memory (user-global or project-local).
+Loaded into the system prompt on session start.
+
+| Parameter | Type   | Required | Description                                                          |
+| --------- | ------ | -------- | -------------------------------------------------------------------- |
+| content   | string | yes      | Markdown text to append                                              |
+| scope     | string | no       | `user` (global `~/.config/agentic/memory.md`) or `project` (`.agentic/memory.md`). Default: `user` |
+
+---
+
+### question
+
+Ask the user one or more questions during execution. Supports free-text,
+multiple choice, multi-select, and custom answers. Uses a callback pattern:
+the CLI/TUI registers a `QuestionHandler` at startup.
+
+**If no handler is registered**, the tool returns a `skipped: true` answer
+for every question — the agent can proceed without blocking.
+
+| Parameter | Type  | Required | Description                                                                                                |
+| --------- | ----- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| questions | array | yes      | Array of `{question (string, required), header? (string), options? (string[]), custom? (bool), multiple? (bool)}` |
+
+**Returns:**
+```jsonc
+{
+  "answers": [{ "question": "...", "answer": ["choice"], "skipped": false }],
+  "total": 1,
+  "skipped": 0,
+  "answered": 1
+}
+```
+
+**CLI integration required:** Register a handler via `set_question_handler()`.
+See [milestone-4-interactive-tools-02062026.md](../../docs/milestone-4-interactive-tools-02062026.md).
+
+---
+
+### todowrite
+
+Create and manage a structured task list for the session. Each call **replaces**
+the entire list — send the full updated array every time.
+
+Session-scoped: the list lives in memory and is lost on process exit.
+Persist important tasks via `update_memory` if cross-session continuity is needed.
+
+| Parameter | Type  | Required | Description                                                                                              |
+| --------- | ----- | -------- | -------------------------------------------------------------------------------------------------------- |
+| todos     | array | yes      | Full updated list. Each item: `{content (string, required), status? (string), priority? (string)}`. Max 50 items. |
+
+**Status values:** `pending` · `in_progress` (aliases: `active`, `in-progress`) · `completed` (alias: `done`) · `cancelled` (aliases: `canceled`, `skipped`)
+
+**Priority values:** `low` · `medium` (aliases: `normal`) · `high` (aliases: `important`, `critical`)
+
+**Returns:**
+```jsonc
+{
+  "total": 3,
+  "completed": 1,
+  "in_progress": 1,
+  "pending": 1,
+  "progress_pct": 33
+}
+```
+
+**CLI integration required:** Register a change handler via `set_todo_change_handler()`
+for UI rendering. See [milestone-4-interactive-tools-02062026.md](../../docs/milestone-4-interactive-tools-02062026.md).
+
+---
+
+## Conditional availability
+
+These tools are always registered in `builtin_tools()`. Conditional gating is handled at the CLI layer:
+
+| Tool | CLI condition |
+| ---- | ------------- |
+| `question` | Only effective when a `QuestionHandler` is registered. Falls back to skip-all when no handler is present. |
+| `fetch` / `web_search` | Subject to `UrlPolicy` (domain allowlist, IP-literal block). |
+| `apply_patch` | Works on all models. When a model emits `apply_patch`, the tool applies it. When a model prefers `edit_file`/`write_file`, those are used instead. |
+
+## Not implemented (intentional)
+
+These tools from the opencode reference are **not planned** for agentic:
+
+| Tool | Reason |
+| ---- | ------ |
+| `lsp` | Out of scope per architecture spec. The agent uses `read_file` + `grep` + `glob` for code navigation. |
+| `codesearch` | Out of scope. The agent uses `web_search` for external documentation lookup. |
+| `multiedit` | Covered by `apply_patch` (multi-file unified diff) and `edit_file` with `replace_all`. |

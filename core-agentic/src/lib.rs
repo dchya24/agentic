@@ -61,6 +61,11 @@ pub use tools::{
     EditFileTool, FetchTool, GlobTool, GrepTool, ListFilesTool, ReadFileTool, RunCommandTool,
     WriteFileTool, SearchFilesTool, RunScriptTool, UpdateMemoryTool, SpawnSubagentTool,
     WebSearchTool, ApplyPatchTool, RunTestsTool, GitStatusTool, GitDiffTool,
+    // Interactive tools
+    QuestionTool, QuestionPrompt, QuestionAnswer, QuestionHandler,
+    set_question_handler, clear_question_handler,
+    TodowriteTool, TodoItem, TodoStatus, TodoPriority, TodoChangeHandler,
+    set_todo_change_handler, clear_todo_change_handler, current_todos, clear_todos,
 };
 
 // Re-export provider implementations

@@ -38,7 +38,7 @@ Foundation is complete; coverage of the architecture spec is at ~95%.
 | Layer | Surface |
 |-------|---------|
 | Loop | `Orchestrator::run` (sync) and `run_stream` (async, with concurrent read-only batches). Max-iterations cap. Cooperative cancel via shared `Arc<AtomicBool>`. |
-| Tools | read / write / edit / list / glob / grep / search / run_command / run_script / fetch / web_search / update_memory / spawn_subagent / apply_patch (14 builtins). |
+| Tools | read / write / edit / list / glob / grep / search / run_command / run_script / fetch / web_search / update_memory / spawn_subagent / apply_patch / question / todowrite (16 builtins). |
 | Memory | Token-budget context window, message pinning, session isolation, disk persistence, keyword search, optional tiktoken backend. |
 | Safety | Risk scoring (0.0–1.0), pattern-based detection, hard blocklist, path sandboxing, URL allowlist (+ optional IP-literal block), per-tool rate limiting, audit log, permission modes (`default` / `plan` / `yolo`). Prompt-injection scanner for content brought in by `fetch` / `web_search`. |
 | Compression | Three-layer pipeline: tool-result truncation → older tool-result clearing → autocompact (heuristic or LLM-driven) at ~85% of token budget. |
@@ -75,6 +75,10 @@ Sized by effort. Each item has its own home in
 - [x] **Session management.** Auto-save conversations to
       `~/.config/agentic/sessions/` as JSON. `/sessions` to list,
       `/sessions <id>` to resume. No more `history.txt`.
+- [x] **`question` and `todowrite` tools.** Interactive question tool
+      + session-scoped task list. Documented in
+      [milestone-4-interactive-tools-02062026.md](milestone-4-interactive-tools-02062026.md).
+      CLI handler wiring pending.
 
 ### Medium (2–4 days)
 
@@ -88,6 +92,14 @@ Sized by effort. Each item has its own home in
 - [ ] **End-to-end smoke test** for `agentic run` against a mock provider,
       so refactors flag regressions before they hit a release.
 
+### Medium (2–4 days)
+
+- [ ] **Wire `question` + `todowrite` CLI handlers.** Register
+      `QuestionHandler` in interactive/TUI modes, `TodoChangeHandler`
+      for progress rendering. See milestone-4 doc.
+- [ ] **End-to-end smoke test** for `agentic run` against a mock provider,
+      so refactors flag regressions before they hit a release.
+
 ### Larger (1–2 weeks)
 
 - [ ] **Planner agent.** Largest unblocked feature. Subagent infra
@@ -95,11 +107,15 @@ Sized by effort. Each item has its own home in
       goal → plan → step execution with replanning on failure. The
       existing `--mode plan` (which just denies state-changing tools)
       stays orthogonal to this.
+- [ ] **Skill system.** Skill format (`SKILL.md`), discovery
+      (walk `~/.config/agentic/skills/` + `.agentic/skills/`), and a
+      `skill` tool to load domain-specific instructions into the
+      conversation. Requires design before implementation.
 
 ### Out of scope (intentional)
 
-- LSP integration, prompt caching, file watching — out of scope per the
-  architecture spec ("Production Extensions Beyond This Tutorial").
+- LSP integration, codesearch, prompt caching, file watching — out of scope
+  per the architecture spec ("Production Extensions Beyond This Tutorial").
 
 ---
 
@@ -127,6 +143,8 @@ from end-to-end tests.
 Key changes that landed recently:
 
 ```
+(latest)     feat(tools): add question + todowrite tools (M4)
+(latest)     docs: update TOOL_REFERENCE.md for 16-tool set
 (latest)     feat(cli): session system — auto-save, /new, /sessions, /sessions <id>
 (latest)     refactor(cli): replace ratatui model_picker with dialoguer inline fuzzy-select
 (latest)     feat(cli): /models auto-complete via reedline completer

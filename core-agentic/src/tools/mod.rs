@@ -5,12 +5,14 @@ pub mod git_query;
 pub mod glob;
 pub mod grep;
 pub mod list_files;
+pub mod question;
 pub mod read_file;
 pub mod run_command;
 pub mod run_script;
 pub mod run_tests;
 pub mod search_files;
 pub mod spawn_subagent;
+pub mod todowrite;
 pub mod update_memory;
 pub mod web_search;
 pub mod write_file;
@@ -22,12 +24,16 @@ pub use git_query::{GitDiffTool, GitStatusTool};
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use list_files::ListFilesTool;
+pub use question::{QuestionTool, QuestionPrompt, QuestionAnswer, QuestionHandler,
+    set_question_handler, clear_question_handler};
 pub use read_file::ReadFileTool;
 pub use run_command::RunCommandTool;
 pub use run_script::RunScriptTool;
 pub use run_tests::RunTestsTool;
 pub use search_files::SearchFilesTool;
 pub use spawn_subagent::{SpawnSubagentTool, DEFAULT_SUBAGENT_MAX_ITERATIONS};
+pub use todowrite::{TodowriteTool, TodoItem, TodoStatus, TodoPriority, TodoChangeHandler,
+    set_todo_change_handler, clear_todo_change_handler, current_todos, clear_todos};
 pub use update_memory::UpdateMemoryTool;
 pub use web_search::WebSearchTool;
 pub use write_file::WriteFileTool;
@@ -72,6 +78,8 @@ pub fn builtin_tools_with(
         Box::new(GitStatusTool::new()),
         Box::new(GitDiffTool::new()),
         Box::new(UpdateMemoryTool::new()),
+        Box::new(QuestionTool::new()),
+        Box::new(TodowriteTool::new()),
         Box::new(FetchTool::new().with_url_policy(url_policy.clone())),
         Box::new(WebSearchTool::new().with_url_policy(url_policy)),
     ]
