@@ -1304,11 +1304,40 @@ impl Commands {
             return Ok(());
         }
 
-        // Execute. The planner emits ToolCall/ToolOutput events; we don't
-        // hook them up here for inline mode (keeping output simple for
-        // the first cut). Future work can pipe them through the same
-        // event renderer the run() path uses.
+        // Execute with live progress updates via the planner's event bus.
         let mut plan = plan;
+        planner.on({
+            move |event: core_agentic::Event| {
+                if let core_agentic::Event::PlanProgress {
+                    step_description,
+                    step_status,
+                    steps_total,
+                    steps_completed,
+                    steps_failed,
+                    ..
+                } = event
+                {
+                    let icon = match step_status.as_str() {
+                        "in_progress" => "▶",
+                        "completed" => "✅",
+                        "failed" => "❌",
+                        _ => "⏳",
+                    };
+                    let bar = components::labeled_bar(
+                        &format!("{}/{}", steps_completed, steps_total),
+                        if steps_total > 0 { steps_completed as f32 / steps_total as f32 } else { 0.0 },
+                        30,
+                        if steps_failed > 0 { RColor::Red } else { RColor::Green },
+                        RColor::DarkGray,
+                    );
+                    inline::print_line(&bar);
+                    inline::print_line(&RLine::from(vec![
+                        RSpan::raw(format!("       {}  {}", icon, step_description)),
+                    ]));
+                }
+            }
+        });
+
         match planner.execute_plan(&mut plan, &tools) {
             Ok(result) => {
                 inline::print_blank();
