@@ -542,6 +542,28 @@ impl PlannerAgent {
         Ok(())
     }
 
+    /// Emit a PlanProgress event reflecting the current plan state.
+    fn emit_plan_progress(
+        &self,
+        plan: &Plan,
+        step_id: &str,
+        step_description: &str,
+        step_status: &str,
+    ) {
+        let (pending, completed, failed, _skipped) = plan.step_summary();
+        self.events.emit(crate::events::Event::PlanProgress {
+            plan_id: plan.id.clone(),
+            plan_goal: plan.goal.clone(),
+            step_id: step_id.to_string(),
+            step_description: step_description.to_string(),
+            step_status: step_status.to_string(),
+            steps_total: plan.steps.len(),
+            steps_completed: completed,
+            steps_failed: failed,
+            steps_pending: pending,
+        });
+    }
+
     // ---- Plan execution ----
 
     /// Execute a plan step by step using the provided tools.
@@ -581,6 +603,8 @@ impl PlannerAgent {
                 s.status = StepStatus::InProgress;
             }
             plan.touch();
+
+            self.emit_plan_progress(plan, &step_id, &step_desc, "in_progress");
 
             self.events.emit(crate::events::Event::ToolCall {
                 tool_name: step_tool
@@ -642,6 +666,13 @@ impl PlannerAgent {
                     "result": result_text,
                 }),
             });
+
+            self.emit_plan_progress(
+                plan,
+                &step_id,
+                &step_desc,
+                &new_status.to_string(),
+            );
 
             // Handle failure
             if new_status == StepStatus::Failed {
