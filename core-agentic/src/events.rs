@@ -37,6 +37,20 @@ pub enum Event {
 
     #[serde(rename = "system")]
     System { message: String },
+
+    /// Reports progress of a planner-agent plan execution.
+    #[serde(rename = "plan_progress")]
+    PlanProgress {
+        plan_id: String,
+        plan_goal: String,
+        step_id: String,
+        step_description: String,
+        step_status: String,
+        steps_total: usize,
+        steps_completed: usize,
+        steps_failed: usize,
+        steps_pending: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +62,7 @@ pub enum EventType {
     Error,
     Completed,
     System,
+    PlanProgress,
 }
 
 impl Event {
@@ -60,6 +75,7 @@ impl Event {
             Event::Error { .. } => EventType::Error,
             Event::Completed { .. } => EventType::Completed,
             Event::System { .. } => EventType::System,
+            Event::PlanProgress { .. } => EventType::PlanProgress,
         }
     }
 }
