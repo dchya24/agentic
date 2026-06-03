@@ -170,17 +170,28 @@
 ### Phase 10 — Skill System
 
 - [ ] 18.0 Skill format & discovery
-  - [ ] 18.1 Define `SKILL.md` schema (frontmatter: name, description, triggers; body: instructions)
-  - [ ] 18.2 Discovery: walk `~/.config/agentic/skills/` + `.agentic/skills/` (project-local)
-  - [ ] 18.3 `SkillIndex` — in-memory index of discovered skills with metadata & search
-  - [ ] 18.4 File watching / refresh for skill directories (optional, v2)
+  - [ ] 18.1 Define `SKILL.md` schema (frontmatter: name, description; body: instructions) per Agent Skills standard
+  - [ ] 18.2 Discovery paths:
+    - [ ] 18.2a Global: `~/.agents/skills/` (cross-agent: pi, opencode, codex)
+    - [ ] 18.2b Global: `~/.config/agentic/skills/` (agentic-specific)
+    - [ ] 18.2c Project: `.agents/skills/` walk-up from cwd (cross-agent)
+    - [ ] 18.2d Project: `.agentic/skills/` walk-up from cwd (agentic-specific)
+    - [ ] 18.2e Extra: `skills.compat_dirs` from config (e.g. `~/.claude/skills/`)
+    - [ ] 18.2f Scan order + name collision: project overrides global, first-found wins
+  - [ ] 18.3 `SkillIndex` — in-memory index of discovered skills (name, description, path, files)
+  - [ ] 18.4 Config: `SkillsConfig` with `blocklist: Vec<String>` and `compat_dirs: Vec<String>`
+      di `core_agentic::Config`
+  - [ ] 18.5 System prompt integration: inject `📦 Skills: <name> (<description>)` for indexed skills
+  - [ ] 18.6 Blocklist filter: excluded skills not added to index
+  - [ ] 18.7 File watching / refresh for skill directories (optional, v2)
 - [ ] 19.0 `skill` tool
-  - [ ] 19.1 `SkillLoader` trait — reads SKILL.md + referenced resources (following the `QuestionHandler` callback pattern)
+  - [ ] 19.1 `SkillLoader` trait — reads SKILL.md + referenced resources (relative paths from skill dir)
   - [ ] 19.2 Tool schema: `{ "name": "skill", "arguments": { "skill_name": "..." } }`
-  - [ ] 19.3 Execution: load skill content → return as tool output → model absorbs into working context
-  - [ ] 19.4 Option: append skill instructions to system prompt for remaining session
+  - [ ] 19.3 Execution: look up skill in index → read SKILL.md + files → return as tool output
+  - [ ] 19.4 Option: append skill instructions to system prompt for remaining session duration
   - [ ] 19.5 Graceful degradation: unknown skill → return error, model recovers
-  - [ ] 19.6 Tests: discovery, load, missing skill, invalid SKILL.md parsing
+  - [ ] 19.6 Unit tests: discovery (multiple paths, override, blocklist), load, missing skill, invalid SKILL.md
+  - [ ] 19.7 Integration tests: skill discovery + tool execution end-to-end (`tests/skills_loop.rs`)
 
 ### Phase 11 — Prompt Caching
 
