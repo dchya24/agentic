@@ -189,9 +189,11 @@ async fn main() -> Result<()> {
             commands.run(&task).await?;
         }
         Some(Command::Interactive) => {
+            commands = commands.with_interactive_mode(true);
             interactive::run(commands).await?;
         }
         Some(Command::Tui) => {
+            commands = commands.with_interactive_mode(true);
             tui::run_tui(commands).await?;
         }
         Some(Command::Config(action)) => {
@@ -207,6 +209,7 @@ async fn main() -> Result<()> {
             println!("agentic {}", env!("CARGO_PKG_VERSION"));
         }
         None => {
+            commands = commands.with_interactive_mode(true);
             interactive::run(commands).await?;
         }
     }

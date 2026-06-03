@@ -1,7 +1,7 @@
 use anyhow::Result;
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color as TColor, Table};
 use core_agentic::{Config, Orchestrator, ToolRegistry};
-use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
+use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 use ratatui::style::{Color as RColor, Modifier as RModifier, Style as RStyle};
 use ratatui::text::{Line as RLine, Span as RSpan};
 use std::process::Command as ProcessCommand;
@@ -17,6 +17,278 @@ use crate::widgets::{components, inline};
 
 static ALWAYS_CONFIRM: AtomicBool = AtomicBool::new(false);
 static COLOR_ENABLED: AtomicBool = AtomicBool::new(true);
+
+// ── Interactive tool handlers ───────────────────────────────
+
+/// Handles `question` tool calls from the agent during interactive mode.
+///
+/// Renders each question with a styled prompt, presents options via
+/// `dialoguer::Select` / `MultiSelect` when choices exist, and falls back
+/// to free-text `Input` otherwise. The handler is synchronous (matches
+/// the `Tool::execute` contract) and reads directly from stdin.
+struct CliQuestionHandler;
+
+impl core_agentic::QuestionHandler for CliQuestionHandler {
+    fn handle(
+        &self,
+        questions: &[core_agentic::QuestionPrompt],
+    ) -> Vec<core_agentic::QuestionAnswer> {
+        let mut answers = Vec::with_capacity(questions.len());
+
+        for q in questions {
+            // Render a visual separator + question header.
+            inline::print_blank();
+
+            let header = q.header.as_deref().unwrap_or("Question");
+            inline::print_line(&components::section_header(
+                "❓",
+                header,
+                RColor::Rgb(241, 196, 15),
+            ));
+            inline::print_blank();
+
+            // Print the question text.
+            inline::print_line(&RLine::from(vec![
+                RSpan::styled("  ", RStyle::default()),
+                RSpan::raw(&q.question),
+            ]));
+            inline::print_blank();
+
+            let answer = if !q.options.is_empty() {
+                // Agent provided pre-defined choices.
+                if q.multiple {
+                    // Multi-select.
+                    let defaults: Vec<bool> = vec![false; q.options.len()];
+                    let selection = MultiSelect::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Select (space to toggle, enter to confirm)")
+                        .items(&q.options)
+                        .defaults(&defaults)
+                        .interact();
+
+                    match selection {
+                        Ok(indices) => {
+                            let chosen: Vec<String> = indices
+                                .iter()
+                                .map(|&i| q.options[i].clone())
+                                .collect();
+
+                            if chosen.is_empty() && q.custom {
+                                // Nothing selected but custom allowed.
+                                free_text_fallback(&q.question)
+                            } else if chosen.is_empty() {
+                                // Nothing selected and no custom — skip.
+                                skip_answer(&q.question)
+                            } else {
+                                render_answer(&format!(
+                                    "{}",
+                                    chosen.join(", ")
+                                ));
+                                vec![core_agentic::QuestionAnswer {
+                                    question: q.question.clone(),
+                                    answer: chosen,
+                                    skipped: false,
+                                }]
+                            }
+                        }
+                        Err(_) => skip_answer(&q.question),
+                    }
+                } else {
+                    // Single-select.
+                    let mut items: Vec<String> = q.options.clone();
+                    if q.custom {
+                        items.push("✏️  Custom (type your own)".to_string());
+                    }
+                    items.push("⏭  Skip".to_string());
+
+                    let selection = Select::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Choose")
+                        .items(&items)
+                        .default(0)
+                        .interact();
+
+                    match selection {
+                        Ok(idx) => {
+                            // Last item is always "Skip".
+                            let skip_idx = items.len() - 1;
+                            if idx == skip_idx {
+                                skip_answer(&q.question)
+                            } else if q.custom && idx == items.len() - 2 {
+                                // "Custom" was selected.
+                                free_text_fallback(&q.question)
+                            } else {
+                                let chosen = q.options[idx].clone();
+                                render_answer(&chosen);
+                                vec![core_agentic::QuestionAnswer {
+                                    question: q.question.clone(),
+                                    answer: vec![chosen],
+                                    skipped: false,
+                                }]
+                            }
+                        }
+                        Err(_) => skip_answer(&q.question),
+                    }
+                }
+            } else {
+                // No options — free-text input.
+                free_text_fallback(&q.question)
+            };
+
+            answers.extend(answer);
+        }
+
+        answers
+    }
+}
+
+/// Render a free-text input prompt for the given question.
+fn free_text_fallback(question: &str) -> Vec<core_agentic::QuestionAnswer> {
+    let result = Input::<String>::with_theme(&ColorfulTheme::default())
+        .with_prompt("Your answer (enter to submit, Ctrl+C to skip)")
+        .allow_empty(true)
+        .interact();
+
+    match result {
+        Ok(text) => {
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                skip_answer(question)
+            } else {
+                render_answer(&text);
+                vec![core_agentic::QuestionAnswer {
+                    question: question.to_string(),
+                    answer: vec![text],
+                    skipped: false,
+                }]
+            }
+        }
+        Err(_) => skip_answer(question),
+    }
+}
+
+/// Produce a single skipped answer.
+fn skip_answer(question: &str) -> Vec<core_agentic::QuestionAnswer> {
+    inline::print_blank();
+    inline::print_line(&components::warning_badge("Skipped."));
+    inline::print_blank();
+    vec![core_agentic::QuestionAnswer {
+        question: question.to_string(),
+        answer: vec![],
+        skipped: true,
+    }]
+}
+
+/// Echo the chosen answer back to the user.
+fn render_answer(text: &str) {
+    inline::print_blank();
+    inline::print_line(&components::success_badge(&format!("Answered: {}", text)));
+    inline::print_blank();
+}
+
+/// Renders todo list changes inline. Fires after every `todowrite` call.
+/// Shows a compact progress summary so the user sees task progress even
+/// in non-interactive `agentic run` mode.
+struct CliTodoRenderer;
+
+impl core_agentic::TodoChangeHandler for CliTodoRenderer {
+    fn on_change(&self, todos: &[core_agentic::TodoItem]) {
+        if todos.is_empty() {
+            return;
+        }
+
+        let total = todos.len();
+        let completed = todos
+            .iter()
+            .filter(|t| t.status == core_agentic::TodoStatus::Completed)
+            .count();
+        let in_progress = todos
+            .iter()
+            .filter(|t| t.status == core_agentic::TodoStatus::InProgress)
+            .count();
+        let pct = if total > 0 {
+            (completed as f64 / total as f64 * 100.0) as u32
+        } else {
+            0
+        };
+
+        // Build a compact status bar.
+        //    📋 Tasks: 3/7 (43%)  ● 1 active  ○ 3 pending
+        let mut spans: Vec<RSpan<'static>> = vec![
+            RSpan::styled(
+                "  📋 ",
+                RStyle::default(),
+            ),
+            RSpan::styled(
+                format!("Tasks: {}/{} ({}%)", completed, total, pct),
+                RStyle::default()
+                    .fg(RColor::Rgb(241, 196, 15))
+                    .add_modifier(RModifier::BOLD),
+            ),
+        ];
+
+        if in_progress > 0 {
+            spans.push(RSpan::styled(
+                format!("  ● {} active", in_progress),
+                RStyle::default().fg(RColor::Rgb(135, 206, 250)),
+            ));
+        }
+
+        let pending = total - completed - in_progress;
+        if pending > 0 {
+            spans.push(RSpan::styled(
+                format!("  ○ {} pending", pending),
+                RStyle::default().fg(RColor::Rgb(120, 120, 140)),
+            ));
+        }
+
+        // Render individual items (compact, truncated).
+        let mut item_lines: Vec<RLine<'static>> = Vec::new();
+        for todo in todos {
+            let (icon, color) = match todo.status {
+                core_agentic::TodoStatus::Completed => ("✓", RColor::Rgb(46, 204, 113)),
+                core_agentic::TodoStatus::InProgress => ("●", RColor::Rgb(135, 206, 250)),
+                core_agentic::TodoStatus::Pending => ("○", RColor::Rgb(120, 120, 140)),
+                core_agentic::TodoStatus::Cancelled => ("✗", RColor::Rgb(120, 120, 140)),
+            };
+
+            let priority_marker = match todo.priority {
+                core_agentic::TodoPriority::High => " ❗",
+                core_agentic::TodoPriority::Low => " ↓",
+                _ => "",
+            };
+
+            let mut content = todo.content.clone();
+            if content.len() > 80 {
+                content.truncate(77);
+                content.push_str("...");
+            }
+
+            item_lines.push(RLine::from(vec![
+                RSpan::raw("    "),
+                RSpan::styled(
+                    format!("{} ", icon),
+                    RStyle::default().fg(color).add_modifier(RModifier::BOLD),
+                ),
+                RSpan::styled(
+                    content,
+                    RStyle::default().fg(RColor::Rgb(200, 200, 210)),
+                ),
+                RSpan::styled(
+                    priority_marker.to_string(),
+                    RStyle::default()
+                        .fg(RColor::Rgb(231, 76, 60))
+                        .add_modifier(RModifier::DIM),
+                ),
+            ]));
+        }
+
+        inline::print_blank();
+        inline::print_line(&RLine::from(spans));
+        for line in &item_lines {
+            inline::print_line(line);
+        }
+        inline::print_blank();
+    }
+}
 
 /// Provider presets for quick setup
 struct ProviderPreset {
@@ -79,6 +351,10 @@ pub struct Commands {
     /// to ride along with the next user turn. Drained by `run()` when
     /// the next message is sent.
     pending_attachments: Vec<core_agentic::Attachment>,
+    /// `true` when running in interactive REPL mode. Controls whether
+    /// the `question` tool handler is registered (stdin-based prompts)
+    /// vs returning skip-all fallback (non-interactive `agentic run`).
+    interactive_mode: bool,
 }
 
 impl Commands {
@@ -93,6 +369,7 @@ impl Commands {
             agent_md_path: None,
             memory_md_loaded: false,
             pending_attachments: Vec::new(),
+            interactive_mode: false,
         }
     }
 
@@ -105,6 +382,11 @@ impl Commands {
     /// Get a reference to the config
     pub(crate) fn get_config(&self) -> &Config {
         &self.config
+    }
+
+    pub fn with_interactive_mode(mut self, enabled: bool) -> Self {
+        self.interactive_mode = enabled;
+        self
     }
 
     pub fn with_debug(mut self, enabled: bool) -> Self {
@@ -232,6 +514,19 @@ impl Commands {
                 Some(ConfirmationResponse::No) | Some(ConfirmationResponse::Quit) | None => false,
             }
         });
+
+        // ── Interactive tool handlers ─────────────────────
+        // Only register the question handler in interactive mode.
+        // In non-interactive `agentic run`, the tool returns skip-all
+        // so the agent proceeds without blocking on stdin.
+        if self.interactive_mode {
+            core_agentic::set_question_handler(Box::new(CliQuestionHandler));
+        }
+
+        // Register the todo change handler in all modes. Even in
+        // non-interactive `agentic run`, the user benefits from seeing
+        // task progress rendered inline.
+        core_agentic::set_todo_change_handler(Box::new(CliTodoRenderer));
 
         self.orchestrator = Some(orchestrator);
         Ok(())
