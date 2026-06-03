@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::commands::Commands;
+use crate::session::{self, Session, SessionSummary};
 use crate::widgets::progress::ProgressState;
 use super::dropdown::{Dropdown, DropdownType};
 use super::ui;
@@ -93,6 +94,46 @@ pub struct App {
     pub history_index: i32,
     /// Saved input when browsing history
     pub saved_input: String,
+    // ── Session management ──
+    /// Current session
+    pub session: Session,
+    /// Session view overlay (for `/sessions` list)
+    pub session_view: Option<SessionView>,
+    /// Session statistics
+    pub stats: SessionStats,
+}
+
+/// Session statistics for status display
+#[derive(Clone, Debug, Default)]
+pub struct SessionStats {
+    pub messages_sent: u32,
+    pub tool_calls: u32,
+    pub tokens_input: u32,
+    pub tokens_output: u32,
+}
+
+impl SessionStats {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn format_tokens(&self, n: u32) -> String {
+        if n >= 1_000_000 {
+            format!("{:.1}M", n as f64 / 1_000_000.0)
+        } else if n >= 1_000 {
+            format!("{:.1}K", n as f64 / 1_000.0)
+        } else {
+            format!("{}", n)
+        }
+    }
+}
+
+/// Session list view for `/sessions` overlay
+#[derive(Clone, Debug)]
+pub struct SessionView {
+    pub summaries: Vec<SessionSummary>,
+    pub selected: usize,
+    pub filter: String,
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +162,12 @@ pub enum MessageRole {
 impl App {
     pub fn new(commands: Commands) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
+        let cwd = std::env::current_dir()
+            .unwrap_or_default()
+            .display()
+            .to_string();
+        let (provider, model, _) = commands.model_info();
+        let session = session::create(&cwd, &provider, &model);
         Self {
             input: String::new(),
             cursor_pos: 0,
@@ -142,6 +189,218 @@ impl App {
             history: Vec::new(),
             history_index: -1,
             saved_input: String::new(),
+            session,
+            session_view: None,
+            stats: SessionStats::default(),
+        }
+    }
+
+    /// Get model info from commands
+    pub fn model_info(&self) -> (String, String, String) {
+        match &self.commands {
+            Some(cmds) => cmds.model_info(),
+            None => ("none".into(), "none".into(), "-".into()),
+        }
+    }
+
+    /// Save current session to disk
+    fn save_session(&mut self) {
+        // Push accumulated messages to session before saving
+        for msg in &self.messages {
+            let role = match msg.role {
+                MessageRole::User => "user",
+                MessageRole::Assistant => "assistant",
+                _ => continue,
+            };
+            // Check if message already exists in session (avoid duplicates)
+            let content_preview = if msg.content.len() > 50 {
+                &msg.content[..50]
+            } else {
+                &msg.content
+            };
+            let already_exists = self.session.messages.iter().any(|m| {
+                m.content.len() >= 50 && m.content.starts_with(content_preview)
+                    || m.content == msg.content
+            });
+            if !already_exists {
+                session::push_message(&mut self.session, role, &msg.content);
+            }
+        }
+        if let Err(e) = session::save(&self.session) {
+            self.messages.push(Message {
+                role: MessageRole::System,
+                content: format!("⚠ Could not save session: {}", e),
+                timestamp: chrono::Local::now(),
+            });
+        }
+    }
+
+    /// Start a new session (reset all state)
+    fn new_session(&mut self) {
+        // Save current session first
+        if !self.session.messages.is_empty() {
+            self.save_session();
+        }
+
+        // Reset all state
+        let (provider, model, _) = self.model_info();
+        let cwd = std::env::current_dir()
+            .unwrap_or_default()
+            .display()
+            .to_string();
+        self.session = session::create(&cwd, &provider, &model);
+        self.messages.clear();
+        self.messages.push(Message {
+            role: MessageRole::System,
+            content: "New session started.".into(),
+            timestamp: chrono::Local::now(),
+        });
+        self.current_response.clear();
+        self.scroll_offset = 0;
+        self.stats.reset();
+
+        // Restart orchestrator if commands are available
+        if let Some(ref mut cmds) = self.commands {
+            cmds.restart_session();
+        }
+    }
+
+    /// Resume a session by loading its history
+    fn resume_session(&mut self, session_id: &str) {
+        match session::load(session_id) {
+            Ok(loaded) => {
+                // Save current session first
+                if !self.session.messages.is_empty() {
+                    self.save_session();
+                }
+
+                // Restore loaded session
+                self.messages.clear();
+                for msg in &loaded.messages {
+                    let role = match msg.role.as_str() {
+                        "user" => MessageRole::User,
+                        "assistant" => MessageRole::Assistant,
+                        "system" => MessageRole::System,
+                        _ => MessageRole::System,
+                    };
+                    let timestamp = chrono::DateTime::parse_from_rfc3339(&msg.timestamp)
+                        .map(|dt| dt.with_timezone(&chrono::Local))
+                        .unwrap_or_else(|_| chrono::Local::now());
+                    self.messages.push(Message {
+                        role,
+                        content: msg.content.clone(),
+                        timestamp,
+                    });
+                }
+                self.session = loaded;
+                self.session_view = None;
+                self.scroll_offset = 0;
+                self.stats.reset();
+
+                self.messages.push(Message {
+                    role: MessageRole::System,
+                    content: format!(
+                        "Resumed session: {} ({} messages)",
+                        self.session.title,
+                        self.session.messages.len()
+                    ),
+                    timestamp: chrono::Local::now(),
+                });
+
+                // Restart orchestrator
+                if let Some(ref mut cmds) = self.commands {
+                    cmds.restart_session();
+                }
+            }
+            Err(e) => {
+                self.messages.push(Message {
+                    role: MessageRole::Error,
+                    content: format!("Failed to load session: {}", e),
+                    timestamp: chrono::Local::now(),
+                });
+            }
+        }
+    }
+
+    /// Switch model by name (partial match)
+    fn switch_model(&mut self, name: &str) {
+        match self.commands.as_mut().map(|c| c.switch_model(name)) {
+            Some(Ok((provider, model))) => {
+                // Update session with new model
+                self.session.provider = provider.clone();
+                self.session.model = model.clone();
+                self.messages.push(Message {
+                    role: MessageRole::System,
+                    content: format!("Switched to {} / {}", provider, model),
+                    timestamp: chrono::Local::now(),
+                });
+            }
+            Some(Err(e)) => {
+                self.messages.push(Message {
+                    role: MessageRole::Error,
+                    content: format!("Failed to switch model: {}", e),
+                    timestamp: chrono::Local::now(),
+                });
+            }
+            None => {
+                self.messages.push(Message {
+                    role: MessageRole::Error,
+                    content: "Commands not initialized".into(),
+                    timestamp: chrono::Local::now(),
+                });
+            }
+        }
+    }
+
+    /// Open session list view
+    fn open_sessions(&mut self) {
+        match session::list() {
+            Ok(summaries) => {
+                self.session_view = Some(SessionView {
+                    summaries,
+                    selected: 0,
+                    filter: String::new(),
+                });
+            }
+            Err(e) => {
+                self.messages.push(Message {
+                    role: MessageRole::Error,
+                    content: format!("Failed to list sessions: {}", e),
+                    timestamp: chrono::Local::now(),
+                });
+            }
+        }
+    }
+
+    /// Handle key events in session view mode
+    fn handle_session_view_key(&mut self, key: crossterm::event::KeyEvent) {
+        let view = match &mut self.session_view {
+            Some(v) => v,
+            None => return,
+        };
+
+        match key.code {
+            KeyCode::Up => {
+                if view.selected > 0 {
+                    view.selected -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if view.selected + 1 < view.summaries.len() {
+                    view.selected += 1;
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(summary) = view.summaries.get(view.selected) {
+                    let id = summary.id.clone();
+                    let _ = view; // Release borrow before resuming
+                    self.resume_session(&id);
+                }
+            }
+            KeyCode::Esc => {
+                self.session_view = None;
+            }
+            _ => {}
         }
     }
 
@@ -430,6 +689,10 @@ impl App {
             content: input.clone(),
             timestamp: chrono::Local::now(),
         });
+        self.stats.messages_sent += 1;
+
+        // Push to session
+        session::push_message(&mut self.session, "user", &input);
 
         // Start loading
         self.is_loading = true;
@@ -508,7 +771,7 @@ impl App {
     async fn handle_slash_command(&mut self, input: &str) {
         let parts: Vec<&str> = input.splitn(2, ' ').collect();
         let cmd = parts[0];
-        let _arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
+        let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
 
         match cmd {
             "/help" | "/h" => {
@@ -519,16 +782,14 @@ impl App {
 | Command | Alias | Description |
 |---------|-------|-------------|
 | `/help` | `/h` | Show this help |
-| `/clear` | `/c` | Clear conversation |
+| `/new` | `/n` | Start new session |
+| `/clear` | `/c` | Clear messages only |
+| `/sessions` | `/ss` | List & resume sessions |
+| `/models` | `/m` | Switch model |
+| `/provider` | | Switch provider |
 | `/config` | `/cfg` | Show configuration |
 | `/tools` | `/t` | List available tools |
 | `/history` | `/hist` | Show message history |
-| `/save` | `/s` | Save conversation |
-| `/load` | `/l` | Load conversation |
-| `/mcp` | | Show MCP status |
-| `/plan` | `/p` | Create a plan |
-| `/model` | `/m` | Switch model |
-| `/provider` | | Switch provider |
 | `/stats` | | Show statistics |
 | `/quit` | `/q` | Exit TUI |
 
@@ -541,6 +802,9 @@ impl App {
                     timestamp: chrono::Local::now(),
                 });
             }
+            "/new" | "/n" => {
+                self.new_session();
+            }
             "/clear" | "/c" | "/cls" => {
                 self.messages.clear();
                 self.messages.push(Message {
@@ -549,6 +813,46 @@ impl App {
                     timestamp: chrono::Local::now(),
                 });
                 self.scroll_offset = 0;
+            }
+            "/sessions" | "/ss" if !arg.is_empty() => {
+                // Resume specific session by ID or index
+                self.resume_session(arg);
+            }
+            "/sessions" | "/ss" => {
+                self.open_sessions();
+            }
+            "/models" | "/m" if !arg.is_empty() => {
+                self.switch_model(arg);
+            }
+            "/models" | "/m" => {
+                // Show models list - open a message with available models
+                let models_text = match &self.commands {
+                    Some(cmds) => {
+                        let (provider, model, _) = cmds.model_info();
+                        format!("**Current Model:** {} / {}\n\nUse `/models <name>` to switch.", provider, model)
+                    }
+                    None => "Commands not initialized.".into(),
+                };
+                self.messages.push(Message {
+                    role: MessageRole::System,
+                    content: models_text,
+                    timestamp: chrono::Local::now(),
+                });
+            }
+            "/provider" if !arg.is_empty() => {
+                // Switch provider
+                self.messages.push(Message {
+                    role: MessageRole::System,
+                    content: format!("Provider switching: use `/models` to switch models."),
+                    timestamp: chrono::Local::now(),
+                });
+            }
+            "/provider" => {
+                self.messages.push(Message {
+                    role: MessageRole::System,
+                    content: "Usage: `/provider <name>` — or use `/models` to switch models.".into(),
+                    timestamp: chrono::Local::now(),
+                });
             }
             "/quit" | "/q" | "/exit" => {
                 self.should_quit = true;
@@ -585,12 +889,15 @@ impl App {
                 });
             }
             "/stats" => {
+                let (provider, model, _) = self.model_info();
+                let in_tok = self.stats.format_tokens(self.stats.tokens_input);
+                let out_tok = self.stats.format_tokens(self.stats.tokens_output);
                 self.messages.push(Message {
                     role: MessageRole::System,
                     content: format!(
-                        "**Session Statistics:**\n\n- Messages: {}\n- History entries: {}",
-                        self.messages.len(),
-                        self.history.len()
+                        "**Session Statistics:**\n\n- Provider: {}\n- Model: {}\n- Messages sent: {}\n- Tool calls: {}\n- Tokens: {} in / {} out\n- Session ID: {}",
+                        provider, model, self.stats.messages_sent, self.stats.tool_calls,
+                        in_tok, out_tok, &self.session.id[..self.session.id.len().min(20)]
                     ),
                     timestamp: chrono::Local::now(),
                 });
@@ -619,6 +926,7 @@ impl App {
                     AppMessage::TaskComplete(result) => {
                         self.is_loading = false;
                         self.progress.stop();
+                        self.stats.messages_sent += 1;
 
                         let content = if self.current_response.is_empty() {
                             result
@@ -647,6 +955,7 @@ impl App {
                         self.progress.set_message(msg);
                     }
                     AppMessage::ToolCall { name, arguments } => {
+                        self.stats.tool_calls += 1;
                         // Stash the structured payload as JSON in the
                         // message content so the renderer can decode it.
                         // We use a sentinel envelope so render code can
@@ -743,6 +1052,10 @@ pub async fn run_tui(commands: Commands) -> Result<()> {
 
         // Check quit
         if app.should_quit {
+            // Save session before exiting
+            if !app.session.messages.is_empty() {
+                app.save_session();
+            }
             break;
         }
     }
@@ -761,6 +1074,13 @@ pub async fn run_tui(commands: Commands) -> Result<()> {
 
 /// Handle a single key event
 async fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) {
+    // ── Session view mode ──
+    // When session list is open, all keys go to session view handler
+    if app.session_view.is_some() {
+        app.handle_session_view_key(key);
+        return;
+    }
+
     // ── Dropdown-specific key handling ──
     // When a dropdown is open, intercept navigation keys
     if app.dropdown.is_some() {

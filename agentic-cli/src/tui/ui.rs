@@ -47,7 +47,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .split(padded_area);
 
     // Draw components
-    draw_header(frame, chunks[0]);
+    draw_header(frame, app, chunks[0]);
     draw_messages(frame, app, chunks[1]);
     draw_progress(frame, app, chunks[2]);
     draw_input(frame, app, chunks[3]);
@@ -56,10 +56,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.dropdown.is_some() {
         draw_dropdown(frame, app, chunks[3]);
     }
+
+    // Draw session view overlay if active
+    if app.session_view.is_some() {
+        draw_session_view(frame, app, chunks[1]);
+    }
 }
 
 /// Draw header bar
-fn draw_header(frame: &mut Frame, area: Rect) {
+fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    let (provider, model, _) = app.model_info();
+    let session_id_short = &app.session.id[4..app.session.id.len().min(16)];
+
     let header = Paragraph::new(Line::from(vec![
         Span::styled(
             " 🤖 Agentic ",
@@ -72,7 +80,7 @@ fn draw_header(frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            " Interactive Mode ",
+            format!(" {} / {} ", provider, model),
             Style::default().fg(Color::Rgb(180, 180, 180)),
         ),
         Span::styled(
@@ -80,12 +88,26 @@ fn draw_header(frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            " /help ",
-            Style::default().fg(Color::Rgb(241, 196, 15)),
+            format!(" 💬{} ", app.stats.messages_sent),
+            Style::default().fg(Color::Rgb(135, 206, 250)),
         ),
         Span::styled(
-            "for commands",
+            format!(" 📊{}↑/{}↓ ",
+                app.stats.format_tokens(app.stats.tokens_input),
+                app.stats.format_tokens(app.stats.tokens_output)),
+            Style::default().fg(Color::Rgb(186, 85, 211)),
+        ),
+        Span::styled(
+            "│",
             Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            format!(" {} ", session_id_short),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            " /help ",
+            Style::default().fg(Color::Rgb(241, 196, 15)),
         ),
     ]))
     .block(
@@ -466,4 +488,106 @@ fn extract_diff_string(output: &serde_json::Value) -> Option<String> {
     } else {
         Some(diff.to_string())
     }
+}
+
+/// Draw session list view overlay
+fn draw_session_view(frame: &mut Frame, app: &App, area: Rect) {
+    let view = match &app.session_view {
+        Some(v) => v,
+        None => return,
+    };
+
+    // Center the overlay on screen
+    let popup_width = area.width.min(80);
+    let popup_height = area.height.min(20);
+    let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear the area behind
+    frame.render_widget(Clear, popup_area);
+
+    // Build session list items
+    let mut items: Vec<ListItem> = Vec::new();
+
+    if view.summaries.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "  No sessions found.",
+            Style::default().fg(Color::DarkGray),
+        ))));
+    } else {
+        for (i, s) in view.summaries.iter().enumerate().take(15) {
+            let is_selected = i == view.selected;
+            let time = crate::session::format_relative_time(&s.updated_at);
+            let title = if s.title.is_empty() {
+                "Untitled"
+            } else {
+                &s.title
+            };
+
+            let style = if is_selected {
+                Style::default()
+                    .bg(Color::Rgb(52, 152, 219))
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Rgb(200, 200, 200))
+            };
+
+            let line = Line::from(vec![
+                Span::styled(format!(" {:2}. ", i + 1), style),
+                Span::styled(title.to_string(), style),
+                Span::styled(
+                    format!("  {} msgs", s.message_count),
+                    if is_selected {
+                        style
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ),
+                Span::styled(
+                    format!("  {}", time),
+                    if is_selected {
+                        style
+                    } else {
+                        Style::default().fg(Color::Rgb(135, 206, 250))
+                    },
+                ),
+            ]);
+            items.push(ListItem::new(line));
+        }
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Rgb(100, 100, 140)))
+                .title(Span::styled(
+                    format!(" Sessions ({}) ", view.summaries.len()),
+                    Style::default()
+                        .fg(Color::Rgb(241, 196, 15))
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .style(Style::default().bg(Color::Rgb(35, 35, 50))),
+        );
+
+    frame.render_widget(list, popup_area);
+
+    // Footer with key hints
+    let footer_area = Rect {
+        x: popup_area.x + 1,
+        y: popup_area.y + popup_area.height - 1,
+        width: popup_area.width - 2,
+        height: 1,
+    };
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " ↑/↓ Navigate  Enter Resume  Esc Close ",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
+        ),
+    ]));
+    frame.render_widget(footer, footer_area);
 }
