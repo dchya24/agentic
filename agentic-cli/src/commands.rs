@@ -1220,7 +1220,10 @@ impl Commands {
             .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
         let provider: std::sync::Arc<dyn core_agentic::LLMProvider> =
             std::sync::Arc::new(core_agentic::OpenAIProvider::new(provider_config));
-        let planner = core_agentic::PlannerAgent::new(provider);
+        let planner = core_agentic::PlannerAgent::from_config(
+            provider,
+            &self.config.agent.planner,
+        );
 
         // Reuse the orchestrator's tool registry so steps see the same
         // tool surface (including allowlist + tracker).

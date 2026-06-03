@@ -32,6 +32,46 @@ pub struct AgentLoopConfig {
     pub auto_compact_with_llm: bool,
     #[serde(default)]
     pub summarizer_model: Option<String>,
+    /// Planner agent configuration.
+    #[serde(default)]
+    pub planner: PlannerLoopConfig,
+}
+
+/// Planner agent configuration.
+///
+/// Controls plan generation and execution limits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannerLoopConfig {
+    /// Maximum number of steps allowed in a single plan.
+    #[serde(default = "default_planner_max_steps")]
+    pub max_steps: usize,
+    /// Maximum number of re-plan attempts on failure.
+    #[serde(default = "default_planner_max_replan")]
+    pub max_replan_attempts: usize,
+    /// Whether plans require user approval before execution.
+    #[serde(default = "default_true")]
+    pub require_approval: bool,
+    /// Model override for planning LLM calls (cheaper/faster model).
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Provider name override for planning LLM calls.
+    #[serde(default)]
+    pub provider: Option<String>,
+}
+
+fn default_planner_max_steps() -> usize { 20 }
+fn default_planner_max_replan() -> usize { 3 }
+
+impl Default for PlannerLoopConfig {
+    fn default() -> Self {
+        Self {
+            max_steps: 20,
+            max_replan_attempts: 3,
+            require_approval: true,
+            model: None,
+            provider: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,6 +502,13 @@ mod tests {
         let cfg: Config = serde_json::from_str(json).expect("parse");
         assert!(!cfg.agent.auto_compact_with_llm);
         assert!(cfg.agent.summarizer_model.is_none());
+
+        // Planner config should have defaults when omitted.
+        assert_eq!(cfg.agent.planner.max_steps, 20);
+        assert_eq!(cfg.agent.planner.max_replan_attempts, 3);
+        assert!(cfg.agent.planner.require_approval);
+        assert!(cfg.agent.planner.model.is_none());
+        assert!(cfg.agent.planner.provider.is_none());
     }
 
     #[test]
@@ -494,6 +541,47 @@ mod tests {
             cfg2.agent.summarizer_model.as_deref(),
             Some("gpt-4o-mini")
         );
+    }
+
+    #[test]
+    fn planner_config_round_trip() {
+        let json = r#"{
+            "providers": [{
+                "name": "p",
+                "type": "openai-compatible",
+                "api_base": "https://x",
+                "api_key": "k",
+                "models": [{"model": "m"}]
+            }],
+            "agent": {
+                "planner": {
+                    "max_steps": 10,
+                    "max_replan_attempts": 5,
+                    "require_approval": false,
+                    "model": "gpt-4o-mini",
+                    "provider": "openai"
+                }
+            }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).expect("parse");
+        assert_eq!(cfg.agent.planner.max_steps, 10);
+        assert_eq!(cfg.agent.planner.max_replan_attempts, 5);
+        assert!(!cfg.agent.planner.require_approval);
+        assert_eq!(
+            cfg.agent.planner.model.as_deref(),
+            Some("gpt-4o-mini")
+        );
+        assert_eq!(
+            cfg.agent.planner.provider.as_deref(),
+            Some("openai")
+        );
+
+        // Re-serialize and re-parse.
+        let out = serde_json::to_string(&cfg).expect("serialize");
+        let cfg2: Config = serde_json::from_str(&out).expect("reparse");
+        assert_eq!(cfg2.agent.planner.max_steps, 10);
+        assert_eq!(cfg2.agent.planner.max_replan_attempts, 5);
+        assert!(!cfg2.agent.planner.require_approval);
     }
 
     #[test]

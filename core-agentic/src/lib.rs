@@ -27,7 +27,7 @@ pub mod memory_file;
 
 // Re-export main types for public API
 pub use agent::{Agent, AgentConfig};
-pub use config::{AgentLoopConfig, Config, ModelConfig, ModelOutput, OutputConfig, ProviderConfig, SafetyConfig};
+pub use config::{AgentLoopConfig, Config, ModelConfig, ModelOutput, OutputConfig, PlannerLoopConfig, ProviderConfig, SafetyConfig};
 pub use events::{Event, EventType};
 pub use memory::{Memory, Message, MessageRole, SessionInfo, MemoryConfig, ContextWindow, SummarizedContext, MessageMetadata};
 pub use orchestrator::Orchestrator;

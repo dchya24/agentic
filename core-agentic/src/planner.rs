@@ -288,6 +288,24 @@ impl PlannerAgent {
         }
     }
 
+    /// Construct a PlannerAgent from the user-facing planner loop config.
+    /// Maps `PlannerLoopConfig` fields to the internal `PlannerConfig`.
+    pub fn from_config(
+        provider: std::sync::Arc<dyn LLMProvider>,
+        planner_cfg: &crate::config::PlannerLoopConfig,
+    ) -> Self {
+        Self {
+            provider,
+            config: PlannerConfig {
+                max_steps: planner_cfg.max_steps,
+                require_approval: planner_cfg.require_approval,
+                max_replan_attempts: planner_cfg.max_replan_attempts,
+            },
+            events: EventEmitter::new(),
+            approval_callback: std::sync::Mutex::new(None),
+        }
+    }
+
     pub fn with_config(mut self, config: PlannerConfig) -> Self {
         self.config = config;
         self
