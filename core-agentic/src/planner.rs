@@ -320,6 +320,15 @@ impl PlannerAgent {
         *cb = Some(Box::new(callback));
     }
 
+    /// Subscribe to events emitted by this planner (plan progress,
+    /// tool calls, completion, etc.).
+    pub fn on<F>(&self, handler: F)
+    where
+        F: Fn(crate::events::Event) + Send + Sync + 'static,
+    {
+        self.events.on(handler);
+    }
+
     // ---- Plan creation via LLM ----
 
     /// Ask the LLM to create a plan for the given goal, given the available tools.
