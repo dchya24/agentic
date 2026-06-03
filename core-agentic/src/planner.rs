@@ -11,6 +11,7 @@ use std::fmt;
 
 use crate::events::EventEmitter;
 use crate::providers::{ChatMessageRequest, ChatRequest, LLMProvider};
+use crate::tool::Tool;
 use crate::tool_registry::ToolRegistry;
 use crate::AgenticError;
 
@@ -590,12 +591,32 @@ impl PlannerAgent {
 
             // Execute the step
             let result = if let Some(tool_name) = &step_tool {
-                let args = step_args
-                    .clone()
-                    .unwrap_or(serde_json::json!({}));
-                match tools.execute_by_name(tool_name, &args) {
-                    Ok(output) => (StepStatus::Completed, Some(serde_json::to_string(&output).unwrap_or_else(|_| output.to_string()))),
-                    Err(e) => (StepStatus::Failed, Some(format!("Tool error: {}", e))),
+                if tool_name == "spawn_subagent" {
+                    // Delegate to subagent: creates a fresh subagent with
+                    // isolated context to execute this step as a subtask.
+                    let subagent = crate::tools::SpawnSubagentTool::new(
+                        self.provider.clone(),
+                        tools.clone(),
+                        // Use a generic model label for the subagent.
+                        "planner-subagent",
+                    );
+                    // The step description serves as the subagent task.
+                    let sub_args = serde_json::json!({"task": step_desc});
+                    match subagent.execute(sub_args) {
+                        Ok(output) => (
+                            StepStatus::Completed,
+                            Some(serde_json::to_string(&output).unwrap_or_else(|_| output.to_string())),
+                        ),
+                        Err(e) => (StepStatus::Failed, Some(format!("Subagent error: {}", e))),
+                    }
+                } else {
+                    let args = step_args
+                        .clone()
+                        .unwrap_or(serde_json::json!({}));
+                    match tools.execute_by_name(tool_name, &args) {
+                        Ok(output) => (StepStatus::Completed, Some(serde_json::to_string(&output).unwrap_or_else(|_| output.to_string()))),
+                        Err(e) => (StepStatus::Failed, Some(format!("Tool error: {}", e))),
+                    }
                 }
             } else {
                 // No tool specified — mark as completed (manual/LLM-driven step)
@@ -1330,6 +1351,44 @@ mod tests {
         let result = planner.execute_plan(&mut plan, &tools).unwrap();
         assert_eq!(result.status, PlanStatus::Failed);
         assert_eq!(result.steps_failed, 1);
+    }
+
+    #[test]
+    fn test_execute_plan_subagent_delegation_fails_gracefully() {
+        // When a step uses "spawn_subagent", the planner delegates to
+        // SpawnSubagentTool. Since the test provider points to localhost,
+        // the subagent will fail — but it should fail with "Subagent"
+        // prefix instead of "Tool error:", proving the delegation path.
+        // We need a Tokio runtime for the subagent's orchestrator loop.
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
+            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+        ));
+        let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
+            require_approval: false,
+            max_replan_attempts: 0,
+            ..Default::default()
+        });
+        let tools = ToolRegistry::new();
+
+        let plan = Plan::new("Delegate")
+            .with_steps(vec![
+                Step::new("Explore API")
+                    .with_tool("spawn_subagent", serde_json::json!({"task": "Read files"})),
+            ]);
+        let mut plan = plan;
+        plan.status = PlanStatus::Draft;
+
+        let result = planner.execute_plan(&mut plan, &tools).unwrap();
+        assert_eq!(result.status, PlanStatus::Failed);
+        assert_eq!(result.steps_failed, 1);
+
+        // Verify the step result mentions Subagent (not regular Tool error)
+        let step = plan.get_step(&plan.steps[0].id).unwrap();
+        assert!(step.result.as_deref().unwrap_or("").contains("Subagent"),
+            "Expected Subagent error prefix, got: {:?}", step.result);
     }
 
     #[test]
