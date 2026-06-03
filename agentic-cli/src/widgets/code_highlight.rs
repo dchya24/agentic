@@ -79,7 +79,7 @@ pub fn canonical_lang(raw: &str) -> Option<&'static str> {
     let lang = raw.trim().to_lowercase();
     // Strip off any qualifiers like `rust,no_run` or `python {linenos=true}`.
     let lang = lang
-        .split(|c: char| matches!(c, ',' | ' ' | '\t' | '{'))
+        .split(|c: char| matches!(c, ',' | ' ' | '\t' | '{' | '|' | '\n' | '\r'))
         .next()
         .unwrap_or("");
     match lang {
@@ -716,6 +716,10 @@ mod tests {
         assert_eq!(canonical_lang("YAML"), Some("yaml"));
         assert_eq!(canonical_lang("rust,no_run"), Some("rust"));
         assert_eq!(canonical_lang("python {linenos=true}"), Some("python"));
+        assert_eq!(canonical_lang("rust|fn main()"), Some("rust"));
+        assert_eq!(canonical_lang("ros2"), None);
+        assert_eq!(canonical_lang("rust  "), Some("rust"));
+        assert_eq!(canonical_lang("  rust"), Some("rust"));
         assert_eq!(canonical_lang("klingon"), None);
         assert_eq!(canonical_lang(""), None);
     }

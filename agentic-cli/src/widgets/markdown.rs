@@ -577,4 +577,57 @@ mod tests {
         let b = MarkdownContent::parse_partial(s);
         assert_eq!(a.lines.len(), b.lines.len());
     }
+
+    #[test]
+    fn close_unclosed_fence_handles_trailing_whitespace_on_opener() {
+        // CommonMark allows trailing whitespace on info strings.
+        let s = "```rust   \nfn main() {}";
+        let out = close_unclosed_fence(s);
+        assert!(out.ends_with("```\n"), "got: {:?}", out);
+        assert!(out.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn close_unclosed_fence_handles_tilde_with_trailing_whitespace() {
+        let s = "~~~   \ncode block";
+        let out = close_unclosed_fence(s);
+        assert!(out.ends_with("~~~\n"), "got: {:?}", out);
+    }
+
+    #[test]
+    fn close_unclosed_fence_passes_through_when_last_line_is_not_a_fence() {
+        // The last line is just backticks inside prose, not a fence opener.
+        let s = "Use `code` inline here";
+        assert_eq!(close_unclosed_fence(s), s);
+    }
+
+    #[test]
+    fn close_unclosed_fence_handles_nested_balanced_fences() {
+        let s = "```rust\n// outer\n```\nmore text\n```json\n{\"k\": 1}";
+        let out = close_unclosed_fence(s);
+        // The last ```json should be detected as unclosed.
+        assert!(out.ends_with("```\n"), "got: {:?}", out);
+        // The earlier ```close should NOT have been affected.
+        assert_eq!(out.matches("```").count(), 4); // opener + closer + opener + synthetic closer
+    }
+
+    #[test]
+    fn close_unclosed_fence_handles_multiple_opens_in_a_row() {
+        let s = "```\n```\n```rust\nx";
+        // Line 1: open  "```\n"     → depth=1
+        // Line 2: "```\n"            → same marker, counts as close → depth=0
+        // Line 3: "```rust\n"        → open again → depth=1
+        // Line 4: "x"                → not a fence
+        // Result: unclosed (depth=1)
+        let out = close_unclosed_fence(s);
+        assert!(out.ends_with("```\n"), "got: {:?}", out);
+    }
+
+    #[test]
+    fn close_unclosed_fence_ignores_fence_markers_in_4space_indent() {
+        let s = "normal\n    ```\n    more indent\nmore normal";
+        // The 4-space indented "```" lines should be ignored per CommonMark
+        // (they are treated as indented code blocks, not fences).
+        assert_eq!(close_unclosed_fence(s), s);
+    }
 }

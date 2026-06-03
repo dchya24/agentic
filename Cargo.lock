@@ -21,6 +21,7 @@ dependencies = [
  "crossterm 0.28.1",
  "dialoguer",
  "dirs",
+ "futures",
  "ignore",
  "indicatif",
  "log",

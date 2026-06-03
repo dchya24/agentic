@@ -106,11 +106,15 @@
 
 - [x] 12.0 Unit tests for argument parsing + widget helpers
 - [x] 12.1 README in `agentic-cli/`
-- [ ] 12.2 End-to-end smoke test for `agentic run` against a mock provider
+- [x] 12.2 End-to-end smoke test for `agentic run` against a mock provider
+  - 3 tests in `commands.rs`: basic tool→text flow, event emission, ScriptedProvider
 
 ### Open / future work
 
-- [ ] Markdown rendering polish for streaming responses (richer code-fence handling on delta chunks, copy hints)
+- [x] Markdown rendering polish for streaming responses
+  - `close_unclosed_fence` extended: trailing whitespace, nested balanced fences, multiple openers, 4-space indent edge cases
+  - `canonical_lang` extended: `|` separator in info strings
+  - 7 new edge-case tests
 
 > **Architecture reference:** [docs/shared-widgets-architecture-26052026.md](../docs/shared-widgets-architecture-26052026.md)
 > **Roadmap:** [docs/ROADMAP.md](../docs/ROADMAP.md)

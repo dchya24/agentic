@@ -89,16 +89,16 @@ Sized by effort. Each item has its own home in
       `/restart` workflow.
 - [x] **Streaming markdown polish.** `MarkdownContent::parse_partial`
       auto-closes unclosed code fences for in-flight delta streams.
-- [ ] **End-to-end smoke test** for `agentic run` against a mock provider,
-      so refactors flag regressions before they hit a release.
+- [x] **End-to-end smoke test** for `agentic run` against a mock provider,
+       so refactors flag regressions before they hit a release.
 
 ### Medium (2–4 days)
 
 - [x] **Wire `question` + `todowrite` CLI handlers.** Register
-      `QuestionHandler` in interactive/TUI modes, `TodoChangeHandler`
-      for progress rendering. See milestone-4 doc.
-- [ ] **End-to-end smoke test** for `agentic run` against a mock provider,
-      so refactors flag regressions before they hit a release.
+       `QuestionHandler` in interactive/TUI modes, `TodoChangeHandler`
+       for progress rendering. See milestone-4 doc.
+- [x] **End-to-end smoke test** for `agentic run` against a mock provider,
+       so refactors flag regressions before they hit a release.
 
 ### Larger (1–2 weeks)
 
@@ -143,13 +143,13 @@ from end-to-end tests.
 Key changes that landed recently:
 
 ```
+(latest)     feat(cli): E2E smoke test + streaming markdown polish
 (latest)     feat(tools): add question + todowrite tools (M4)
 (latest)     docs: update TOOL_REFERENCE.md for 16-tool set
 (latest)     feat(cli): session system — auto-save, /new, /sessions, /sessions <id>
 (latest)     refactor(cli): replace ratatui model_picker with dialoguer inline fuzzy-select
 (latest)     feat(cli): /models auto-complete via reedline completer
-(latest)     fix(cli): terminal width calculation for split terminals
-(in progress)  feat(cli): /restart slash command + AGENT.md/memory.md indicators
+(latest)     feat(cli): /restart slash command + AGENT.md/memory.md indicators
 722b32c  docs: drop Tauri/Termul-flavored plans, consolidate into ROADMAP
 3b1f740  feat(safety+cli): interactive diff preview in confirmation prompt
 72a7edf  feat(safety): prompt-injection detector for fetch / web_search

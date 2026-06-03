@@ -37,6 +37,9 @@ uuid = { version = "1", features = ["v4"] }
 
 # TUI
 ratatui = "0.29"
+
+[dev-dependencies]
+futures = "0.3"
 crossterm = "0.28"
 tui-textarea = "0.7"
 syntect = "5.2"

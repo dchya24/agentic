@@ -355,6 +355,10 @@ pub struct Commands {
     /// the `question` tool handler is registered (stdin-based prompts)
     /// vs returning skip-all fallback (non-interactive `agentic run`).
     interactive_mode: bool,
+    /// Mock provider for testing. When set, `ensure_orchestrator` uses
+    /// this instead of constructing a real provider from config.
+    /// Only settable via `with_mock_provider` (gated to `#[cfg(test)]`).
+    mock_provider: Option<std::sync::Arc<dyn core_agentic::LLMProvider>>,
 }
 
 impl Commands {
@@ -370,6 +374,7 @@ impl Commands {
             memory_md_loaded: false,
             pending_attachments: Vec::new(),
             interactive_mode: false,
+            mock_provider: None,
         }
     }
 
@@ -389,6 +394,17 @@ impl Commands {
         self
     }
 
+    /// Inject a mock provider for end-to-end testing. Only available
+    /// in test builds.
+    #[cfg(test)]
+    pub(crate) fn with_mock_provider(
+        mut self,
+        provider: std::sync::Arc<dyn core_agentic::LLMProvider>,
+    ) -> Self {
+        self.mock_provider = Some(provider);
+        self
+    }
+
     pub fn with_debug(mut self, enabled: bool) -> Self {
         self.debug_enabled = enabled;
         self
@@ -405,13 +421,24 @@ impl Commands {
             return Ok(());
         }
 
-        let provider_config = self
-            .config
-            .to_provider_config()
-            .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
-        let model_name = provider_config.default_model.clone();
-        let provider: Arc<dyn core_agentic::LLMProvider> =
-            Arc::new(core_agentic::OpenAIProvider::new(provider_config));
+        let provider: Arc<dyn core_agentic::LLMProvider>;
+        let model_name: String;
+
+        if let Some(mock) = self.mock_provider.clone() {
+            provider = mock;
+            model_name = self
+                .config
+                .active_model()
+                .map(|m| m.model.clone())
+                .unwrap_or_else(|| "gpt-4o-mini".to_string());
+        } else {
+            let provider_config = self
+                .config
+                .to_provider_config()
+                .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
+            model_name = provider_config.default_model.clone();
+            provider = Arc::new(core_agentic::OpenAIProvider::new(provider_config));
+        }
 
         // Build URL allowlist policy from the user config (defaults to
         // unrestricted when neither `safety.allowed_domains` nor
@@ -2692,5 +2719,233 @@ mod search_snippet_tests {
         for snip in &snips {
             assert!(snip.contains("世界"));
         }
+    }
+}
+
+// ── End-to-end smoke tests ─────────────────────────────────
+//
+// These tests exercise the full `Commands::run` pipeline against a
+// scripted mock provider so refactors in the CLI wiring are caught
+// before they reach a release. The orchestrator integration tests in
+// core-agentic cover the loop itself; here we validate that the CLI
+// layer (orchestrator init, tool registration, event plumbing, output
+// rendering) works end to end.
+
+#[cfg(test)]
+mod e2e_tests {
+    use super::*;
+    use core_agentic::providers::{
+        ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, LLMProvider,
+        ProviderError, ProviderResult, StreamResult, ToolCallDelta, ToolCallFunction,
+        ToolCallResponse,
+    };
+    use futures::stream;
+    use std::sync::Mutex;
+
+    /// Provider returning scripted responses in order.
+    struct ScriptedProvider {
+        responses: Mutex<Vec<ChatResponse>>,
+    }
+
+    impl ScriptedProvider {
+        fn new(responses: Vec<ChatResponse>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+            }
+        }
+
+        /// Convert a `ChatResponse` into a list of streaming `ChatChunk`s.
+        fn response_to_chunks(response: ChatResponse) -> Vec<Result<ChatChunk, ProviderError>> {
+            let mut chunks: Vec<Result<ChatChunk, ProviderError>> = Vec::new();
+            let id = response.id.clone();
+
+            // Text deltas (one chunk per response).
+            if let Some(content) = &response.message.content {
+                chunks.push(Ok(ChatChunk {
+                    id: id.clone(),
+                    delta: content.clone(),
+                    finish_reason: None,
+                    tool_calls: vec![],
+                    usage: None,
+                }));
+            }
+
+            // Tool-call deltas.
+            for tc in &response.message.tool_calls {
+                chunks.push(Ok(ChatChunk {
+                    id: id.clone(),
+                    delta: String::new(),
+                    finish_reason: None,
+                    tool_calls: vec![ToolCallDelta {
+                        index: 0,
+                        id: Some(tc.id.clone()),
+                        function_name: Some(tc.function.name.clone()),
+                        function_arguments: Some(tc.function.arguments.clone()),
+                    }],
+                    usage: None,
+                }));
+            }
+
+            // Final chunk with finish_reason.
+            chunks.push(Ok(ChatChunk {
+                id: id.clone(),
+                delta: String::new(),
+                finish_reason: response.finish_reason.clone(),
+                tool_calls: vec![],
+                usage: None,
+            }));
+
+            chunks
+        }
+    }
+
+    impl LLMProvider for ScriptedProvider {
+        fn provider_type(&self) -> &str {
+            "test"
+        }
+        fn provider_id(&self) -> &str {
+            "test"
+        }
+        fn chat(&self, _req: ChatRequest) -> ProviderResult<ChatResponse> {
+            let mut q = self.responses.lock().unwrap();
+            if q.is_empty() {
+                return Err(ProviderError::new(
+                    "ScriptedProvider: no more responses",
+                ));
+            }
+            Ok(q.remove(0))
+        }
+        fn chat_stream(
+            &self,
+            _req: ChatRequest,
+        ) -> StreamResult<ChatChunk, ProviderError> {
+            let mut q = self.responses.lock().unwrap();
+            if q.is_empty() {
+                return Err(ProviderError::new(
+                    "ScriptedProvider: no more responses",
+                ));
+            }
+            let response = q.remove(0);
+            let chunks = Self::response_to_chunks(response);
+            Ok(Box::pin(stream::iter(chunks)))
+        }
+    }
+
+    #[tokio::test]
+    async fn smoke_run_executes_tool_and_returns_final_answer() {
+        // ── Provider: tool call → final text ──────────────
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ChatResponse {
+                id: "resp-1".into(),
+                model: "test".into(),
+                message: ChatMessageResponse {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: vec![ToolCallResponse {
+                        id: "call-1".into(),
+                        call_type: "function".into(),
+                        function: ToolCallFunction {
+                            name: "list_files".into(),
+                            arguments: r#"{"path": "."}"#.into(),
+                        },
+                    }],
+                },
+                finish_reason: Some("tool_calls".into()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "resp-2".into(),
+                model: "test".into(),
+                message: ChatMessageResponse {
+                    role: "assistant".into(),
+                    content: Some(
+                        "Here are the files I found.".into(),
+                    ),
+                    tool_calls: vec![],
+                },
+                finish_reason: Some("stop".into()),
+                usage: None,
+            },
+        ]));
+
+        let config = Config::fallback();
+        let mut commands = Commands::new(config)
+            .with_mock_provider(provider)
+            .with_permission_mode(core_agentic::PermissionMode::Yolo);
+
+        let result = commands
+            .run_with_callbacks("list current directory", |_| {}, |_| {})
+            .await
+            .expect("run_with_callbacks should succeed");
+
+        assert!(
+            result.contains("Here are the files"),
+            "Expected final answer in output, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn smoke_run_emits_events_for_tool_calls() {
+        // ── Provider: one tool call → final text ──────────
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ChatResponse {
+                id: "resp-1".into(),
+                model: "test".into(),
+                message: ChatMessageResponse {
+                    role: "assistant".into(),
+                    content: None,
+                    tool_calls: vec![ToolCallResponse {
+                        id: "call-1".into(),
+                        call_type: "function".into(),
+                        function: ToolCallFunction {
+                            name: "list_files".into(),
+                            arguments: r#"{"path": "."}"#.into(),
+                        },
+                    }],
+                },
+                finish_reason: Some("tool_calls".into()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "resp-2".into(),
+                model: "test".into(),
+                message: ChatMessageResponse {
+                    role: "assistant".into(),
+                    content: Some("Done.".into()),
+                    tool_calls: vec![],
+                },
+                finish_reason: Some("stop".into()),
+                usage: None,
+            },
+        ]));
+
+        let config = Config::fallback();
+        let mut commands = Commands::new(config)
+            .with_mock_provider(provider)
+            .with_permission_mode(core_agentic::PermissionMode::Yolo);
+
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+
+        let _ = commands
+            .run_with_callbacks(
+                "list files",
+                |_| {},
+                move |evt| {
+                    captured.lock().unwrap().push(format!("{evt:?}"));
+                },
+            )
+            .await;
+
+        let logged = events.lock().unwrap();
+        let all: String = logged.join(" ");
+        assert!(
+            all.contains("ToolCall") || all.contains("list_files"),
+            "Expected tool-call events, got: {all}"
+        );
+        assert!(
+            all.contains("ToolOutput"),
+            "Expected tool-output events, got: {all}"
+        );
     }
 }
