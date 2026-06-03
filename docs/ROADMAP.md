@@ -94,7 +94,7 @@ Sized by effort. Each item has its own home in
 
 ### Medium (2–4 days)
 
-- [ ] **Wire `question` + `todowrite` CLI handlers.** Register
+- [x] **Wire `question` + `todowrite` CLI handlers.** Register
       `QuestionHandler` in interactive/TUI modes, `TodoChangeHandler`
       for progress rendering. See milestone-4 doc.
 - [ ] **End-to-end smoke test** for `agentic run` against a mock provider,

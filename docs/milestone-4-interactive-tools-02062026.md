@@ -147,53 +147,24 @@ prevents the orchestrator from batching it with other tools.
 
 ---
 
-## CLI integration (pending)
+## CLI integration
 
-Both tools are registered in `builtin_tools()` and will appear in the
-tool definitions sent to the LLM. However, **the CLI does not yet register
-handlers** for either tool. The integration points are:
+Both tools are registered in `builtin_tools()` and appear in the
+ tool definitions sent to the LLM. Handlers are wired in
+`commands::ensure_orchestrator()`:
 
 ### `question` — CLI handler
 
-In `agentic-cli/src/commands.rs` or `agentic-cli/src/interactive.rs`:
-
-```rust
-struct CliQuestionHandler;
-
-impl QuestionHandler for CliQuestionHandler {
-    fn handle(&self, questions: &[QuestionPrompt]) -> Vec<QuestionAnswer> {
-        // For each question:
-        //   1. Print the question (with header if present)
-        //   2. If options exist, show numbered list
-        //   3. Read user input from stdin
-        //   4. Return parsed answer
-    }
-}
-
-// During startup:
-set_question_handler(Box::new(CliQuestionHandler));
-```
-
-**TUI integration:** The TUI could render questions as modal dialogs
-or inline panels, using the same `QuestionHandler` trait.
+Implemented in `agentic-cli/src/commands.rs` as `CliQuestionHandler`.
+Uses `dialoguer::Select` / `MultiSelect` / `Input` for interactive prompts.
+Only registered when `interactive_mode` is true (interactive REPL + TUI).
+In non-interactive `agentic run`, the tool returns skip-all fallback.
 
 ### `todowrite` — CLI handler
 
-In `agentic-cli/src/commands.rs`:
-
-```rust
-struct CliTodoRenderer;
-
-impl TodoChangeHandler for CliTodoRenderer {
-    fn on_change(&self, todos: &[TodoItem]) {
-        // Render the todo list in the TUI status bar or sidebar
-        // e.g. show "Tasks: 3/5 (60%)" or a full panel
-    }
-}
-
-// During startup:
-set_todo_change_handler(Box::new(CliTodoRenderer));
-```
+Implemented in `agentic-cli/src/commands.rs` as `CliTodoRenderer`.
+Renders a compact progress bar + individual todo items inline.
+Registered in all modes (interactive + non-interactive `agentic run`).
 
 ### When to register / skip
 
@@ -277,6 +248,6 @@ agentic-cli:   cargo build          # clean
 
 | Item | Scope | Effort |
 |------|-------|--------|
-| Wire `QuestionHandler` in CLI interactive mode | `agentic-cli` | 1–2 days |
-| Wire `TodoChangeHandler` in CLI | `agentic-cli` | 1 day |
+| ~~Wire `QuestionHandler` in CLI interactive mode~~ | `agentic-cli` | ✅ Done |
+| ~~Wire `TodoChangeHandler` in CLI~~ | `agentic-cli` | ✅ Done |
 | Skill system design + `skill` tool | `core-agentic` + `agentic-cli` | 2–3 weeks |
