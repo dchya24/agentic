@@ -2,7 +2,7 @@
 
 **Overview**: Task lists for the agentic CLI + core library
 **Created**: 2026-04-20
-**Updated**: 2026-05-31
+**Updated**: 2026-06-03
 
 ---
 
@@ -10,8 +10,8 @@
 
 | Crate / surface | Status |
 |-----------------|--------|
-| `core-agentic` library | Foundation complete; ~95% architecture coverage. Module split (memory/orchestrator/safety) + web_search + URL allowlist + cost tracking + apply_patch + injection scanner all on `dev`. |
-| `agentic-cli` binary | Run / interactive / TUI flows complete. Shared widgets stack lands all output through ratatui primitives. `/search` slash command + cost line in status bar + diff preview in confirmation prompt. |
+| `core-agentic` library | Foundation complete; ~95% architecture coverage. Module split (memory/orchestrator/safety) + web_search + URL allowlist + cost tracking + apply_patch + injection scanner + planner + skills + **prompt caching** all on `dev`. **Next:** Phase 12 (TBD). |
+| `agentic-cli` binary | Run / interactive / TUI flows complete. Shared widgets stack lands all output through ratatui primitives. `/search` slash command + cost line in status bar + diff preview in confirmation prompt + skills commands + **cache observability**. **Next:** Config wizard cache settings. |
 
 ## Task Files
 

@@ -37,6 +37,12 @@ pub struct Session {
     pub cost: f64,
     pub tokens_input: u32,
     pub tokens_output: u32,
+    /// Tokens read from prompt cache.
+    #[serde(default)]
+    pub cache_read_tokens: u32,
+    /// Tokens created in prompt cache (written to cache).
+    #[serde(default)]
+    pub cache_creation_tokens: u32,
 }
 
 /// Summary used for listing sessions (no message content).
@@ -109,6 +115,8 @@ pub fn create(
         cost: 0.0,
         tokens_input: 0,
         tokens_output: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
     }
 }
 
@@ -217,6 +225,17 @@ pub fn update_stats(
     session.cost += cost;
     session.tokens_input += tokens_input;
     session.tokens_output += tokens_output;
+    session.updated_at = Local::now().to_rfc3339();
+}
+
+/// Update cache token counters.
+pub fn update_cache_stats(
+    session: &mut Session,
+    cache_read_tokens: u32,
+    cache_creation_tokens: u32,
+) {
+    session.cache_read_tokens += cache_read_tokens;
+    session.cache_creation_tokens += cache_creation_tokens;
     session.updated_at = Local::now().to_rfc3339();
 }
 

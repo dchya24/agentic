@@ -5,6 +5,7 @@ use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use super::{ChatRequest, ChatResponse, ChatUsage, LLMProvider, ProviderError, ProviderResult};
+use crate::config::BreakpointStrategy;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
@@ -59,6 +60,9 @@ pub struct AnthropicProviderConfig {
     pub retry: RetryConfig,
     #[serde(default)]
     pub version: String,
+    /// Cache configuration for prompt caching.
+    #[serde(default)]
+    pub cache: super::super::config::CacheConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +90,7 @@ impl AnthropicProviderConfig {
             default_model: default_model.into(),
             retry: RetryConfig::default(),
             version: "2023-06-01".into(),
+            cache: super::super::config::CacheConfig::default(),
         }
     }
 
@@ -107,6 +112,23 @@ impl AnthropicProviderConfig {
 // the untagged `AnthropicContentBlock` enum. Restore from git history if a
 // future change needs the named-struct form.
 
+/// Cache control marker for Anthropic prompt caching.
+///
+/// See: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+#[derive(Debug, Clone, Serialize)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    marker_type: String,
+}
+
+impl CacheControl {
+    fn ephemeral() -> Self {
+        Self {
+            marker_type: "ephemeral".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 enum AnthropicContentBlock {
@@ -114,6 +136,8 @@ enum AnthropicContentBlock {
         #[serde(rename = "type")]
         text_type: String,
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolUse {
         #[serde(rename = "type")]
@@ -163,7 +187,7 @@ struct AnthropicMessageRequest {
 struct AnthropicRequest {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<Vec<AnthropicContentBlock>>,
     messages: Vec<AnthropicMessageRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicToolDefinition>>,
@@ -220,6 +244,12 @@ pub enum AnthropicContentBlockResponse {
 pub struct AnthropicUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    /// Tokens read from a prompt cache (optional, present when cache hit).
+    #[serde(default)]
+    pub cache_read_input_tokens: Option<u32>,
+    /// Tokens used to create a prompt cache entry (optional, present when cache written).
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,7 +319,10 @@ impl AnthropicProvider {
     }
 
     fn convert_request(&self, request: ChatRequest) -> Result<AnthropicRequest, ProviderError> {
-        let mut system_message = None;
+        let cache_enabled = self.config.cache.enabled;
+        let breakpoint_strategy = &self.config.cache.breakpoint_strategy;
+
+        let mut system_message: Option<String> = None;
         let mut anthropic_messages = Vec::new();
 
         for msg in &request.messages {
@@ -314,6 +347,7 @@ impl AnthropicProvider {
                             blocks.push(AnthropicContentBlock::Text {
                                 text_type: "text".into(),
                                 text: msg.content.clone(),
+                                cache_control: None,
                             });
                         }
                         blocks
@@ -358,6 +392,7 @@ impl AnthropicProvider {
                             blocks.push(AnthropicContentBlock::Text {
                                 text_type: "text".into(),
                                 text: msg.content.clone(),
+                                cache_control: None,
                             });
                         }
                         blocks
@@ -370,6 +405,69 @@ impl AnthropicProvider {
                 }
                 _ => {
                     // Skip unknown roles
+                }
+            }
+        }
+
+        // ── Inject cache_control breakpoints ──────────────────────────
+
+        // Build system prompt as content blocks when caching is enabled,
+        // so we can attach cache_control to the first block.
+        let system_blocks: Option<Vec<AnthropicContentBlock>> = system_message.map(|text| {
+            let mut blocks = Vec::new();
+            let cache_system = cache_enabled
+                && (breakpoint_strategy == &BreakpointStrategy::SystemOnly
+                    || breakpoint_strategy == &BreakpointStrategy::Prefix
+                    || breakpoint_strategy == &BreakpointStrategy::Full);
+            blocks.push(AnthropicContentBlock::Text {
+                text_type: "text".into(),
+                text,
+                cache_control: if cache_system {
+                    Some(CacheControl::ephemeral())
+                } else {
+                    None
+                },
+            });
+            blocks
+        });
+
+        // For Prefix strategy, add cache_control to the second-to-last message
+        // (everything before the current turn is cached as a prefix).
+        if cache_enabled && breakpoint_strategy == &BreakpointStrategy::Prefix {
+            if anthropic_messages.len() >= 2 {
+                // The prefix ends at the message before the current user turn.
+                let prefix_idx = anthropic_messages.len() - 2;
+                if let Some(last_text_block) = anthropic_messages[prefix_idx]
+                    .content
+                    .iter_mut()
+                    .rev()
+                    .find_map(|block| match block {
+                        AnthropicContentBlock::Text { ref mut cache_control, .. } => {
+                            Some(cache_control)
+                        }
+                        _ => None,
+                    })
+                {
+                    *last_text_block = Some(CacheControl::ephemeral());
+                }
+            }
+        }
+
+        // For Full strategy, add cache_control to every message up to the last.
+        if cache_enabled && breakpoint_strategy == &BreakpointStrategy::Full {
+            if let Some(last_msg) = anthropic_messages.last_mut() {
+                if let Some(last_text_block) = last_msg
+                    .content
+                    .iter_mut()
+                    .rev()
+                    .find_map(|block| match block {
+                        AnthropicContentBlock::Text { ref mut cache_control, .. } => {
+                            Some(cache_control)
+                        }
+                        _ => None,
+                    })
+                {
+                    *last_text_block = Some(CacheControl::ephemeral());
                 }
             }
         }
@@ -393,7 +491,7 @@ impl AnthropicProvider {
 
         Ok(AnthropicRequest {
             model: request.model,
-            system: system_message,
+            system: system_blocks,
             messages: anthropic_messages,
             tools,
             temperature: request.temperature,
@@ -484,6 +582,8 @@ impl AnthropicProvider {
             prompt_tokens: u.input_tokens,
             completion_tokens: u.output_tokens,
             total_tokens: u.input_tokens + u.output_tokens,
+            cache_read_input_tokens: u.cache_read_input_tokens,
+            cache_creation_input_tokens: u.cache_creation_input_tokens,
         });
 
         Ok(ChatResponse {
@@ -668,6 +768,8 @@ impl LLMProvider for AnthropicProvider {
                                                                 prompt_tokens: u.input_tokens,
                                                                 completion_tokens: u.output_tokens,
                                                                 total_tokens: u.input_tokens + u.output_tokens,
+                                                                cache_read_input_tokens: u.cache_read_input_tokens,
+                                                                cache_creation_input_tokens: u.cache_creation_input_tokens,
                                                             }),
                                                         });
                                                     }
@@ -882,8 +984,11 @@ mod wire_format_tests {
             ],
         );
         let body = convert_and_serialize(req);
-        // Anthropic puts system prompt at the top level, not in messages.
-        assert_eq!(body["system"], "sys-prompt");
+        // Anthropic puts system prompt at the top level as a list of content blocks.
+        let sys = body["system"].as_array().expect("system is an array");
+        assert_eq!(sys.len(), 1);
+        assert_eq!(sys[0]["type"], "text");
+        assert_eq!(sys[0]["text"], "sys-prompt");
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "user");
@@ -922,9 +1027,205 @@ mod wire_format_tests {
         let block = AnthropicContentBlock::Text {
             text_type: "text".into(),
             text: "hi".into(),
+            cache_control: None,
         };
         let v = serde_json::to_value(&block).unwrap();
         assert_eq!(v["type"], "text");
         assert_eq!(v["text"], "hi");
+    }
+
+    // ── Prompt caching tests ────────────────────────────────────────
+
+    #[test]
+    fn cache_control_is_absent_by_default() {
+        // When caching is not enabled, no cache_control field should appear.
+        let req = ChatRequest::new(
+            "claude-3-5-sonnet-20241022",
+            vec![
+                ChatMessageRequest::system("You are a helpful assistant."),
+                ChatMessageRequest::user("hello"),
+            ],
+        );
+        let body = convert_and_serialize(req);
+        // System block should not have cache_control.
+        let sys = body["system"].as_array().unwrap();
+        assert!(!sys[0].as_object().unwrap().contains_key("cache_control"));
+        // Messages should not have cache_control.
+        let msgs = body["messages"].as_array().unwrap();
+        for msg in msgs {
+            if let Some(content) = msg["content"].as_array() {
+                for block in content {
+                    assert!(!block.as_object().unwrap().contains_key("cache_control"));
+                }
+            }
+        }
+    }
+
+    /// Helper: provider with cache enabled.
+    fn cached_provider() -> AnthropicProvider {
+        let mut cfg = AnthropicProviderConfig::new(
+            "test-id",
+            "test-key",
+            "claude-3-5-sonnet-20241022",
+        );
+        cfg.cache = crate::config::CacheConfig {
+            enabled: true,
+            breakpoint_strategy: crate::config::BreakpointStrategy::SystemOnly,
+        };
+        AnthropicProvider::new(cfg)
+    }
+
+    fn convert_cached(req: ChatRequest) -> serde_json::Value {
+        let p = cached_provider();
+        let anthropic_req = p.convert_request(req).expect("convert");
+        serde_json::to_value(&anthropic_req).expect("serialize")
+    }
+
+    #[test]
+    fn cache_control_system_only_strategy() {
+        // With SystemOnly strategy, only the system prompt gets cache_control.
+        let req = ChatRequest::new(
+            "claude-3-5-sonnet-20241022",
+            vec![
+                ChatMessageRequest::system("sys-prompt"),
+                ChatMessageRequest::user("hello"),
+            ],
+        );
+        let body = convert_cached(req);
+        // System has cache_control.
+        let sys = body["system"].as_array().unwrap();
+        assert_eq!(sys[0]["cache_control"]["type"], "ephemeral");
+        // Messages do not have cache_control.
+        let msgs = body["messages"].as_array().unwrap();
+        for msg in msgs {
+            if let Some(content) = msg["content"].as_array() {
+                for block in content {
+                    assert!(!block.as_object().unwrap().contains_key("cache_control"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cache_control_prefix_strategy() {
+        // With Prefix strategy, system prompt + the last prefix message
+        // (second-to-last overall) get cache_control. The final user turn
+        // should NOT have cache_control.
+        //
+        // Anthropic's API only needs one cache_control breakpoint at the
+        // boundary between cached and uncached content — the API caches
+        // everything from the start up to that breakpoint.
+        let mut cfg = AnthropicProviderConfig::new(
+            "test-id",
+            "test-key",
+            "claude-3-5-sonnet-20241022",
+        );
+        cfg.cache = crate::config::CacheConfig {
+            enabled: true,
+            breakpoint_strategy: crate::config::BreakpointStrategy::Prefix,
+        };
+        let p = AnthropicProvider::new(cfg);
+
+        let req = ChatRequest::new(
+            "claude-3-5-sonnet-20241022",
+            vec![
+                ChatMessageRequest::system("sys-prompt"),
+                ChatMessageRequest::user("first message"),
+                ChatMessageRequest::assistant("first reply"),
+                ChatMessageRequest::user("second message"),
+                ChatMessageRequest::assistant("second reply"),
+                ChatMessageRequest::user("final turn"),
+            ],
+        );
+        let body = serde_json::to_value(
+            &p.convert_request(req).expect("convert")
+        ).expect("serialize");
+
+        // System has cache_control.
+        let sys = body["system"].as_array().unwrap();
+        assert_eq!(sys[0]["cache_control"]["type"], "ephemeral");
+
+        let msgs = body["messages"].as_array().unwrap();
+        // Exactly 5 messages (system is separate in Anthropic API).
+        assert_eq!(msgs.len(), 5);
+
+        // The second-to-last message (index 3 = assistant "second reply")
+        // should have cache_control on its last text block.
+        let prefix_msg = &msgs[3];
+        let prefix_blocks = prefix_msg["content"].as_array().unwrap();
+        let prefix_last_text = prefix_blocks.iter().rev()
+            .find(|b| b["type"] == "text").unwrap();
+        assert_eq!(prefix_last_text["cache_control"]["type"], "ephemeral");
+
+        // The final message (index 4 = user "final turn") should NOT have cache_control.
+        let last_msg = &msgs[4];
+        if let Some(blocks) = last_msg["content"].as_array() {
+            for block in blocks {
+                assert!(
+                    !block.as_object().unwrap().contains_key("cache_control"),
+                    "final message should not have cache_control"
+                );
+            }
+        }
+
+        // Earlier messages (indices 0-2) should not have cache_control either
+        // — only one breakpoint is needed at the prefix boundary.
+        for i in 0..3 {
+            let msg = &msgs[i];
+            if let Some(blocks) = msg["content"].as_array() {
+                for block in blocks {
+                    // Images/tool results won't have cache_control; only text blocks.
+                    if block["type"] == "text" {
+                        assert!(
+                            !block.as_object().unwrap().contains_key("cache_control"),
+                            "msg[{}] should NOT have cache_control (only the prefix boundary)", i
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cache_control_not_applied_with_single_turn() {
+        // With Prefix strategy, a single-turn conversation has no prefix
+        // to cache, so only system gets cache_control.
+        let mut cfg = AnthropicProviderConfig::new(
+            "test-id",
+            "test-key",
+            "claude-3-5-sonnet-20241022",
+        );
+        cfg.cache = crate::config::CacheConfig {
+            enabled: true,
+            breakpoint_strategy: crate::config::BreakpointStrategy::Prefix,
+        };
+        let p = AnthropicProvider::new(cfg);
+
+        let req = ChatRequest::new(
+            "claude-3-5-sonnet-20241022",
+            vec![
+                ChatMessageRequest::system("sys-prompt"),
+                ChatMessageRequest::user("hello"),
+            ],
+        );
+        let body = serde_json::to_value(
+            &p.convert_request(req).expect("convert")
+        ).expect("serialize");
+
+        // System has cache_control.
+        let sys = body["system"].as_array().unwrap();
+        assert_eq!(sys[0]["cache_control"]["type"], "ephemeral");
+
+        // The single user message should NOT have cache_control
+        // (there's no prefix before it).
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        if let Some(blocks) = msgs[0]["content"].as_array() {
+            for block in blocks {
+                assert!(
+                    !block.as_object().unwrap().contains_key("cache_control")
+                );
+            }
+        }
     }
 }

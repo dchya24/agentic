@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
-use crate::cli::{ConfigAction, OutputFormat};
+use crate::cli::{ConfigAction, OutputFormat, SkillAction};
 use crate::confirmation::{prompt_confirmation, ConfirmationResponse};
 use crate::error::CommandError;
 use crate::widgets::capabilities;
@@ -355,6 +355,8 @@ pub struct Commands {
     /// the `question` tool handler is registered (stdin-based prompts)
     /// vs returning skip-all fallback (non-interactive `agentic run`).
     interactive_mode: bool,
+    /// Shared skill index for the skill tool, populated at orchestrator init.
+    skill_index: Option<std::sync::Arc<std::sync::RwLock<core_agentic::SkillIndex>>>,
     /// Mock provider for testing. When set, `ensure_orchestrator` uses
     /// this instead of constructing a real provider from config.
     /// Only settable via `with_mock_provider` (gated to `#[cfg(test)]`).
@@ -374,6 +376,7 @@ impl Commands {
             memory_md_loaded: false,
             pending_attachments: Vec::new(),
             interactive_mode: false,
+            skill_index: None,
             mock_provider: None,
         }
     }
@@ -470,6 +473,17 @@ impl Commands {
         .with_cancel(crate::cancel_flag());
         tools.register(Box::new(subagent));
 
+        // Discover skills and build the shared skill index before registering
+        // the skill tool (so the tool has the index available immediately).
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let discovery_config: core_agentic::DiscoveryConfig = (&self.config.skills).into();
+        let skill_index = core_agentic::discover_skills(&discovery_config);
+        let skill_index_arc = std::sync::Arc::new(std::sync::RwLock::new(skill_index));
+        self.skill_index = Some(skill_index_arc.clone());
+
+        // Register the skill tool.
+        tools.register(Box::new(core_agentic::SkillTool::new(skill_index_arc)));
+
         let mut orchestrator = Orchestrator::new(provider, tools);
         orchestrator.set_model(model_name);
 
@@ -478,8 +492,7 @@ impl Commands {
         orchestrator.set_cancel_handle(crate::cancel_flag());
 
         // Assemble effective system prompt:
-        //   default baseline  +  AGENT.md from cwd  +  config-provided override
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        //   default baseline  +  AGENT.md from cwd  +  skills section  +  config-provided override
         let project_instructions =
             core_agentic::load_project_instructions(&cwd).map(|(path, content)| {
                 tracing::info!(
@@ -491,9 +504,21 @@ impl Commands {
                 content
             });
 
+        // Generate skills section for system prompt from the discovered index.
+        let skills_section = {
+            let idx = self.skill_index.as_ref().unwrap().read().unwrap();
+            let skill_pairs: Vec<(&str, &str)> = idx
+                .all()
+                .iter()
+                .map(|s| (s.name(), s.description()))
+                .collect();
+            core_agentic::skills_system_section(&skill_pairs)
+        };
+
         let assembled = core_agentic::assemble_system_prompt(
             None, // use DEFAULT_SYSTEM_PROMPT
             project_instructions.as_deref(),
+            skills_section.as_deref(),
             self.config.system_prompt.as_deref(),
         );
 
@@ -1652,6 +1677,169 @@ impl Commands {
         Ok(())
     }
 
+    // ── Skill command dispatch ────────────────────────────────
+
+    pub fn skill_command(&self, action: &SkillAction) -> Result<()> {
+        match action {
+            SkillAction::List => self.skill_list()?,
+            SkillAction::Info { name } => self.skill_info(name)?,
+            SkillAction::Create { name, global } => self.skill_create(name, *global)?,
+        }
+        Ok(())
+    }
+
+    fn skill_list(&self) -> Result<()> {
+        let discovery_config: core_agentic::DiscoveryConfig =
+            core_agentic::DiscoveryConfig::from(&self.config.skills);
+        let index = core_agentic::discover_skills(&discovery_config);
+
+        if index.is_empty() {
+            println!();
+            println!("  No skills found.");
+            println!();
+            println!("  Create one:  agentic skill create <name>");
+            println!();
+            return Ok(());
+        }
+
+        println!();
+        println!("  Skills");
+
+        let mut skills: Vec<_> = index.all().into_iter().collect();
+        skills.sort_by(|a, b| a.name().cmp(b.name()));
+
+        for skill in &skills {
+            println!();
+            println!("  📦 {}", skill.name());
+            println!("     {}", skill.description());
+            println!("     Path: {}", skill.dir.display());
+        }
+
+        if !index.blocked().is_empty() {
+            println!();
+            println!("  Blocked:");
+            for name in index.blocked() {
+                println!("     ✗ {}", name);
+            }
+        }
+
+        println!();
+        Ok(())
+    }
+
+    fn skill_info(&self, name: &str) -> Result<()> {
+        let discovery_config: core_agentic::DiscoveryConfig =
+            core_agentic::DiscoveryConfig::from(&self.config.skills);
+        let index = core_agentic::discover_skills(&discovery_config);
+
+        let skill = match index.get(name) {
+            Some(s) => s,
+            None => {
+                eprintln!("✗ Skill '{}' not found.", name);
+                std::process::exit(1);
+            }
+        };
+
+        println!();
+        println!("  📦 {} — {}", skill.name(), skill.description());
+        println!("     Path: {}", skill.dir.display());
+        println!("     SKILL.md size: {} bytes", skill.content.len());
+        println!();
+
+        // Show preview (first 20 lines of body)
+        let preview_lines: Vec<&str> = skill.body.lines().take(20).collect();
+        if !preview_lines.is_empty() {
+            println!("  Preview:");
+            for line in &preview_lines {
+                println!("    {}", line);
+            }
+            if skill.body.lines().count() > 20 {
+                println!("    ... ({} more lines)", skill.body.lines().count() - 20);
+            }
+        }
+
+        // List other files in the skill directory
+        if let Ok(entries) = std::fs::read_dir(&skill.dir) {
+            let files: Vec<_> = entries
+                .flatten()
+                .filter(|e| e.path().is_file())
+                .map(|e| e.path())
+                .filter(|p| p.file_name().and_then(|n| n.to_str()) != Some("SKILL.md"))
+                .collect();
+            if !files.is_empty() {
+                println!();
+                println!("  Referenced files:");
+                for f in &files {
+                    println!("     📄 {}", f.file_name().unwrap_or_default().to_string_lossy());
+                }
+            }
+        }
+
+        println!();
+        Ok(())
+    }
+
+    fn skill_create(&self, name: &str, global: bool) -> Result<()> {
+        // Validate name
+        let name_re = regex::Regex::new(r"^[a-z0-9-]{1,64}$").unwrap();
+        if !name_re.is_match(name) {
+            eprintln!("✗ Invalid skill name '{}': must be 1-64 chars, lowercase a-z, 0-9, hyphens only", name);
+            std::process::exit(1);
+        }
+
+        let base_dir = if global {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            std::path::PathBuf::from(home)
+                .join(".config")
+                .join("agentic")
+                .join("skills")
+        } else {
+            // Project-local: .agentic/skills/ in cwd (or walk-up)
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let mut dir = find_or_create_dir(&cwd, ".agentic");
+            dir.push("skills");
+            dir
+        };
+
+        let skill_dir = base_dir.join(name);
+        if skill_dir.exists() {
+            eprintln!("✗ Skill '{}' already exists at {}", name, skill_dir.display());
+            std::process::exit(1);
+        }
+
+        std::fs::create_dir_all(&skill_dir)
+            .map_err(|e| anyhow::anyhow!("Failed to create skill directory: {}", e))?;
+
+        let template = format!(
+            r"---
+name: {name}
+description: What this skill does and when to use it.
+---
+
+# {name}
+
+## Setup
+(optional setup instructions)
+
+## Usage
+Instructions the agent follows when this skill is loaded.
+"
+        );
+
+        std::fs::write(skill_dir.join("SKILL.md"), &template)
+            .map_err(|e| anyhow::anyhow!("Failed to write SKILL.md: {}", e))?;
+
+        println!();
+        println!("  ✅ Skill '{}' created at:", name);
+        println!("     {}", skill_dir.display());
+        println!();
+        println!("  Edit SKILL.md to add instructions, then run:");
+        println!("     agentic skill list");
+        println!();
+
+        Ok(())
+    }
+
     // ── Config show (json or table) ─────────────────────────
 
     fn config_show(&self, format: OutputFormat) -> Result<()> {
@@ -2018,6 +2206,7 @@ impl Commands {
                 api_base,
                 api_key: resolved_key.clone(),
                 models: vec![model],
+                cache: core_agentic::CacheConfig::default(),
             }],
             safety: core_agentic::SafetyConfig {
                 auto_approve_low_risk: auto_approve,
@@ -2038,6 +2227,7 @@ impl Commands {
             mcp_servers: std::collections::HashMap::new(),
             system_prompt: None,
             agent: core_agentic::AgentLoopConfig::default(),
+            skills: core_agentic::SkillsConfig::default(),
         };
 
         // Summary
@@ -2115,12 +2305,14 @@ impl Commands {
                 api_base: preset.api_base.to_string(),
                 api_key,
                 models: vec![default_model],
+                cache: core_agentic::CacheConfig::default(),
             }],
             safety: core_agentic::SafetyConfig::default(),
             output: core_agentic::OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
             system_prompt: None,
             agent: core_agentic::AgentLoopConfig::default(),
+            skills: core_agentic::SkillsConfig::default(),
         };
 
         Ok(config)
@@ -2706,6 +2898,23 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
         i += 1;
     }
     i
+}
+
+/// Walk up from `start` looking for `target` directory, creating it if not found.
+/// If none exists up to the filesystem root, falls back to `start`.
+fn find_or_create_dir(start: &std::path::Path, target: &str) -> std::path::PathBuf {
+    let mut current: Option<&std::path::Path> = Some(start);
+    while let Some(dir) = current {
+        let candidate = dir.join(target);
+        if candidate.is_dir() {
+            return candidate;
+        }
+        current = dir.parent();
+    }
+    // Create in cwd
+    let fallback = start.join(target);
+    let _ = std::fs::create_dir_all(&fallback);
+    fallback
 }
 
 #[cfg(test)]

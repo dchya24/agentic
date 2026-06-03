@@ -135,9 +135,37 @@ pub enum Command {
     #[command(subcommand)]
     Config(ConfigAction),
 
+    /// Skill management
+    #[command(subcommand)]
+    Skill(SkillAction),
+
     /// Show version information
     #[command(alias = "v")]
     Version,
+}
+
+#[derive(Subcommand)]
+pub enum SkillAction {
+    /// List all indexed skills
+    #[command(long_about = "List all indexed skills with name, description, and source path.")]
+    List,
+
+    /// Show skill details
+    #[command(long_about = "Show detailed information about a specific skill.")]
+    Info {
+        /// Name of the skill to inspect
+        name: String,
+    },
+
+    /// Create a new skill
+    #[command(long_about = "Scaffold a new skill directory and SKILL.md template.")]
+    Create {
+        /// Name for the new skill (lowercase a-z, 0-9, hyphens, 1-64 chars)
+        name: String,
+        /// Create in user-global directory (~/.config/agentic/skills/) instead of project-local
+        #[arg(long)]
+        global: bool,
+    },
 }
 
 #[derive(Subcommand)]

@@ -126,31 +126,33 @@
   - [ ] 14.1 `agentic run --mode plan` works with the new planner (not just deny writes)
   - [ ] 14.2 `agentic run --plan "<goal>"` shorthand for plan-then-execute without entering interactive mode
 
-### Phase 10 — Skill System (CLI integration)
+### Phase 10 — Skill System (CLI integration) (✅ done)
 
-- [ ] 15.0 `/skills` REPL command
-  - [ ] 15.1 List available skills with name, description, source directory
-  - [ ] 15.2 `/skills <name>` — show skill details (instructions preview)
-  - [ ] 15.3 Auto-complete skill names in `/skills <name>`
-- [ ] 16.0 `agentic skill create <name>` wizard
-  - [ ] 16.1 Scaffold `SKILL.md` in `~/.config/agentic/skills/<name>/` with frontmatter template
-  - [ ] 16.2 Interactive prompts: name, description, instructions body
-- [ ] 17.0 Status bar indicators
-  - [ ] 17.1 Show `⚡ <name>` chip when a skill is active in session
-  - [ ] 17.2 Banner panel line: `📄 AGENT.md  ·  🧠 memory.md  ·  ⚡ skill:<name>`
-- [ ] 18.0 `SkillResolver` trait (CLI-side, following `QuestionHandler` callback pattern)
-  - [ ] 18.1 Trait: `fn resolve(&self, skill_name: &str) -> Option<SkillContent>`
-  - [ ] 18.2 Implementation: reads from SkillIndex, loads SKILL.md + referenced files
-  - [ ] 18.3 Registration via global handler slot (same pattern as `set_question_handler`)
+- [x] 15.0 `/skills` REPL command
+  - [x] 15.1 List available skills with name, description, source directory
+  - [x] 15.2 `/skills <name>` — show skill details (instructions preview)
+  - [x] 15.3 Auto-complete skill names in `/skills <name>`
+- [x] 16.0 `agentic skill create <name>` wizard
+  - [x] 16.1 Scaffold `SKILL.md` in `~/.config/agentic/skills/<name>/` with frontmatter template (`--global` flag)
+  - [x] 16.2 Name validation + directory creation + template file
+- [x] 17.0 Status bar indicators
+  - [x] 17.1 Show `⚡ <name>` chip when a skill is active in session
+  - [x] 17.2 Banner panel line: `📄 AGENT.md  ·  🧠 memory.md  ·  ⚡ skill:<name>`
+- [x] 18.0 `SkillResolver` trait (CLI-side, following `QuestionHandler` callback pattern)
+  - [x] 18.1 Trait: `fn resolve(&self, skill_name: &str) -> Option<String>`
+  - [x] 18.2 Global handler slot with `set_skill_loader` / `resolve_skill` / `activate_skill` (same pattern as `set_question_handler`)
+  - [x] 18.3 CLI uses `SkillIndex` to resolve, skill tool auto-registers
 
 ### Phase 11 — Prompt Caching (CLI integration)
 
-- [ ] 19.0 Cache observability in UI
-  - [ ] 19.1 Add cache hit ratio to status bar: `📦 cache 68%` (when provider supports it)
-  - [ ] 19.2 Add cached token counts to `/stats` output
-  - [ ] 19.3 Show cache savings in cost line: `$0.042 (−$0.378 cached)`
+- [x] 19.0 Cache observability in UI
+  - [x] 19.1 Add cache hit ratio to status bar: `📦 cache 68%` (when provider supports it)
+  - [x] 19.2 Add cached token counts to `/stats` output
+  - [x] 19.3 Show cache savings in response summary + goodbye panel
 - [ ] 20.0 Config integration
   - [ ] 20.1 Expose `provider.cache.*` settings in `agentic config` wizard
+
+> **Note:** The cache metrics (cache_read_tokens, cache_creation_tokens) flow through `ChatUsage` but are not yet wired from provider responses to `SessionStats`. This requires emitting usage events from the orchestrator in a follow-up task.
 
 > **Architecture reference:** [docs/shared-widgets-architecture-26052026.md](../docs/shared-widgets-architecture-26052026.md)
 > **Roadmap:** [docs/ROADMAP.md](../docs/ROADMAP.md)

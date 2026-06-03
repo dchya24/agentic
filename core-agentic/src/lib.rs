@@ -24,10 +24,11 @@ pub mod attachments;
 pub mod capabilities;
 pub mod file_tracker;
 pub mod memory_file;
+pub mod skills;
 
 // Re-export main types for public API
 pub use agent::{Agent, AgentConfig};
-pub use config::{AgentLoopConfig, Config, ModelConfig, ModelOutput, OutputConfig, PlannerLoopConfig, ProviderConfig, SafetyConfig};
+pub use config::{AgentLoopConfig, BreakpointStrategy, CacheConfig, Config, ModelConfig, ModelOutput, OutputConfig, PlannerLoopConfig, ProviderConfig, SafetyConfig, SkillsConfig};
 pub use events::{Event, EventType};
 pub use memory::{Memory, Message, MessageRole, SessionInfo, MemoryConfig, ContextWindow, SummarizedContext, MessageMetadata};
 pub use orchestrator::Orchestrator;
@@ -43,6 +44,7 @@ pub use planner::{PlannerAgent, PlannerConfig, Plan, Step, PlanStatus, StepStatu
 pub use tool_registry::ToolRegistry;
 pub use prompts::{
     assemble_system_prompt, find_project_instructions, load_project_instructions,
+    skills_system_section,
     DEFAULT_SYSTEM_PROMPT, PROJECT_INSTRUCTION_FILES,
 };
 pub use file_tracker::{FileTracker, Freshness};
@@ -54,6 +56,15 @@ pub use capabilities::ModelCapabilities;
 pub use memory_file::{
     append_project_memory, append_user_memory, assemble_memory_section, find_project_memory,
     load_project_memory, load_user_memory, user_memory_path, PROJECT_MEMORY_FILE,
+};
+
+// Re-export skill system types
+pub use skills::{
+    Skill, SkillMetadata, SkillIndex, SkillLoader,
+    SkillTool,
+    set_skill_loader, clear_skill_loader,
+    resolve_skill, list_skills, activate_skill, deactivate_skill, active_skill,
+    DiscoveryConfig, discover_skills,
 };
 
 // Re-export tool implementations

@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::cli::SkillAction;
 use crate::commands::Commands;
 use crate::widgets::inline;
 use crate::widgets::components;
@@ -36,6 +37,10 @@ struct SessionStats {
     tool_calls: Arc<AtomicU32>,
     total_input_tokens: Arc<AtomicU32>,
     total_output_tokens: Arc<AtomicU32>,
+    /// Tokens read from provider prompt cache.
+    total_cache_read_tokens: Arc<AtomicU32>,
+    /// Tokens written to provider prompt cache.
+    total_cache_creation_tokens: Arc<AtomicU32>,
     session_start: Instant,
 }
 
@@ -46,6 +51,8 @@ impl SessionStats {
             tool_calls: Arc::new(AtomicU32::new(0)),
             total_input_tokens: Arc::new(AtomicU32::new(0)),
             total_output_tokens: Arc::new(AtomicU32::new(0)),
+            total_cache_read_tokens: Arc::new(AtomicU32::new(0)),
+            total_cache_creation_tokens: Arc::new(AtomicU32::new(0)),
             session_start: Instant::now(),
         }
     }
@@ -61,6 +68,8 @@ impl SessionStats {
         self.tool_calls.store(0, Ordering::Relaxed);
         self.total_input_tokens.store(0, Ordering::Relaxed);
         self.total_output_tokens.store(0, Ordering::Relaxed);
+        self.total_cache_read_tokens.store(0, Ordering::Relaxed);
+        self.total_cache_creation_tokens.store(0, Ordering::Relaxed);
     }
 
     #[allow(dead_code)]
@@ -75,6 +84,30 @@ impl SessionStats {
     #[allow(dead_code)]
     fn add_output_tokens(&self, n: u32) {
         self.total_output_tokens.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn add_cache_read_tokens(&self, n: u32) {
+        self.total_cache_read_tokens.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn add_cache_creation_tokens(&self, n: u32) {
+        self.total_cache_creation_tokens.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn total_cache_read_tokens(&self) -> u32 {
+        self.total_cache_read_tokens.load(Ordering::Relaxed)
+    }
+
+    fn total_cache_creation_tokens(&self) -> u32 {
+        self.total_cache_creation_tokens.load(Ordering::Relaxed)
+    }
+
+    /// Cache hit ratio (0.0–1.0). When zero cache reads, returns 0.0.
+    fn cache_hit_ratio(&self) -> f64 {
+        let read = self.total_cache_read_tokens() as f64;
+        let created = self.total_cache_creation_tokens() as f64;
+        let total = read + created;
+        if total > 0.0 { read / total } else { 0.0 }
     }
 
     fn messages_sent(&self) -> u32 {
@@ -130,6 +163,7 @@ const SLASH_COMMANDS: &[(&str, &[&str], &str)] = &[
     ("sessions", &["ss"], "List and resume previous sessions"),
     ("mcp", &[], "Show MCP server status"),
     ("plan", &["p"], "Create a plan for a goal"),
+    ("skills", &[], "List all indexed skills"),
     ("search", &["find"], "Search conversation memory"),
     ("image", &["img"], "Attach an image for the next turn"),
     ("stats", &[], "Show session statistics"),
@@ -163,6 +197,15 @@ impl Completer for AgenticCompleter {
             if pos >= query_start {
                 let query = &line[query_start..pos];
                 return complete_model_suggestions(query);
+            }
+        }
+
+        // ── Case 1b: `/skills <query>` - complete skill names ──
+        if line.starts_with("/skills ") {
+            let query_start = line.find(' ').unwrap() + 1;
+            if pos >= query_start {
+                let query = &line[query_start..pos];
+                return complete_skill_suggestions(query);
             }
         }
 
@@ -318,6 +361,36 @@ fn complete_model_suggestions(query: &str) -> Vec<Suggestion> {
         }
     });
 
+    results
+}
+
+/// Complete skill names for `/skills <query>`.
+/// Returns suggestions from the discovered skill index.
+fn complete_skill_suggestions(query: &str) -> Vec<Suggestion> {
+    let query_lower = query.to_lowercase();
+    let mut results = Vec::new();
+
+    // Use the global skill loader to list available skills
+    let skills = core_agentic::list_skills();
+
+    for (name, desc) in &skills {
+        if !query.is_empty() && !name.to_lowercase().contains(&query_lower) {
+            continue;
+        }
+
+        results.push(Suggestion {
+            value: name.clone(),
+            display_override: Some(format!("📦 {} — {}", name, desc)),
+            description: Some(desc.clone()),
+            style: None,
+            extra: None,
+            span: Span::new(0, query.len()),
+            append_whitespace: true,
+            match_indices: None,
+        });
+    }
+
+    results.sort_by(|a, b| a.value.cmp(&b.value));
     results
 }
 
@@ -1082,6 +1155,72 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                     print_response_summary(&stats, elapsed.as_millis());
                                 }
                             }
+                            ReplAction::Skills => {
+                                commands.skill_command(&SkillAction::List).ok();
+                            }
+                            ReplAction::SkillsLoad(name) => {
+                                use ratatui::style::{Color, Modifier, Style};
+                                use ratatui::text::{Line, Span};
+
+                                inline::print_blank();
+                                inline::print_line(&components::section_header(
+                                    "⚡",
+                                    &format!("Loading skill: {}", name),
+                                    Color::Rgb(255, 215, 0),
+                                ));
+                                inline::print_blank();
+
+                                let discovery_config: core_agentic::DiscoveryConfig =
+                                    core_agentic::DiscoveryConfig::from(&commands.get_config().skills);
+                                let index = core_agentic::discover_skills(&discovery_config);
+
+                                if let Some(skill) = index.get(&name) {
+                                    inline::print_line(&Line::from(vec![
+                                        Span::styled(
+                                            "  📦 ",
+                                            Style::default(),
+                                        ),
+                                        Span::styled(
+                                            format!("{} — {}", skill.name(), skill.description()),
+                                            Style::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD),
+                                        ),
+                                    ]));
+                                    inline::print_line(&Line::from(vec![
+                                        Span::raw("     "),
+                                        Span::styled(
+                                            format!("Path: {}", skill.dir.display()),
+                                            Style::default().fg(Color::Rgb(100, 100, 120)).add_modifier(Modifier::DIM),
+                                        ),
+                                    ]));
+                                    inline::print_blank();
+
+                                    // Show first few lines of the skill body
+                                    let preview: Vec<&str> = skill.body.lines().take(5).collect();
+                                    for line in &preview {
+                                        inline::print_line(&Line::from(vec![
+                                            Span::raw("     "),
+                                            Span::styled(
+                                                *line,
+                                                Style::default().fg(Color::Rgb(180, 180, 200)),
+                                            ),
+                                        ]));
+                                    }
+                                    if skill.body.lines().count() > 5 {
+                                        inline::print_line(&Line::from(vec![
+                                            Span::raw("     "),
+                                            Span::styled(
+                                                "...",
+                                                Style::default().fg(Color::Rgb(100, 100, 120)),
+                                            ),
+                                        ]));
+                                    }
+                                } else {
+                                    inline::print_line(&components::warning_badge(
+                                        &format!("Skill '{}' not found. Use /skills to list available skills.", name),
+                                    ));
+                                }
+                                inline::print_blank();
+                            }
                             ReplAction::Search(query) => {
                                 commands.search_memory_inline(&query);
                             }
@@ -1225,6 +1364,8 @@ struct ModelInfo {
     memory_md_loaded: bool,
     /// `true` when the active model supports image input.
     vision_capable: bool,
+    /// Name of the currently active skill, if any.
+    active_skill: Option<String>,
 }
 
 fn get_model_info(commands: &Commands) -> ModelInfo {
@@ -1240,6 +1381,7 @@ fn get_model_info(commands: &Commands) -> ModelInfo {
         agent_md_name,
         memory_md_loaded: commands.memory_md_loaded(),
         vision_capable: commands.active_model_capabilities().vision,
+        active_skill: core_agentic::active_skill(),
     }
 }
 
@@ -1259,6 +1401,8 @@ enum ReplAction {
     SessionsResume(String),
     Mcp,
     Plan(String),
+    Skills,
+    SkillsLoad(String),
     Search(String),
     Image(String),
 }
@@ -1301,6 +1445,8 @@ fn handle_slash_command(input: &str) -> Option<ReplAction> {
             inline::print_blank();
             None
         }
+        "/skills" if !arg.is_empty() => Some(ReplAction::SkillsLoad(arg)),
+        "/skills" => Some(ReplAction::Skills),
         "/search" | "/find" if !arg.is_empty() => Some(ReplAction::Search(arg)),
         "/search" | "/find" => {
             inline::print_blank();
@@ -1406,7 +1552,7 @@ fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
     // Add a 'context' line when AGENT.md or persistent memory is loaded
     // so users see at boot which extra sources are influencing the agent.
     let mut info_lines = info_lines;
-    if model_info.agent_md_name.is_some() || model_info.memory_md_loaded {
+    if model_info.agent_md_name.is_some() || model_info.memory_md_loaded || model_info.active_skill.is_some() {
         let mut spans: Vec<RSpan<'static>> = vec![
             RSpan::styled("🔗 ", RStyle::default()),
             RSpan::styled("ctx  ", RStyle::default().add_modifier(Modifier::DIM)),
@@ -1432,6 +1578,21 @@ fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
                 "🧠 memory.md",
                 RStyle::default()
                     .fg(Color::Rgb(176, 196, 222))
+                    .add_modifier(Modifier::BOLD),
+            ));
+            first = false;
+        }
+        if let Some(ref skill) = model_info.active_skill {
+            if !first {
+                spans.push(RSpan::styled(
+                    "  ·  ",
+                    RStyle::default().add_modifier(Modifier::DIM),
+                ));
+            }
+            spans.push(RSpan::styled(
+                format!("⚡ skill:{}", skill),
+                RStyle::default()
+                    .fg(Color::Rgb(241, 196, 15))
                     .add_modifier(Modifier::BOLD),
             ));
         }
@@ -1466,6 +1627,8 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
         RStyle::default().fg(Color::Rgb(60, 60, 80)),
     );
 
+    let cache_ratio = stats.cache_hit_ratio();
+
     inline::print_line(&Line::from(vec![
         RSpan::raw("  "),
         RSpan::styled(
@@ -1494,6 +1657,15 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
             format!("📊 {} ↑ / {} ↓", in_tok, out_tok),
             RStyle::default().fg(Color::Rgb(186, 85, 211)),
         ),
+        if cache_ratio > 0.0 {
+            let pct = (cache_ratio * 100.0) as u8;
+            RSpan::styled(
+                format!("  📦 {}% cached", pct),
+                RStyle::default().fg(Color::Rgb(46, 204, 113)),
+            )
+        } else {
+            RSpan::raw("")
+        },
         sep,
         RSpan::styled(
             format!("⏱ {}", stats.elapsed_str()),
@@ -1502,10 +1674,11 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
     ]));
 
     // Context-source indicator row. Only printed when at least one of
-    // AGENT.md / persistent memory was loaded — keeps the main status
+    // AGENT.md / persistent memory / active skill — keeps the main status
     // bar uncluttered for plain runs.
     let has_agent_md = model_info.agent_md_name.is_some();
-    if has_agent_md || model_info.memory_md_loaded {
+    let has_skill = model_info.active_skill.is_some();
+    if has_agent_md || model_info.memory_md_loaded || has_skill {
         let mut chips: Vec<RSpan<'static>> = vec![RSpan::raw("  ")];
         if let Some(ref name) = model_info.agent_md_name {
             chips.push(RSpan::styled(
@@ -1525,6 +1698,20 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
                 RStyle::default().fg(Color::Rgb(176, 196, 222)),
             ));
         }
+        if let Some(ref skill) = model_info.active_skill {
+            if has_agent_md || model_info.memory_md_loaded {
+                chips.push(RSpan::styled(
+                    "  ·  ",
+                    RStyle::default().fg(Color::Rgb(60, 60, 80)),
+                ));
+            }
+            chips.push(RSpan::styled(
+                format!("⚡ skill:{}", skill),
+                RStyle::default()
+                    .fg(Color::Rgb(241, 196, 15))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
         inline::print_line(&Line::from(chips));
     }
 
@@ -1540,6 +1727,10 @@ fn print_response_summary(stats: &SessionStats, ms: u128) {
         "  │  ",
         RStyle::default().fg(Color::Rgb(60, 60, 80)),
     );
+
+    let cache_read = stats.total_cache_read_tokens();
+    let cache_created = stats.total_cache_creation_tokens();
+    let has_cache = cache_read > 0 || cache_created > 0;
 
     inline::print_blank();
     inline::print_line(&components::dashed_separator(Color::Rgb(60, 60, 80)));
@@ -1567,6 +1758,15 @@ fn print_response_summary(stats: &SessionStats, ms: u128) {
             format!("📊 {} ↑ / {} ↓", in_tok, out_tok),
             RStyle::default().fg(Color::Rgb(180, 180, 200)),
         ),
+        if has_cache {
+            let pct = (stats.cache_hit_ratio() * 100.0) as u8;
+            RSpan::styled(
+                format!("  📦 {}% cached", pct),
+                RStyle::default().fg(Color::Rgb(46, 204, 113)),
+            )
+        } else {
+            RSpan::raw("")
+        },
         sep,
         RSpan::styled(
             format!("session {}", stats.elapsed_str()),
@@ -1589,6 +1789,8 @@ fn print_help() {
 - `/tools`             List available tools
 - `/stats`             Show session statistics
 - `/mcp`               Show MCP server status
+- `/skills`            List all indexed skills
+- `/skills <name>`     Load and display a skill
 - `/sessions`          List previous sessions
 - `/sessions <id>`     Resume a previous session
 - `/plan <goal>`       Create a plan for a goal
@@ -1612,6 +1814,7 @@ fn print_help() {
 
 **Tips:**
 - Type any text to send as a task to the AI agent
+- Use `/skills <name>` to load a skill before starting a task
 - Ctrl+R to search command history
 - Ctrl+C to cancel, Ctrl+D to exit
 "#;
@@ -1743,6 +1946,36 @@ fn show_stats(stats: &SessionStats, model_info: &ModelInfo) {
     ]));
     inline::print_blank();
 
+    // Cache subsection (only shown when cache metrics exist)
+    let cache_read = stats.total_cache_read_tokens();
+    let cache_created = stats.total_cache_creation_tokens();
+    if cache_read > 0 || cache_created > 0 {
+        inline::print_line(&components::subsection_header(
+            "Prompt Cache",
+            Color::Rgb(46, 204, 113),
+        ));
+        inline::print_line(&components::kv_line(
+            "Cache read",
+            &format!("{} tokens", stats.format_tokens(cache_read)),
+            14,
+            Color::Rgb(46, 204, 113),
+        ));
+        inline::print_line(&components::kv_line(
+            "Cache created",
+            &format!("{} tokens", stats.format_tokens(cache_created)),
+            14,
+            Color::Rgb(52, 152, 219),
+        ));
+        let ratio = stats.cache_hit_ratio();
+        inline::print_line(&components::kv_line(
+            "Hit ratio",
+            &format!("{:.0}%", ratio * 100.0),
+            14,
+            Color::Rgb(241, 196, 15),
+        ));
+        inline::print_blank();
+    }
+
     // Environment subsection
     inline::print_line(&components::subsection_header(
         "Environment",
@@ -1818,7 +2051,11 @@ fn print_goodbye(stats: &SessionStats) {
 
     inline::print_blank();
 
-    let summary_lines = vec![
+    let cache_read = stats.total_cache_read_tokens();
+    let cache_created = stats.total_cache_creation_tokens();
+    let has_cache = cache_read > 0 || cache_created > 0;
+
+    let mut summary_lines = vec![
         Line::from(vec![
             RSpan::styled("💬 ", RStyle::default()),
             RSpan::styled("Messages ", RStyle::default().add_modifier(Modifier::DIM)),
@@ -1849,6 +2086,27 @@ fn print_goodbye(stats: &SessionStats) {
             ),
         ]),
     ];
+
+    if has_cache {
+        summary_lines.push(Line::from(vec![
+            RSpan::styled("📦 ", RStyle::default()),
+            RSpan::styled("Cache    ", RStyle::default().add_modifier(Modifier::DIM)),
+            RSpan::styled(
+                format!("💰 {} rd", stats.format_tokens(cache_read)),
+                RStyle::default().fg(Color::Rgb(46, 204, 113)).add_modifier(Modifier::BOLD),
+            ),
+            RSpan::raw(" / "),
+            RSpan::styled(
+                format!("✏️ {} cr", stats.format_tokens(cache_created)),
+                RStyle::default().fg(Color::Rgb(52, 152, 219)).add_modifier(Modifier::BOLD),
+            ),
+            RSpan::raw("  "),
+            RSpan::styled(
+                format!("({:.0}% hit)", stats.cache_hit_ratio() * 100.0),
+                RStyle::default().fg(Color::Rgb(241, 196, 15)),
+            ),
+        ]));
+    }
 
     let panel_lines = components::panel(
         "Session Summary",

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::skills::discovery::DiscoveryConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -17,6 +19,80 @@ pub struct Config {
     /// absent the orchestrator's compiled-in defaults apply.
     #[serde(default)]
     pub agent: AgentLoopConfig,
+    /// Skill system configuration.
+    #[serde(default)]
+    pub skills: SkillsConfig,
+}
+
+/// Cache configuration for prompt caching support.
+///
+/// Provider-level settings for prompt caching. Supported providers:
+/// - Anthropic: manual `cache_control` breakpoints
+/// - OpenAI: automatic server-side caching (no-op)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConfig {
+    /// Enable prompt caching for this provider.
+    #[serde(default = "default_cache_enabled")]
+    pub enabled: bool,
+    /// Breakpoint strategy for cache control markers.
+    #[serde(default)]
+    pub breakpoint_strategy: BreakpointStrategy,
+}
+
+fn default_cache_enabled() -> bool {
+    false
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            breakpoint_strategy: BreakpointStrategy::SystemOnly,
+        }
+    }
+}
+
+/// Where cache-control breakpoints are inserted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BreakpointStrategy {
+    /// Only cache the system prompt.
+    #[default]
+    SystemOnly,
+    /// Cache system prompt + conversation prefix (up to last pinned/memory message).
+    Prefix,
+    /// Cache everything including the latest turn (aggressive — use with caution).
+    Full,
+}
+
+/// Skill system configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsConfig {
+    /// Skill names to exclude from the index.
+    #[serde(default)]
+    pub blocklist: Vec<String>,
+    /// Extra directories to scan for skills (e.g. `~/.claude/skills`).
+    /// Paths support `~` and `$ENV_VAR` expansion.
+    #[serde(default)]
+    pub compat_dirs: Vec<String>,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            blocklist: Vec::new(),
+            compat_dirs: Vec::new(),
+        }
+    }
+}
+
+impl From<&SkillsConfig> for DiscoveryConfig {
+    fn from(cfg: &SkillsConfig) -> Self {
+        DiscoveryConfig {
+            blocklist: cfg.blocklist.clone(),
+            compat_dirs: cfg.compat_dirs.clone(),
+        }
+    }
 }
 
 /// Agent-loop configuration: compaction strategy + summarizer model.
@@ -84,6 +160,9 @@ pub struct ProviderConfig {
     pub api_key: String,
     #[serde(default)]
     pub models: Vec<ModelConfig>,
+    /// Prompt cache configuration for this provider.
+    #[serde(default)]
+    pub cache: CacheConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,12 +379,14 @@ impl Config {
                     max_tokens: legacy.model.max_tokens.unwrap_or(8192),
                     capabilities: None,
                 }],
+                cache: CacheConfig::default(),
             }],
             safety: SafetyConfig::default(),
             output: OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
             system_prompt: None,
             agent: AgentLoopConfig::default(),
+            skills: SkillsConfig::default(),
         })
     }
 
@@ -325,12 +406,14 @@ impl Config {
                     max_tokens: legacy.max_tokens.unwrap_or(8192),
                     capabilities: None,
                 }],
+                cache: CacheConfig::default(),
             }],
             safety: SafetyConfig::default(),
             output: OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
             system_prompt: None,
             agent: AgentLoopConfig::default(),
+            skills: SkillsConfig::default(),
         })
     }
 
@@ -386,12 +469,14 @@ impl Config {
                     max_tokens: 8192,
                     capabilities: None,
                 }],
+                cache: CacheConfig::default(),
             }],
             safety: SafetyConfig::default(),
             output: OutputConfig::default(),
             mcp_servers: std::collections::HashMap::new(),
             system_prompt: None,
             agent: AgentLoopConfig::default(),
+            skills: SkillsConfig::default(),
         }
     }
 

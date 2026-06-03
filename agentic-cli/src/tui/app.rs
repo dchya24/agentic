@@ -676,6 +676,20 @@ impl App {
                             timestamp: chrono::Local::now(),
                         });
                     }
+                    AppMessage::PlanProgress {
+                        goal: _,
+                        current_step,
+                        step_status,
+                        total: _,
+                        completed: _,
+                        failed: _,
+                        pending: _,
+                    } => {
+                        self.progress.set_message(format!(
+                            "Plan: {} — {}",
+                            current_step, step_status,
+                        ));
+                    }
                 }
             }
         }

@@ -71,17 +71,44 @@ pub fn load_project_instructions(cwd: &Path) -> Option<(PathBuf, String)> {
     Some((path, content))
 }
 
+/// Generate the skills section for the system prompt.
+///
+/// Returns a string like:
+/// ```text
+/// ---
+/// # Skills
+///
+/// 📦 my-skill — Does X and Y
+/// 📦 other-skill — Does Z
+/// ```
+/// or `None` when the index is empty.
+pub fn skills_system_section(skills: &[(&str, &str)]) -> Option<String> {
+    if skills.is_empty() {
+        return None;
+    }
+    let lines: Vec<String> = skills
+        .iter()
+        .map(|(name, desc)| format!("📦 {} — {}", name, desc))
+        .collect();
+    Some(format!(
+        "---\n# Skills\n\nAvailable skills. Use the `skill` tool to load one on demand.\n\n{}",
+        lines.join("\n")
+    ))
+}
+
 /// Assemble the effective system prompt from layered sources.
 ///
 /// Layers (concatenated in this order, each separated by a blank line):
 /// 1. `base` — typically [`DEFAULT_SYSTEM_PROMPT`] or a config-provided value
 /// 2. `project_instructions` — content of an `AGENT.md` discovered in cwd
-/// 3. `user_override` — additional instructions injected by the CLI/REPL
+/// 3. `skills_section` — list of discovered skills (see [`skills_system_section`])
+/// 4. `user_override` — additional instructions injected by the CLI/REPL
 ///
 /// Empty parts are skipped. Returns the joined prompt as a single string.
 pub fn assemble_system_prompt(
     base: Option<&str>,
     project_instructions: Option<&str>,
+    skills_section: Option<&str>,
     user_override: Option<&str>,
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
@@ -95,6 +122,13 @@ pub fn assemble_system_prompt(
         let p = p.trim();
         if !p.is_empty() {
             sections.push(format!("---\n# Project Instructions\n\n{}", p));
+        }
+    }
+
+    if let Some(s) = skills_section {
+        let s = s.trim();
+        if !s.is_empty() {
+            sections.push(s.to_string());
         }
     }
 
@@ -155,7 +189,7 @@ mod tests {
 
     #[test]
     fn assemble_uses_default_when_base_none() {
-        let out = assemble_system_prompt(None, None, None);
+        let out = assemble_system_prompt(None, None, None, None);
         assert!(out.contains("Read before edit"));
         assert!(out.contains("Search funnel"));
     }
@@ -165,6 +199,7 @@ mod tests {
         let out = assemble_system_prompt(
             Some("BASE"),
             Some("project rule X"),
+            None,
             None,
         );
         assert!(out.contains("BASE"));
@@ -177,6 +212,7 @@ mod tests {
         let out = assemble_system_prompt(
             Some("BASE"),
             None,
+            None,
             Some("user override Y"),
         );
         assert!(out.contains("BASE"));
@@ -185,10 +221,37 @@ mod tests {
     }
 
     #[test]
+    fn assemble_includes_skills_section() {
+        let out = assemble_system_prompt(
+            Some("BASE"),
+            None,
+            Some("---\n# Skills\n\n📦 test-skill — A test"),
+            None,
+        );
+        assert!(out.contains("BASE"));
+        assert!(out.contains("Skills"));
+        assert!(out.contains("📦 test-skill — A test"));
+    }
+
+    #[test]
     fn assemble_skips_empty_sections() {
-        let out = assemble_system_prompt(Some("BASE"), Some("   "), Some(""));
+        let out = assemble_system_prompt(Some("BASE"), Some("   "), None, Some(""));
         assert!(out.contains("BASE"));
         assert!(!out.contains("Project Instructions"));
         assert!(!out.contains("Additional Instructions"));
+    }
+
+    #[test]
+    fn skills_section_returns_none_when_empty() {
+        assert!(skills_system_section(&[]).is_none());
+    }
+
+    #[test]
+    fn skills_section_formats_correctly() {
+        let skills = &[("rust", "Rust programming"), ("react", "React UI dev")];
+        let section = skills_system_section(skills).unwrap();
+        assert!(section.contains("📦 rust — Rust programming"));
+        assert!(section.contains("📦 react — React UI dev"));
+        assert!(section.contains("Use the `skill` tool"));
     }
 }

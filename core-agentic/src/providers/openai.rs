@@ -216,6 +216,8 @@ impl OpenAIProvider {
             prompt_tokens: u.prompt_tokens.unwrap_or(0),
             completion_tokens: u.completion_tokens.unwrap_or(0),
             total_tokens: u.total_tokens.unwrap_or(0),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
         });
         Some(super::ChatChunk {
             id: resp.id,
@@ -328,6 +330,8 @@ impl OpenAIProvider {
             prompt_tokens: u.prompt_tokens.unwrap_or(0),
             completion_tokens: u.completion_tokens.unwrap_or(0),
             total_tokens: u.total_tokens.unwrap_or(0),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
         });
 
         let tool_calls: Vec<super::ToolCallResponse> = choice

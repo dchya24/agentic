@@ -13,7 +13,7 @@ mod widgets;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, ColorChoice, Command, ConfigAction};
+use cli::{Cli, ColorChoice, Command, ConfigAction, SkillAction};
 use commands::Commands;
 use core_agentic::Config;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -204,6 +204,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::Examples) => {
             commands.examples();
+        }
+        Some(Command::Skill(action)) => {
+            commands.skill_command(action)?;
         }
         Some(Command::Version) => {
             println!("agentic {}", env!("CARGO_PKG_VERSION"));

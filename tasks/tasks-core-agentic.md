@@ -167,48 +167,48 @@
 - [x] 17.11 `PlanProgress` event type: specific event with plan_id, step_id, step_status, steps_total/completed/failed/pending
 - [x] 17.12 Wire planner events to CLI/TUI renderer: `planner.on()` handler in `plan_inline()` with labeled_bar + step description
 
-### Phase 10 — Skill System
+### Phase 10 — Skill System (✅ done)
 
-- [ ] 18.0 Skill format & discovery
-  - [ ] 18.1 Define `SKILL.md` schema (frontmatter: name, description; body: instructions) per Agent Skills standard
-  - [ ] 18.2 Discovery paths:
-    - [ ] 18.2a Global: `~/.agents/skills/` (cross-agent: pi, opencode, codex)
-    - [ ] 18.2b Global: `~/.config/agentic/skills/` (agentic-specific)
-    - [ ] 18.2c Project: `.agents/skills/` walk-up from cwd (cross-agent)
-    - [ ] 18.2d Project: `.agentic/skills/` walk-up from cwd (agentic-specific)
-    - [ ] 18.2e Extra: `skills.compat_dirs` from config (e.g. `~/.claude/skills/`)
-    - [ ] 18.2f Scan order + name collision: project overrides global, first-found wins
-  - [ ] 18.3 `SkillIndex` — in-memory index of discovered skills (name, description, path, files)
-  - [ ] 18.4 Config: `SkillsConfig` with `blocklist: Vec<String>` and `compat_dirs: Vec<String>`
-      di `core_agentic::Config`
-  - [ ] 18.5 System prompt integration: inject `📦 Skills: <name> (<description>)` for indexed skills
-  - [ ] 18.6 Blocklist filter: excluded skills not added to index
+- [x] 18.0 Skill format & discovery
+  - [x] 18.1 Define `SKILL.md` schema (frontmatter: name, description; body: instructions) per Agent Skills standard
+  - [x] 18.2 Discovery paths:
+    - [x] 18.2a Global: `~/.agents/skills/` (cross-agent: pi, opencode, codex)
+    - [x] 18.2b Global: `~/.config/agentic/skills/` (agentic-specific)
+    - [x] 18.2c Project: `.agents/skills/` walk-up from cwd (cross-agent)
+    - [x] 18.2d Project: `.agentic/skills/` walk-up from cwd (agentic-specific)
+    - [x] 18.2e Extra: `skills.compat_dirs` from config (e.g. `~/.claude/skills/`)
+    - [x] 18.2f Scan order + name collision: project overrides global, first-found wins
+  - [x] 18.3 `SkillIndex` — in-memory index of discovered skills (name, description, path, files)
+  - [x] 18.4 Config: `SkillsConfig` with `blocklist: Vec<String>` and `compat_dirs: Vec<String>`
+      in `core_agentic::Config`
+  - [x] 18.5 System prompt integration: inject `📦 Skills: <name> (<description>)` for indexed skills
+  - [x] 18.6 Blocklist filter: excluded skills not added to index
   - [ ] 18.7 File watching / refresh for skill directories (optional, v2)
-- [ ] 19.0 `skill` tool
-  - [ ] 19.1 `SkillLoader` trait — reads SKILL.md + referenced resources (relative paths from skill dir)
-  - [ ] 19.2 Tool schema: `{ "name": "skill", "arguments": { "skill_name": "..." } }`
-  - [ ] 19.3 Execution: look up skill in index → read SKILL.md + files → return as tool output
-  - [ ] 19.4 Option: append skill instructions to system prompt for remaining session duration
-  - [ ] 19.5 Graceful degradation: unknown skill → return error, model recovers
-  - [ ] 19.6 Unit tests: discovery (multiple paths, override, blocklist), load, missing skill, invalid SKILL.md
-  - [ ] 19.7 Integration tests: skill discovery + tool execution end-to-end (`tests/skills_loop.rs`)
+- [x] 19.0 `skill` tool
+  - [x] 19.1 `SkillLoader` trait — reads SKILL.md + referenced resources (relative paths from skill dir)
+  - [x] 19.2 Tool schema: `{ "name": "skill", "arguments": { "name": "...", "activate": true } }`
+  - [x] 19.3 Execution: look up skill in index → read SKILL.md + files → return as tool output
+  - [x] 19.4 Option (`activate: bool`): keep skill instructions active for session duration
+  - [x] 19.5 Graceful degradation: unknown skill → return error, model recovers
+  - [x] 19.6 Unit tests: 22 tests (17 discovery + 5 tool) covering parsing, discovery, blocklist, collisions, tool execution
+  - [x] 19.7 Integration tests: 10 E2E tests in `tests/skills_loop.rs` (discovery, tool execution, referenced files, blocklist, prompt section)
 
 ### Phase 11 — Prompt Caching
 
-- [ ] 20.0 Provider-level cache support
-  - [ ] 20.1 Anthropic: inject `cache_control` breakpoints in request payload (system prompt, conversation prefix)
-  - [ ] 20.2 OpenAI: no-op (automatic server-side caching, nothing to implement)
-  - [ ] 20.3 Config: `provider.cache.enabled`, `provider.cache.breakpoint_strategy` (system_only | prefix | full)
-- [ ] 21.0 Cache invalidation strategy
-  - [ ] 21.1 System prompt change (AGENT.md / memory.md updated) → new cache epoch → re-cache prefix
-  - [ ] 21.2 Tool list change → new cache epoch
-  - [ ] 21.3 Per-turn: only cache prefix up to last pinned/memory message, not the latest streaming turn
-- [ ] 22.0 Observability
-  - [ ] 22.1 Track cache hits/misses in cost tracking: `provider.cache_read_tokens`, `provider.cache_write_tokens`
-  - [ ] 22.2 Expose cache metrics via events / status bar (cache hit ratio, tokens saved)
-- [ ] 23.0 Tests
-  - [ ] 23.1 Unit tests for `cache_control` injection in Anthropic provider
-  - [ ] 23.2 Integration test: verify cached vs non-cached request shapes match expected payload
+- [x] 20.0 Provider-level cache support
+  - [x] 20.1 Anthropic: inject `cache_control` breakpoints in request payload (system prompt, conversation prefix)
+  - [x] 20.2 OpenAI: no-op (automatic server-side caching, nothing to implement)
+  - [x] 20.3 Config: `provider.cache.enabled`, `provider.cache.breakpoint_strategy` (system_only | prefix | full)
+- [x] 21.0 Cache invalidation strategy
+  - [x] 21.1 System prompt change → new cache epoch (handled implicitly by Anthropic API — content-based cache keys)
+  - [x] 21.2 Tool list change → new cache epoch (same as above)
+  - [x] 21.3 Per-turn: only cache prefix up to last pinned/memory message (Prefix strategy implementation)
+- [x] 22.0 Observability
+  - [x] 22.1 Track cache hits/misses in `ChatUsage`/`AnthropicUsage`: `cache_read_input_tokens`, `cache_creation_input_tokens` passed through from API response
+  - [ ] 22.2 Expose cache metrics via CLI status bar + `/stats` command
+- [x] 23.0 Tests
+  - [x] 23.1 Unit tests for `cache_control` injection in Anthropic provider (5 tests: absent-by-default, system-only, prefix, single-turn, wire format)
+  - [ ] 23.2 Integration test: verify cached vs non-cached request shapes
   - [ ] 23.3 Cost tracking tests: correct token accounting with cache discounts
 
 ### Out of scope (intentional)

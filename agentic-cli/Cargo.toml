@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 core-agentic = { path = "../core-agentic" }
+regex = "1.12"
 clap = { version = "4.5", features = ["derive", "string"] }
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -35,12 +36,14 @@ reedline = { version = "0.47", features = ["sqlite"] }
 nu-ansi-term = "0.50"
 uuid = { version = "1", features = ["v4"] }
 
+# Terminal management
+crossterm = "0.28"
+ignore = "0.4"
+
 # TUI
 ratatui = "0.29"
 
 [dev-dependencies]
 futures = "0.3"
-crossterm = "0.28"
 tui-textarea = "0.7"
 syntect = "5.2"
-ignore = "0.4"

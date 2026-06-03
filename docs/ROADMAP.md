@@ -58,6 +58,19 @@ Foundation is complete; coverage of the architecture spec is at ~95%.
 
 ---
 
+## Phase 11 — Prompt Caching (landed)
+
+Prompt caching for Anthropic providers: `cache_control` breakpoints injected
+into the system prompt (SystemOnly) and conversation prefix (Prefix). Cache
+metrics (`cache_read_input_tokens`, `cache_creation_input_tokens`) flow through
+`ChatUsage`. CLI observability shows cache hit ratio in the status bar, stats
+panel, and goodbye summary. Session persistence includes cache token counters.
+
+**Remaining (small):**
+- Wire usage events from the orchestrator to `SessionStats` (so real provider
+  cache counts appear in the CLI, not just the estimated input tokens).
+- Expose cache settings in `agentic config` wizard.
+
 ## Open work
 
 Sized by effort. Each item has its own home in
@@ -102,15 +115,17 @@ Sized by effort. Each item has its own home in
 
 ### Larger (1–2 weeks)
 
-- [ ] **Planner agent.** Largest unblocked feature. Subagent infra
-      (`SpawnSubagentTool`) is already in place to build on. Decompose
-      goal → plan → step execution with replanning on failure. The
-      existing `--mode plan` (which just denies state-changing tools)
-      stays orthogonal to this.
-- [ ] **Skill system.** Skill format (`SKILL.md`), discovery
-      (walk `~/.config/agentic/skills/` + `.agentic/skills/`), and a
-      `skill` tool to load domain-specific instructions into the
-      conversation. Requires design before implementation.
+- [x] **Planner agent.** Subagent infra (`SpawnSubagentTool`) in place.
+      Goal → plan → step execution with replanning on failure, approval
+      flow, dependency ordering, Subagent delegation, `PlanProgress` events.
+      7 E2E integration tests in `tests/planner_loop.rs`. Implemented in
+      a parallel branch and merged alongside milestone-3/4 work.
+- [x] **Skill system.** Skill format (`SKILL.md`), discovery
+      (5 locations: global `~/.agents/skills/`, `~/.config/agentic/skills/`,
+      project `.agents/skills/`, `.agentic/skills/` walk-up, + compat dirs),
+      `skill` tool to load domain-specific instructions, and
+      `skill create` / `skill list` / `skill info` CLI commands.
+      Implemented in Milestone 5.
 
 ### Out of scope (intentional)
 
@@ -143,10 +158,10 @@ from end-to-end tests.
 Key changes that landed recently:
 
 ```
-(latest)     feat(cli): E2E smoke test + streaming markdown polish
+(latest)     feat: Phase 11 — Prompt caching (core + CLI observability)
+(latest)     feat(cli): session system — auto-save, /new, /sessions, /sessions <id>
 (latest)     feat(tools): add question + todowrite tools (M4)
 (latest)     docs: update TOOL_REFERENCE.md for 16-tool set
-(latest)     feat(cli): session system — auto-save, /new, /sessions, /sessions <id>
 (latest)     refactor(cli): replace ratatui model_picker with dialoguer inline fuzzy-select
 (latest)     feat(cli): /models auto-complete via reedline completer
 (latest)     feat(cli): /restart slash command + AGENT.md/memory.md indicators
