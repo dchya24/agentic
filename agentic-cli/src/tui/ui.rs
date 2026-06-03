@@ -67,8 +67,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let (provider, model, _) = app.model_info();
     let session_id_short = &app.session.id[4..app.session.id.len().min(16)];
+    let context = app.context_indicators();
 
-    let header = Paragraph::new(Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             " 🤖 Agentic ",
             Style::default()
@@ -97,19 +98,34 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
                 app.stats.format_tokens(app.stats.tokens_output)),
             Style::default().fg(Color::Rgb(186, 85, 211)),
         ),
-        Span::styled(
+    ];
+
+    // Context indicator (G-11): AGENT.md / memory.md
+    if !context.is_empty() {
+        spans.push(Span::styled(
             "│",
             Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            format!(" {} ", session_id_short),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            " /help ",
+        ));
+        spans.push(Span::styled(
+            context,
             Style::default().fg(Color::Rgb(241, 196, 15)),
-        ),
-    ]))
+        ));
+    }
+
+    spans.push(Span::styled(
+        "│",
+        Style::default().fg(Color::DarkGray),
+    ));
+    spans.push(Span::styled(
+        format!(" {} ", session_id_short),
+        Style::default().fg(Color::DarkGray),
+    ));
+    spans.push(Span::styled(
+        " /help ",
+        Style::default().fg(Color::Rgb(241, 196, 15)),
+    ));
+
+    let header = Paragraph::new(Line::from(spans))
     .block(
         Block::default()
             .borders(Borders::ALL)
@@ -348,9 +364,11 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
                 ))
                 .title(Span::styled(
                     if app.is_loading {
-                        " Input (waiting...) "
+                        " Input (waiting...) ".to_string()
+                    } else if let Some(ref img) = app.image_attachment {
+                        format!(" Input 📷 {} ", img)
                     } else {
-                        " Input "
+                        " Input ".to_string()
                     },
                     Style::default()
                         .fg(if app.is_loading {
@@ -413,6 +431,7 @@ fn draw_dropdown(frame: &mut Frame, app: &App, input_area: Rect) {
                         "📄 "
                     }
                 }
+                DropdownType::Model => "🤖 ",
             };
 
             let mut spans = vec![

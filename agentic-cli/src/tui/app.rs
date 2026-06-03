@@ -101,6 +101,8 @@ pub struct App {
     pub session_view: Option<SessionView>,
     /// Session statistics
     pub stats: SessionStats,
+    /// Image attachment display name (for status bar indicator)
+    pub image_attachment: Option<String>,
 }
 
 /// Session statistics for status display
@@ -192,6 +194,7 @@ impl App {
             session,
             session_view: None,
             stats: SessionStats::default(),
+            image_attachment: None,
         }
     }
 
@@ -258,6 +261,7 @@ impl App {
         self.current_response.clear();
         self.scroll_offset = 0;
         self.stats.reset();
+        self.image_attachment = None;
 
         // Restart orchestrator if commands are available
         if let Some(ref mut cmds) = self.commands {
@@ -349,6 +353,420 @@ impl App {
                     timestamp: chrono::Local::now(),
                 });
             }
+        }
+    }
+
+    // ── G-06: /search <query> ─────────────────────────────────
+
+    /// Search conversation history for matching messages
+    fn handle_search(&mut self, query: &str) {
+        let query = query.trim();
+        if query.is_empty() {
+            self.messages.push(Message {
+                role: MessageRole::System,
+                content: "Usage: `/search <query>` — Search conversation history.".into(),
+                timestamp: chrono::Local::now(),
+            });
+            return;
+        }
+
+        let query_lower = query.to_lowercase();
+        let mut hits: Vec<(usize, &str, &str)> = Vec::new(); // (turn_index, role, snippet)
+
+        for (i, msg) in self.messages.iter().enumerate() {
+            let content_lower = msg.content.to_lowercase();
+            if content_lower.contains(&query_lower) {
+                let role_label = match msg.role {
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                    MessageRole::System => "system",
+                    MessageRole::Error => "error",
+                    MessageRole::Tool => "tool",
+                    MessageRole::ToolResult => "tool-result",
+                    MessageRole::ToolError => "tool-error",
+                };
+                hits.push((i, role_label, &msg.content));
+            }
+        }
+
+        if hits.is_empty() {
+            self.messages.push(Message {
+                role: MessageRole::System,
+                content: format!("No matches found for \"{}\"", query),
+                timestamp: chrono::Local::now(),
+            });
+            return;
+        }
+
+        // Format top results (max 5) with surrounding context
+        let mut result_text = format!("**Search Results for \"{}\"** — {} match(es)\n\n", query, hits.len());
+        for (idx, (turn, role, content)) in hits.iter().take(5).enumerate() {
+            // Extract a snippet around the match
+            let content_lower = content.to_lowercase();
+            let match_pos = content_lower.find(&query_lower).unwrap_or(0);
+            let start = content.char_indices()
+                .take_while(|(i, _)| *i < match_pos.saturating_sub(60))
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let end_pos = match_pos + query.len() + 80;
+            let end = content.char_indices()
+                .take_while(|(i, _)| *i < end_pos)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(content.len());
+            let snippet = &content[start..end.min(content.len())];
+            let prefix = if start > 0 { "..." } else { "" };
+            let suffix = if end < content.len() { "..." } else { "" };
+
+            result_text.push_str(&format!(
+                "{}. **Turn {}** ({})\n   `{}{}{}`\n\n",
+                idx + 1, turn + 1, role, prefix, snippet.trim(), suffix
+            ));
+        }
+
+        if hits.len() > 5 {
+            result_text.push_str(&format!("...and {} more matches\n", hits.len() - 5));
+        }
+
+        self.messages.push(Message {
+            role: MessageRole::System,
+            content: result_text,
+            timestamp: chrono::Local::now(),
+        });
+    }
+
+    // ── G-07: /image <path> ────────────────────────────────────
+
+    /// Attach an image for the next message (vision models)
+    fn handle_image(&mut self, path: &str) {
+        let path = path.trim();
+        if path.is_empty() {
+            // Clear any pending attachment
+            if let Some(ref mut cmds) = self.commands {
+                let count = cmds.pending_attachment_count();
+                if count > 0 {
+                    cmds.drain_pending_attachments();
+                    self.image_attachment = None;
+                    self.messages.push(Message {
+                        role: MessageRole::System,
+                        content: "Cleared pending image attachment.".into(),
+                        timestamp: chrono::Local::now(),
+                    });
+                } else {
+                    self.messages.push(Message {
+                        role: MessageRole::System,
+                        content: "Usage: `/image <path>` — Attach an image (for vision models).".into(),
+                        timestamp: chrono::Local::now(),
+                    });
+                }
+            }
+            return;
+        }
+
+        // Use commands to validate and queue the image
+        if let Some(ref mut cmds) = self.commands {
+            // Check vision capability first
+            let caps = cmds.active_model_capabilities();
+            if !caps.vision {
+                self.messages.push(Message {
+                    role: MessageRole::Error,
+                    content: "Active model does not support image input.\nSwitch with `/models` to a vision-capable model first.".into(),
+                    timestamp: chrono::Local::now(),
+                });
+                return;
+            }
+
+            // Load the image
+            let limits = core_agentic::AttachmentLimits::default();
+            let result = if path.starts_with("http://") || path.starts_with("https://") || path.starts_with("data:") {
+                core_agentic::attachments::load_image_from_url(path, limits)
+            } else {
+                core_agentic::attachments::load_image_from_path(path, limits)
+            };
+
+            match result {
+                Ok(att) => {
+                    let source = format!("{}", att.source);
+                    let bytes = att.size_bytes;
+                    let mime = att.mime_type.clone();
+                    // Store filename for display in status bar
+                    let display_name = std::path::Path::new(path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.to_string());
+                    self.image_attachment = Some(display_name);
+                    cmds.queue_attachment(att);
+                    self.messages.push(Message {
+                        role: MessageRole::System,
+                        content: format!(
+                            "📷 Attached: {} ({} bytes, {})\nImage will be sent with your next message.",
+                            source,
+                            bytes,
+                            if mime.is_empty() { "unknown" } else { mime.as_str() }
+                        ),
+                        timestamp: chrono::Local::now(),
+                    });
+                }
+                Err(e) => {
+                    self.messages.push(Message {
+                        role: MessageRole::Error,
+                        content: format!("Failed to attach image: {}", e),
+                        timestamp: chrono::Local::now(),
+                    });
+                }
+            }
+        } else {
+            self.messages.push(Message {
+                role: MessageRole::Error,
+                content: "Commands not initialized.".into(),
+                timestamp: chrono::Local::now(),
+            });
+        }
+    }
+
+    // ── G-08: /provider <name> ─────────────────────────────────
+
+    /// List available providers
+    fn handle_provider_list(&mut self) {
+        let providers_text = match &self.commands {
+            Some(cmds) => {
+                let config = &cmds.config_ref();
+                let mut lines = String::from("**Providers:**\n\n");
+                let active = config.active_provider().map(|p| p.name.clone());
+                for provider in &config.providers {
+                    let is_active = active.as_deref() == Some(&provider.name);
+                    let marker = if is_active { " ●" } else { "" };
+                    let model_count = provider.models.len();
+                    lines.push_str(&format!(
+                        "- **{}** ({} model(s)){}\n",
+                        provider.name, model_count, marker
+                    ));
+                }
+                lines.push_str("\nUse `/provider <name>` to switch provider.");
+                lines
+            }
+            None => "Commands not initialized.".into(),
+        };
+        self.messages.push(Message {
+            role: MessageRole::System,
+            content: providers_text,
+            timestamp: chrono::Local::now(),
+        });
+    }
+
+    /// Switch to a different provider
+    fn handle_provider_switch(&mut self, name: &str) {
+        // Find the default model of the target provider and switch to it
+        let result = match &self.commands {
+            Some(cmds) => {
+                let config = cmds.config_ref();
+                let provider = config
+                    .providers
+                    .iter()
+                    .find(|p| p.name.to_lowercase() == name.to_lowercase());
+                match provider {
+                    Some(p) => {
+                        // Get the first model of the provider as default
+                        let default_model = p
+                            .models
+                            .first()
+                            .map(|m| m.display_name.as_deref().unwrap_or(&m.model))
+                            .unwrap_or(name)
+                            .to_string();
+                        Some(default_model)
+                    }
+                    None => None,
+                }
+            }
+            None => None,
+        };
+
+        match result {
+            Some(model_name) => {
+                self.switch_model(&model_name);
+            }
+            None => {
+                self.messages.push(Message {
+                    role: MessageRole::Error,
+                    content: format!("Provider '{}' not found. Use `/provider` to see available providers.", name),
+                    timestamp: chrono::Local::now(),
+                });
+            }
+        }
+    }
+
+    // ── G-09: /mcp ─────────────────────────────────────────────
+
+    /// Show MCP server status
+    fn handle_mcp_status(&mut self) {
+        let status_text = match &self.commands {
+            Some(cmds) => {
+                let config = cmds.config_ref();
+                if config.mcp_servers.is_empty() {
+                    "No MCP servers configured.\nAdd servers in your config file.".to_string()
+                } else {
+                    let mut lines = format!("**MCP Servers ({})**\n\n", config.mcp_servers.len());
+                    for (name, srv) in &config.mcp_servers {
+                        let has_command = srv.command.is_some();
+                        let has_url = srv.url.is_some();
+                        let status = if has_command || has_url { "✓ configured" } else { "✗ incomplete" };
+                        lines.push_str(&format!("- **{}** — {}", name, status));
+                        if let Some(ref cmd) = srv.command {
+                            lines.push_str(&format!("\n  Command: `{}`", cmd));
+                            if let Some(ref args) = srv.args {
+                                if !args.is_empty() {
+                                    lines.push_str(&format!(" {}", args.join(" ")));
+                                }
+                            }
+                        }
+                        if let Some(ref url) = srv.url {
+                            lines.push_str(&format!("\n  URL: `{}`", url));
+                        }
+                        lines.push('\n');
+                    }
+                    lines
+                }
+            }
+            None => "Commands not initialized.".into(),
+        };
+        self.messages.push(Message {
+            role: MessageRole::System,
+            content: status_text,
+            timestamp: chrono::Local::now(),
+        });
+    }
+
+    // ── G-10: /plan <goal> ────────────────────────────────────
+
+    /// Generate and display a structured plan for the given goal.
+    /// Sends the goal as a special planning request to the LLM with a
+    /// planning-focused system prompt, streams the response normally.
+    async fn handle_plan(&mut self, goal: &str) {
+        let goal = goal.trim();
+        if goal.is_empty() {
+            self.messages.push(Message {
+                role: MessageRole::System,
+                content: "Usage: `/plan <goal>` — Generate a structured plan.".into(),
+                timestamp: chrono::Local::now(),
+            });
+            return;
+        }
+
+        // Add plan request message
+        self.messages.push(Message {
+            role: MessageRole::User,
+            content: format!("/plan {}", goal),
+            timestamp: chrono::Local::now(),
+        });
+        self.stats.messages_sent += 1;
+
+        // Start loading
+        self.is_loading = true;
+        self.progress.start();
+        self.current_response.clear();
+
+        // Take ownership of commands for the async task
+        let mut commands = match self.commands.take() {
+            Some(c) => c,
+            None => {
+                self.is_loading = false;
+                self.messages.push(Message {
+                    role: MessageRole::Error,
+                    content: "Commands not initialized.".into(),
+                    timestamp: chrono::Local::now(),
+                });
+                return;
+            }
+        };
+
+        let tx = self.tx.clone();
+        let plan_goal = goal.to_string();
+
+        tokio::spawn(async move {
+            // Prepend a planning system instruction to guide the response
+            let plan_prompt = format!(
+                "You are a planning assistant. The user will describe a goal.\
+                \nRespond with a structured plan:\
+                \n1. **Understanding** — Briefly restate the goal\
+                \n2. **Approach** — High-level strategy\
+                \n3. **Steps** — Numbered, actionable steps\
+                \n4. **Considerations** — Risks, edge cases, dependencies\
+                \nKeep it concise and practical.\
+                \n\nGoal: {}",
+                plan_goal
+            );
+
+            let event_tx = tx.clone();
+            match commands
+                .run_with_callbacks(
+                    &plan_prompt,
+                    |chunk| {
+                        let _ = tx.send(AppMessage::StreamChunk(chunk.to_string()));
+                    },
+                    move |event| match event {
+                        core_agentic::Event::ToolCall { tool_name, arguments } => {
+                            let _ = event_tx.send(AppMessage::ToolCall {
+                                name: tool_name,
+                                arguments,
+                            });
+                        }
+                        core_agentic::Event::ToolOutput {
+                            tool_name,
+                            output,
+                        } => {
+                            let body = match &output {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            };
+                            let is_error = body.starts_with("Tool error")
+                                || body.starts_with("Blocked:")
+                                || body.starts_with("Skipped:");
+                            let _ = event_tx.send(AppMessage::ToolResult {
+                                name: tool_name,
+                                output,
+                                is_error,
+                            });
+                        }
+                        core_agentic::Event::Error { message } => {
+                            let _ = event_tx.send(AppMessage::Error(message));
+                        }
+                        _ => {}
+                    },
+                )
+                .await
+            {
+                Ok(result) => {
+                    let _ = tx.send(AppMessage::TaskComplete(result));
+                }
+                Err(e) => {
+                    let _ = tx.send(AppMessage::Error(e.to_string()));
+                }
+            }
+            let _ = commands;
+        });
+    }
+
+    // ── G-11: Context indicator state ─────────────────────────
+
+    /// Check for context files (AGENT.md, memory.md) and return
+    /// a formatted indicator string for the header bar.
+    pub fn context_indicators(&self) -> String {
+        let mut indicators = Vec::new();
+
+        if let Some(ref cmds) = self.commands {
+            if cmds.agent_md_path().is_some() {
+                indicators.push("📄 AGENT.md");
+            }
+            if cmds.memory_md_loaded() {
+                indicators.push("🧠 memory.md");
+            }
+        }
+
+        if indicators.is_empty() {
+            String::new()
+        } else {
+            format!(" {} ", indicators.join(" "))
         }
     }
 
@@ -488,6 +906,16 @@ impl App {
                 self.dropdown = Some(Dropdown::new(DropdownType::Command, query.to_string()));
                 return;
             }
+
+            // 1b) Check for `/models <partial>` or `/m <partial>` model trigger
+            if let Some(space_pos) = before_cursor.find(' ') {
+                let cmd = &self.input[1..space_pos];
+                if cmd == "models" || cmd == "m" {
+                    let query = &self.input[space_pos + 1..self.cursor_pos];
+                    self.dropdown = Some(Dropdown::new(DropdownType::Model, query.to_string()));
+                    return;
+                }
+            }
         }
 
         // 2) Check for `@` file trigger
@@ -577,6 +1005,20 @@ impl App {
                             self.input = format!("{}@{}{}{}", before_at, text, suffix, after_cursor);
                             self.cursor_pos = at_pos + 1 + text.len() + suffix.len();
                         }
+                    }
+                    DropdownType::Model => {
+                        // Extract model ID from display string (e.g. "gpt-4o 👁 [openai]" → "gpt-4o")
+                        let model_id = self
+                            .dropdown
+                            .as_ref()
+                            .and_then(|d| d.get_model_id(&text))
+                            .unwrap_or_else(|| text.clone());
+                        // Replace from after "/models " to cursor with model ID
+                        let space_pos = self.input.find(' ').unwrap_or(self.input.len());
+                        let prefix = self.input[..=space_pos].to_string(); // includes the space
+                        let after_cursor = self.input[self.cursor_pos..].to_string();
+                        self.input = format!("{}{} {}", prefix, model_id, after_cursor);
+                        self.cursor_pos = prefix.len() + model_id.len() + 1;
                     }
                 }
             }
@@ -676,6 +1118,7 @@ impl App {
         self.input.clear();
         self.cursor_pos = 0;
         self.dropdown = None;
+        self.image_attachment = None;
 
         // Handle slash commands
         if input.starts_with('/') {
@@ -787,6 +1230,10 @@ impl App {
 | `/sessions` | `/ss` | List & resume sessions |
 | `/models` | `/m` | Switch model |
 | `/provider` | | Switch provider |
+| `/search` | `/s` | Search conversation history |
+| `/image` | `/img` | Attach image |
+| `/mcp` | | Show MCP server status |
+| `/plan` | `/p` | Generate a structured plan |
 | `/config` | `/cfg` | Show configuration |
 | `/tools` | `/t` | List available tools |
 | `/history` | `/hist` | Show message history |
@@ -839,18 +1286,28 @@ impl App {
                     timestamp: chrono::Local::now(),
                 });
             }
+            "/search" | "/s" => {
+                self.handle_search(arg);
+            }
+            "/image" | "/img" => {
+                self.handle_image(arg);
+            }
             "/provider" if !arg.is_empty() => {
-                // Switch provider
-                self.messages.push(Message {
-                    role: MessageRole::System,
-                    content: format!("Provider switching: use `/models` to switch models."),
-                    timestamp: chrono::Local::now(),
-                });
+                self.handle_provider_switch(arg);
             }
             "/provider" => {
+                self.handle_provider_list();
+            }
+            "/mcp" => {
+                self.handle_mcp_status();
+            }
+            "/plan" | "/p" if !arg.is_empty() => {
+                self.handle_plan(arg).await;
+            }
+            "/plan" | "/p" => {
                 self.messages.push(Message {
                     role: MessageRole::System,
-                    content: "Usage: `/provider <name>` — or use `/models` to switch models.".into(),
+                    content: "Usage: `/plan <goal>` — Generate a structured plan.".into(),
                     timestamp: chrono::Local::now(),
                 });
             }

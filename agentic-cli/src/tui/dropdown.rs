@@ -17,6 +17,8 @@ pub enum DropdownType {
     Command,
     /// File paths (@src/main.rs, etc.)
     File,
+    /// Model names (gpt-4o, claude-sonnet-4, etc.)
+    Model,
 }
 
 /// Dropdown state
@@ -31,16 +33,18 @@ pub struct Dropdown {
 /// Available slash commands with aliases and descriptions
 const SLASH_COMMANDS: &[(&str, &[&str], &str)] = &[
     ("help", &["h", "?"], "Show help message"),
-    ("clear", &["cls", "c"], "Clear conversation"),
+    ("new", &["n"], "Start new session"),
+    ("clear", &["cls", "c"], "Clear messages only"),
+    ("sessions", &["ss"], "List & resume sessions"),
+    ("models", &["m"], "Switch model"),
+    ("provider", &[], "Switch provider"),
+    ("search", &["s"], "Search conversation history"),
+    ("image", &["img"], "Attach image"),
+    ("mcp", &[], "Show MCP server status"),
+    ("plan", &["p"], "Generate a structured plan"),
     ("config", &["cfg"], "Show configuration"),
     ("tools", &["t"], "List available tools"),
     ("history", &["hist"], "Show command history"),
-    ("save", &["s"], "Save conversation to file"),
-    ("load", &["l"], "Load conversation from file"),
-    ("mcp", &[], "Show MCP server status"),
-    ("plan", &["p"], "Create a plan for a goal"),
-    ("model", &["m"], "Switch model"),
-    ("provider", &["prov"], "Switch provider"),
     ("stats", &[], "Show session statistics"),
     ("quit", &["q", "exit"], "Exit TUI"),
 ];
@@ -50,10 +54,31 @@ impl Dropdown {
         let items = match dropdown_type {
             DropdownType::Command => Self::filter_commands(&query),
             DropdownType::File => Self::filter_files(&query),
+            DropdownType::Model => Self::filter_models(&query),
         };
 
         Self {
             dropdown_type,
+            items,
+            selected: 0,
+            visible_count: 8,
+        }
+    }
+
+    /// Create a model dropdown with pre-fetched model list
+    pub fn new_model(query: String, models: Vec<String>) -> Self {
+        let query_lower = query.to_lowercase();
+        let items: Vec<String> = if query.is_empty() {
+            models
+        } else {
+            models
+                .into_iter()
+                .filter(|m| m.to_lowercase().contains(&query_lower))
+                .collect()
+        };
+
+        Self {
+            dropdown_type: DropdownType::Model,
             items,
             selected: 0,
             visible_count: 8,
@@ -71,6 +96,62 @@ impl Dropdown {
             })
             .map(|(cmd, _, _)| cmd.to_string())
             .collect()
+    }
+
+    /// Filter model names by query
+    fn filter_models(query: &str) -> Vec<String> {
+        let query_lower = query.to_lowercase();
+        
+        // Load config to get all available models
+        let config = match core_agentic::Config::load() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+
+        let active_provider = config.active_provider().map(|p| p.name.clone());
+        let active_model = config.active_model().map(|m| m.model.clone());
+
+        let mut models: Vec<String> = Vec::new();
+        for provider in &config.providers {
+            for model in &provider.models {
+                let display_name = model.display_name.as_deref().unwrap_or(&model.model);
+                let is_active = active_provider.as_deref() == Some(&provider.name)
+                    && active_model.as_deref() == Some(&model.model);
+                
+                let caps = model.effective_capabilities();
+                let vision_icon = if caps.vision { " 👁" } else { "" };
+                let active_marker = if is_active { " ●" } else { "" };
+
+                let display = format!(
+                    "{}{} [{}]{}",
+                    display_name, vision_icon, provider.name, active_marker
+                );
+
+                // Filter by query
+                if !query.is_empty()
+                    && !display_name.to_lowercase().contains(&query_lower)
+                    && !model.model.to_lowercase().contains(&query_lower)
+                    && !provider.name.to_lowercase().contains(&query_lower)
+                {
+                    continue;
+                }
+
+                models.push(display);
+            }
+        }
+
+        // Sort: active first, then alphabetically
+        models.sort_by(|a, b| {
+            let a_active = a.contains("●");
+            let b_active = b.contains("●");
+            match (a_active, b_active) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.cmp(b),
+            }
+        });
+
+        models
     }
 
     /// Filter files by query — always recursive, respects .gitignore.
@@ -239,6 +320,7 @@ impl Dropdown {
         match self.dropdown_type {
             DropdownType::Command => "⌘",
             DropdownType::File => "📁",
+            DropdownType::Model => "🤖",
         }
     }
 
@@ -247,7 +329,19 @@ impl Dropdown {
         match self.dropdown_type {
             DropdownType::Command => "Commands",
             DropdownType::File => "Files",
+            DropdownType::Model => "Models",
         }
+    }
+
+    /// Get model ID from display string (extracts model name from "gpt-4o [openai]" format)
+    pub fn get_model_id(&self, display: &str) -> Option<String> {
+        if self.dropdown_type != DropdownType::Model {
+            return None;
+        }
+        // Extract model name before the provider bracket
+        // "gpt-4o 👁 [openai] ●" → "gpt-4o"
+        let model_id = display.split(' ').next()?.to_string();
+        Some(model_id)
     }
 }
 
