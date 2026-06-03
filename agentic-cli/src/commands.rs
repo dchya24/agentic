@@ -1249,7 +1249,36 @@ impl Commands {
         }
 
         self.ensure_orchestrator()?;
+        self.plan_and_execute(goal, true).await
+    }
 
+    /// `agentic run --plan <task>`: one-shot plan-then-execute without
+    /// entering interactive mode. Respects the `require_approval` config
+    /// setting (defaults to true).
+    pub async fn plan_run(&mut self, task: &str) -> anyhow::Result<()> {
+        let task = task.trim();
+        if task.is_empty() {
+            inline::print_blank();
+            inline::print_line(&components::warning_badge("Task is empty."));
+            inline::print_blank();
+            return Ok(());
+        }
+
+        self.ensure_orchestrator()?;
+        // Use require_approval from config (default: true)
+        self.plan_and_execute(task, self.config.agent.planner.require_approval).await
+    }
+
+    /// Shared planner logic: create a plan, optionally ask for approval,
+    /// render live progress, and execute.
+    ///
+    /// `ask_approval`: when true, render the plan and prompt with
+    /// dialoguer. When false, skip the prompt (auto-approve).
+    async fn plan_and_execute(
+        &mut self,
+        goal: &str,
+        ask_approval: bool,
+    ) -> anyhow::Result<()> {
         // Build a fresh PlannerAgent against the same provider.
         let provider_config = self
             .config
@@ -1311,7 +1340,7 @@ impl Commands {
             ];
             if let Some(ref tool) = step.tool {
                 spans.push(RSpan::styled(
-                    format!("  [↳ {}]", tool),
+                    format!("  [↳{}]", tool),
                     RStyle::default().fg(RColor::Cyan),
                 ));
             }
@@ -1328,13 +1357,23 @@ impl Commands {
         }
         inline::print_blank();
 
-        // Approval prompt. Re-use the existing dialoguer Confirm
-        // since the planner's approval is binary.
-        let proceed = Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt("Execute this plan?")
-            .default(false)
-            .interact()
-            .unwrap_or(false);
+        // Approval: either prompt with dialoguer, or auto-approve.
+        let proceed = if ask_approval {
+            Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Execute this plan?")
+                .default(false)
+                .interact()
+                .unwrap_or(false)
+        } else {
+            inline::print_line(&RLine::from(vec![
+                RSpan::styled(
+                    "  Auto-approved (require_approval = false)\n".to_string(),
+                    RStyle::default().fg(RColor::DarkGray),
+                ),
+            ]));
+            true
+        };
+
         if !proceed {
             inline::print_line(&components::warning_badge("Plan rejected. Nothing executed."));
             inline::print_blank();
@@ -1485,6 +1524,13 @@ impl Commands {
     pub async fn run(&mut self, task: &str) -> Result<()> {
         use crate::widgets::{components, inline, markdown as md_widget, progress, spinner};
         use ratatui::style::Color as RColor;
+
+        // When --mode plan is active, route through the planner agent
+        // instead of the regular orchestrator loop. This creates a real
+        // plan, shows it, and executes approved steps.
+        if self.permission_mode == core_agentic::PermissionMode::Plan {
+            return self.plan_run(task).await;
+        }
 
         // Expand @file references and extract any image attachments
         // (`@photo.png`) for the vision channel. Pending attachments

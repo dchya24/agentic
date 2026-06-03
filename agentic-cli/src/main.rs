@@ -185,8 +185,12 @@ async fn main() -> Result<()> {
 
     // ── Command dispatch ───────────────────────────────────
     match &cli.command {
-        Some(Command::Run { task }) => {
-            commands.run(&task).await?;
+        Some(Command::Run { task, plan }) => {
+            if *plan {
+                commands.plan_run(&task).await?;
+            } else {
+                commands.run(&task).await?;
+            }
         }
         Some(Command::Interactive) => {
             commands = commands.with_interactive_mode(true);

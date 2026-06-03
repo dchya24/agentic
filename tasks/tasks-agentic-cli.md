@@ -122,9 +122,9 @@
   - [x] 13.6 Replan notification: surface when planner revises remaining steps (requires event extension)
   - [x] 13.7 Wire planner events (`PlanProgress`) to inline widget renderer via `planner.on()` callback
 
-- [ ] 14.0 Plan mode integration
-  - [ ] 14.1 `agentic run --mode plan` works with the new planner (not just deny writes)
-  - [ ] 14.2 `agentic run --plan "<goal>"` shorthand for plan-then-execute without entering interactive mode
+- [x] 14.0 Plan mode integration
+  - [x] 14.1 `agentic run --mode plan` works with the new planner (not just deny writes)
+  - [x] 14.2 `agentic run --plan "<goal>"` shorthand for plan-then-execute without entering interactive mode
 
 ### Phase 10 — Skill System (CLI integration) (✅ done)
 

@@ -86,13 +86,24 @@ pub enum Command {
         The agent will analyze the task, select appropriate tools,\n\
         and execute the plan. Streaming output is shown in real-time.\n\
         \n\
+        Use --plan to decompose the task into steps, show the plan,\n\
+        and execute approved steps via the planner agent.\n\
+        \n\
         Examples:\n  \
           agentic run \"list all Rust files\"\n  \
-          agentic run \"create a hello.txt with 'hello world'\"\n  \
-          agentic run \"explain the codebase structure\"")]
+          agentic run --plan \"refactor the auth module\"\n  \
+          agentic run --mode plan \"explain the codebase\"")]
     Run {
         /// The task description
         task: String,
+
+        /// Plan-then-execute: decompose the task into steps, show the plan,
+        /// ask for approval, and execute the approved steps.
+        ///
+        /// Shorthand for `agentic run --mode plan`, but explicitly invokes
+        /// the planner agent rather than just denying writes.
+        #[arg(long)]
+        plan: bool,
     },
 
     /// Start interactive mode (REPL)

@@ -116,9 +116,11 @@ Sized by effort. Each item has its own home in
 
 - [x] **Planner agent.** Subagent infra (`SpawnSubagentTool`) in place.
       Goal → plan → step execution with replanning on failure, approval
-      flow, dependency ordering, Subagent delegation, `PlanProgress` events.
-      7 E2E integration tests in `tests/planner_loop.rs`. Implemented in
-      a parallel branch and merged alongside milestone-3/4 work.
+      flow, dependency ordering, Subagent delegation, `PlanProgress` +
+      `PlanReplanned` events. 8 E2E integration tests in
+      `tests/planner_loop.rs`. `--mode plan` and `--plan` flag route
+      through the planner agent. Implemented in a parallel branch and
+      merged alongside milestone-3/4 work.
 - [x] **Skill system.** Skill format (`SKILL.md`), discovery
       (5 locations: global `~/.agents/skills/`, `~/.config/agentic/skills/`,
       project `.agents/skills/`, `.agentic/skills/` walk-up, + compat dirs),
