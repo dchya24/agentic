@@ -27,6 +27,9 @@ mod tool_exec;
 /// Default safety cap on agent iterations to avoid runaway loops.
 pub const DEFAULT_MAX_ITERATIONS: u32 = 30;
 
+/// Number of consecutive same-tool calls before loop detection triggers.
+const LOOP_DETECTION_THRESHOLD: usize = 3;
+
 /// Default tool-result truncation limit (chars). Layer 1 of context compression.
 pub const DEFAULT_TOOL_RESULT_MAX_CHARS: usize = 25_000;
 
@@ -56,6 +59,8 @@ pub struct Orchestrator {
     model: String,
     /// Hard cap on the agent loop. Prevents runaway tool-call loops.
     max_iterations: u32,
+    /// Recent tool call names for loop detection (circular buffer).
+    recent_tool_calls: Mutex<Vec<String>>,
     /// Cap individual tool result strings (Layer 1 of context compression).
     tool_result_max_chars: usize,
     /// Auto-compact memory when token usage exceeds the configured threshold.
@@ -90,6 +95,7 @@ impl Orchestrator {
             system_prompt: None,
             model: "glm-4.7".to_string(),
             max_iterations: DEFAULT_MAX_ITERATIONS,
+            recent_tool_calls: Mutex::new(Vec::new()),
             tool_result_max_chars: DEFAULT_TOOL_RESULT_MAX_CHARS,
             auto_compact: true,
             keep_recent_tool_results: DEFAULT_KEEP_RECENT_TOOL_RESULTS,
@@ -122,6 +128,30 @@ impl Orchestrator {
     /// Override the maximum number of agent loop iterations.
     pub fn set_max_iterations(&mut self, max: u32) {
         self.max_iterations = max.max(1);
+    }
+
+    /// Record a tool call for loop detection. Returns `true` if a loop
+    /// is detected (same tool called consecutively >= threshold).
+    fn record_tool_call_for_loop_detection(&self, tool_name: &str) -> bool {
+        let mut recent = self.recent_tool_calls.lock().unwrap();
+        recent.push(tool_name.to_string());
+        // Keep only the last N entries
+        if recent.len() > LOOP_DETECTION_THRESHOLD {
+            recent.remove(0);
+        }
+        // Check if all recent calls are the same tool
+        recent.len() >= LOOP_DETECTION_THRESHOLD
+            && recent.iter().all(|t| t == tool_name)
+    }
+
+    /// Clear the loop detection history (e.g. after a successful non-tool response).
+    fn clear_loop_detection(&self) {
+        self.recent_tool_calls.lock().unwrap().clear();
+    }
+
+    /// Check if we're approaching the iteration limit (>= 80%).
+    fn approaching_limit(&self, iteration: u32) -> bool {
+        iteration >= (self.max_iterations * 4 / 5).max(1)
     }
 
     /// Override the per-tool-result character cap.

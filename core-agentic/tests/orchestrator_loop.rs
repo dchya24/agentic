@@ -59,12 +59,14 @@ fn run_loop_executes_tool_then_returns_final_answer() {
 #[test]
 fn run_loop_aborts_at_max_iterations() {
     // Script far more tool calls than max_iterations: every turn requests
-    // another no-op read.
+    // another no-op read. Use different tool names to avoid loop detection.
     let mut script = Vec::new();
+    let tool_names = ["list_files", "search_files", "glob"];
     for i in 0..20 {
+        let tool = tool_names[i % tool_names.len()];
         script.push(support::tool_call_response(
             &format!("call-{}", i),
-            "list_files",
+            tool,
             &serde_json::json!({"path": "."}),
         ));
     }
@@ -85,6 +87,93 @@ fn run_loop_aborts_at_max_iterations() {
         msg.contains("max_iterations"),
         "expected 'max_iterations' in error, got: {}",
         msg
+    );
+}
+
+/// Loop detection: same tool called consecutively must trigger early abort.
+#[test]
+fn loop_detection_aborts_on_repeated_tool() {
+    // Same tool called 3 times in a row should trigger loop detection
+    // before hitting max_iterations.
+    let mut script = Vec::new();
+    for i in 0..10 {
+        script.push(support::tool_call_response(
+            &format!("call-{}", i),
+            "write_file",
+            &serde_json::json!({"path": "file.txt", "content": "content"}),
+        ));
+    }
+    let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(script));
+
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+
+    let mut orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+    orch.set_max_iterations(10); // High limit, but loop detection should trigger first
+
+    let err = orch.run("write files forever").expect_err("should detect loop");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Loop detected"),
+        "expected 'Loop detected' in error, got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("write_file"),
+        "expected tool name in error, got: {}",
+        msg
+    );
+}
+
+/// Warning at 80% of max_iterations must emit a System event.
+#[test]
+fn approaching_limit_emits_warning_event() {
+    // Script enough tool calls to reach 80% of max_iterations.
+    // Use different tool names to avoid loop detection.
+    let mut script = Vec::new();
+    let tool_names = ["list_files", "search_files", "glob"];
+    for i in 0..10 {
+        let tool = tool_names[i % tool_names.len()];
+        script.push(support::tool_call_response(
+            &format!("call-{}", i),
+            tool,
+            &serde_json::json!({"path": "."}),
+        ));
+    }
+    let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(script));
+
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+
+    let mut orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+    orch.set_max_iterations(5); // 80% of 5 = 4, so warning at iteration 4
+
+    let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    orch.on_event(move |event| {
+        if let Event::System { message } = event {
+            events_clone.lock().unwrap().push(message);
+        }
+    });
+
+    // The loop will hit max_iterations (5) before finishing all script items,
+    // but the warning should be emitted at iteration 4 (80% of 5).
+    let err = orch.run("go far").expect_err("should hit cap");
+    let msg = err.to_string();
+    assert!(msg.contains("max_iterations"), "expected max_iterations error");
+
+    // Check that a warning event was emitted
+    let captured = events.lock().unwrap();
+    assert!(
+        captured.iter().any(|m| m.contains("Approaching iteration limit")),
+        "expected 'Approaching iteration limit' warning, got: {:?}",
+        *captured
     );
 }
 

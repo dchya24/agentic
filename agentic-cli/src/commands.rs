@@ -552,6 +552,10 @@ impl Commands {
             orchestrator.set_summarizer_model(summarizer.clone());
             tracing::info!(model = %summarizer, "Summarizer model override");
         }
+        if let Some(max_iter) = self.config.agent.max_iterations {
+            orchestrator.set_max_iterations(max_iter);
+            tracing::info!(max_iterations = max_iter, "Max iterations override");
+        }
 
         orchestrator.set_confirmation_handler(|request| {
             if ALWAYS_CONFIRM.load(Ordering::Relaxed) {
@@ -2848,14 +2852,25 @@ fn render_event(event: &core_agentic::Event) {
                 }
             }
         }
+        core_agentic::Event::Thought { content } => {
+            // Display the LLM's thinking/explanation before tool execution
+            if !content.is_empty() {
+                let lines = crate::widgets::markdown::MarkdownContent::parse(&content);
+                inline::print_blank();
+                for line in &lines.lines {
+                    inline::print_line(line);
+                }
+                inline::print_blank();
+            }
+        }
         core_agentic::Event::Error { message } => {
             inline::print_line(&components::error_badge(message));
         }
         core_agentic::Event::System { message } => {
             inline::print_line(&components::info_badge(message));
         }
-        // Thought / ConfirmationRequest / Completed are surfaced via other
-        // channels (memory, the confirmation prompt, the final markdown).
+        // ConfirmationRequest / Completed are surfaced via other
+        // channels (the confirmation prompt, the final markdown).
         _ => {}
     }
 }

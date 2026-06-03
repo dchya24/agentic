@@ -108,6 +108,10 @@ pub struct AgentLoopConfig {
     pub auto_compact_with_llm: bool,
     #[serde(default)]
     pub summarizer_model: Option<String>,
+    /// Hard cap on agent loop iterations. Prevents runaway tool-call loops.
+    /// Default is 30 (the orchestrator's compiled-in default).
+    #[serde(default)]
+    pub max_iterations: Option<u32>,
     /// Planner agent configuration.
     #[serde(default)]
     pub planner: PlannerLoopConfig,

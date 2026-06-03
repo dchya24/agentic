@@ -48,6 +48,8 @@ pub enum AppMessage {
         output: serde_json::Value,
         is_error: bool,
     },
+    /// LLM's thinking/explanation before tool execution.
+    Thought(String),
     /// Plan progress update from the planner agent.
     PlanProgress {
         goal: String,
@@ -731,6 +733,9 @@ impl App {
                         core_agentic::Event::Error { message } => {
                             let _ = event_tx.send(AppMessage::Error(message));
                         }
+                        core_agentic::Event::Thought { content } => {
+                            let _ = event_tx.send(AppMessage::Thought(content));
+                        }
                         _ => {}
                     },
                 )
@@ -1189,6 +1194,9 @@ impl App {
                             core_agentic::Event::Error { message } => {
                                 let _ = event_tx.send(AppMessage::Error(message));
                             }
+                            core_agentic::Event::Thought { content } => {
+                                let _ = event_tx.send(AppMessage::Thought(content));
+                            }
                             // Other event types aren't surfaced in TUI for now.
                             _ => {}
                         },
@@ -1441,6 +1449,16 @@ impl App {
                             content: payload.to_string(),
                             timestamp: chrono::Local::now(),
                         });
+                    }
+                    AppMessage::Thought(content) => {
+                        // Display the LLM's thinking/explanation as an assistant message
+                        if !content.is_empty() {
+                            self.messages.push(Message {
+                                role: MessageRole::Assistant,
+                                content,
+                                timestamp: chrono::Local::now(),
+                            });
+                        }
                     }
                     AppMessage::PlanProgress {
                         goal: _,

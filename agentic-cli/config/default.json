@@ -48,5 +48,15 @@
         "enabled": true
       }
     ]
+  },
+  "agent": {
+    "max_iterations": 30,
+    "auto_compact_with_llm": false,
+    "summarizer_model": null,
+    "planner": {
+      "max_steps": 20,
+      "max_replan_attempts": 3,
+      "require_approval": true
+    }
   }
 }

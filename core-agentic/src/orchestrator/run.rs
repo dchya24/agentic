@@ -64,6 +64,22 @@ impl Orchestrator {
                 )));
             }
 
+            // Warn when approaching the limit (80% threshold)
+            if self.approaching_limit(iteration) && iteration < self.max_iterations {
+                tracing::info!(
+                    iteration,
+                    max = self.max_iterations,
+                    "Approaching max_iterations limit"
+                );
+                // Emit a warning event so the UI can display it
+                self.events.emit(crate::events::Event::System {
+                    message: format!(
+                        "⚠️ Approaching iteration limit ({}/{})",
+                        iteration, self.max_iterations
+                    ),
+                });
+            }
+
             if self.cancelled() {
                 tracing::info!("Agent loop cancelled by user");
                 return Err(AgenticError::Cancelled);
@@ -86,6 +102,30 @@ impl Orchestrator {
             let content = response.message.content.clone().unwrap_or_default();
 
             if !response.message.tool_calls.is_empty() {
+                // Emit the LLM's text content as a Thought event so the user
+                // can see what the model is thinking/planning before tool execution.
+                if !content.is_empty() {
+                    self.events.emit(crate::events::Event::Thought {
+                        content: content.clone(),
+                    });
+                }
+
+                // Check for loop detection on the first tool call
+                if let Some(first_tc) = response.message.tool_calls.first() {
+                    let tool_name = &first_tc.function.name;
+                    if self.record_tool_call_for_loop_detection(tool_name) {
+                        tracing::warn!(
+                            tool = %tool_name,
+                            threshold = super::LOOP_DETECTION_THRESHOLD,
+                            "Loop detected: same tool called consecutively"
+                        );
+                        return Err(AgenticError::Provider(format!(
+                            "Loop detected: '{}' called {} times consecutively. Aborting to prevent infinite loop.",
+                            tool_name, super::LOOP_DETECTION_THRESHOLD
+                        )));
+                    }
+                }
+
                 let tool_calls: Vec<(String, String, String)> = response
                     .message
                     .tool_calls
@@ -100,6 +140,10 @@ impl Orchestrator {
                     .collect();
                 self.handle_tool_calls(&content, &tool_calls);
             } else {
+                // No tool calls - model produced a final answer
+                // Clear loop detection history for the next user turn
+                self.clear_loop_detection();
+
                 self.memory
                     .lock()
                     .unwrap()
@@ -175,6 +219,21 @@ impl Orchestrator {
                 )));
             }
 
+            // Warn when approaching the limit (80% threshold)
+            if self.approaching_limit(iteration) && iteration < self.max_iterations {
+                tracing::info!(
+                    iteration,
+                    max = self.max_iterations,
+                    "Approaching max_iterations limit"
+                );
+                self.events.emit(crate::events::Event::System {
+                    message: format!(
+                        "⚠️ Approaching iteration limit ({}/{})",
+                        iteration, self.max_iterations
+                    ),
+                });
+            }
+
             if self.cancelled() {
                 tracing::info!("Agent stream loop cancelled by user");
                 return Err(AgenticError::Cancelled);
@@ -243,10 +302,38 @@ impl Orchestrator {
             };
 
             if !accumulated_tool_calls.is_empty() {
+                // Emit the LLM's text content as a Thought event so the user
+                // can see what the model is thinking/planning before tool execution.
+                if !content_buf.is_empty() {
+                    self.events.emit(crate::events::Event::Thought {
+                        content: content_buf.clone(),
+                    });
+                }
+
+                // Check for loop detection on the first tool call
+                if let Some(first_tc) = accumulated_tool_calls.first() {
+                    let tool_name = &first_tc.1; // (id, name, args)
+                    if self.record_tool_call_for_loop_detection(tool_name) {
+                        tracing::warn!(
+                            tool = %tool_name,
+                            threshold = super::LOOP_DETECTION_THRESHOLD,
+                            "Loop detected: same tool called consecutively"
+                        );
+                        return Err(AgenticError::Provider(format!(
+                            "Loop detected: '{}' called {} times consecutively. Aborting to prevent infinite loop.",
+                            tool_name, super::LOOP_DETECTION_THRESHOLD
+                        )));
+                    }
+                }
+
                 self.handle_tool_calls_parallel(&content_buf, &accumulated_tool_calls)
                     .await;
                 continue;
             }
+
+            // No tool calls - model produced a final answer
+            // Clear loop detection history for the next user turn
+            self.clear_loop_detection();
 
             self.memory
                 .lock()
