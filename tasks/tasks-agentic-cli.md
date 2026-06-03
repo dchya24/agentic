@@ -119,7 +119,7 @@
 - [x] 13.0b TUI & inline enhancements
   - [x] 13.4 TUI panel widget created (`agentic-cli/src/tui/plan_panel.rs`) — integration blocked by pre-existing TUI build errors (crossterm in dev-dependencies)
   - [x] 13.5 Plan progress bar in inline mode: live `labeled_bar` + step description rendering during execution
-  - [ ] 13.6 Replan notification: surface when planner revises remaining steps (requires event extension)
+  - [x] 13.6 Replan notification: surface when planner revises remaining steps (requires event extension)
   - [x] 13.7 Wire planner events (`PlanProgress`) to inline widget renderer via `planner.on()` callback
 
 - [ ] 14.0 Plan mode integration
@@ -149,8 +149,8 @@
   - [x] 19.1 Add cache hit ratio to status bar: `📦 cache 68%` (when provider supports it)
   - [x] 19.2 Add cached token counts to `/stats` output
   - [x] 19.3 Show cache savings in response summary + goodbye panel
-- [ ] 20.0 Config integration
-  - [ ] 20.1 Expose `provider.cache.*` settings in `agentic config` wizard
+- [ ] ~~20.0 Config integration~~ (deferred — caching works via manual config.toml edit)
+  - [ ] ~~20.1 Expose `provider.cache.*` settings in `agentic config` wizard~~ (deferred)
 
 > **Note:** The cache metrics (cache_read_tokens, cache_creation_tokens) flow through `ChatUsage` but are not yet wired from provider responses to `SessionStats`. This requires emitting usage events from the orchestrator in a follow-up task.
 

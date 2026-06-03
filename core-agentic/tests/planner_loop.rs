@@ -215,7 +215,69 @@ fn planner_emits_plan_progress_events() {
     }
 }
 
-// ── PlanResult ────────────────────────────────────────────────────
+// ── Replan event ─────────────────────────────────────────────────
+
+#[test]
+fn planner_emits_plan_replanned_event_on_failure_with_replan() {
+    use std::sync::Mutex;
+
+    // First response: plan with a failing tool step.
+    // Second response: revised plan with a working step.
+    let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
+        text_response(r#"[{"description": "Fail step", "tool": "nonexistent", "args": {}}]
+"#),
+        text_response(r#"[{"description": "Recovery step", "tool": "run_command", "args": {"command": "echo recovered"}}]
+"#),
+    ]));
+
+    let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
+        require_approval: false,
+        max_replan_attempts: 1,
+        ..Default::default()
+    });
+
+    let replanned_events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+    planner.on({
+        let replanned_events = replanned_events.clone();
+        move |ev| {
+            if matches!(ev, Event::PlanReplanned { .. }) {
+                replanned_events.lock().unwrap().push(ev);
+            }
+        }
+    });
+
+    let tools = ToolRegistry::new();
+    tools.register(Box::new(RunCommandTool::new()));
+
+    let plan = planner.create_plan("Fail then recover", &tools).unwrap();
+    assert_eq!(plan.steps.len(), 1);
+
+    let mut plan = plan;
+    let result = planner.execute_plan(&mut plan, &tools).unwrap();
+
+    // The plan should have recovered via replan
+    assert_eq!(result.status, PlanStatus::Completed);
+
+    // A PlanReplanned event should have been emitted
+    let replanned = replanned_events.lock().unwrap();
+    assert_eq!(replanned.len(), 1, "Expected exactly 1 PlanReplanned event, got {}", replanned.len());
+
+    if let Event::PlanReplanned {
+        reason,
+        steps_carried_over,
+        steps_total,
+        plan_goal,
+        ..
+    } = &replanned[0]
+    {
+        assert!(reason.contains("Fail step"), "Reason should mention failed step: {}", reason);
+        assert_eq!(*steps_carried_over, 0, "No steps were completed before replan");
+        assert_eq!(*steps_total, 1, "Revised plan should have 1 step");
+        assert_eq!(plan_goal, "Fail then recover");
+    } else {
+        panic!("Expected PlanReplanned event");
+    }
+}
 
 #[test]
 fn planner_result_summary() {

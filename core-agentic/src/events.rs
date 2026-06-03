@@ -51,6 +51,16 @@ pub enum Event {
         steps_failed: usize,
         steps_pending: usize,
     },
+
+    /// Emitted when the planner revises a plan after a step failure.
+    #[serde(rename = "plan_replanned")]
+    PlanReplanned {
+        plan_id: String,
+        plan_goal: String,
+        reason: String,
+        steps_carried_over: usize,
+        steps_total: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +73,7 @@ pub enum EventType {
     Completed,
     System,
     PlanProgress,
+    PlanReplanned,
 }
 
 impl Event {
@@ -76,6 +87,7 @@ impl Event {
             Event::Completed { .. } => EventType::Completed,
             Event::System { .. } => EventType::System,
             Event::PlanProgress { .. } => EventType::PlanProgress,
+            Event::PlanReplanned { .. } => EventType::PlanReplanned,
         }
     }
 }

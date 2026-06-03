@@ -205,11 +205,11 @@
   - [x] 21.3 Per-turn: only cache prefix up to last pinned/memory message (Prefix strategy implementation)
 - [x] 22.0 Observability
   - [x] 22.1 Track cache hits/misses in `ChatUsage`/`AnthropicUsage`: `cache_read_input_tokens`, `cache_creation_input_tokens` passed through from API response
-  - [ ] 22.2 Expose cache metrics via CLI status bar + `/stats` command
+  - [ ] ~~22.2 Expose cache metrics via CLI status bar + `/stats` command~~ (deferred — caching works, just no visibility UI)
 - [x] 23.0 Tests
   - [x] 23.1 Unit tests for `cache_control` injection in Anthropic provider (5 tests: absent-by-default, system-only, prefix, single-turn, wire format)
-  - [ ] 23.2 Integration test: verify cached vs non-cached request shapes
-  - [ ] 23.3 Cost tracking tests: correct token accounting with cache discounts
+  - [ ] ~~23.2 Integration test: verify cached vs non-cached request shapes~~ (deferred)
+  - [ ] ~~23.3 Cost tracking tests: correct token accounting with cache discounts~~ (deferred)
 
 ### Out of scope (intentional)
 

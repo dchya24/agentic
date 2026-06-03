@@ -66,10 +66,9 @@ metrics (`cache_read_input_tokens`, `cache_creation_input_tokens`) flow through
 `ChatUsage`. CLI observability shows cache hit ratio in the status bar, stats
 panel, and goodbye summary. Session persistence includes cache token counters.
 
-**Remaining (small):**
-- Wire usage events from the orchestrator to `SessionStats` (so real provider
-  cache counts appear in the CLI, not just the estimated input tokens).
-- Expose cache settings in `agentic config` wizard.
+**Deferred (v2):**
+- ~~Wire usage events from the orchestrator to `SessionStats`~~ — caching works, just no visibility UI.
+- ~~Expose cache settings in `agentic config` wizard~~ — configurable via manual config.toml edit.
 
 ## Open work
 

@@ -745,6 +745,18 @@ impl Commands {
         self.pending_attachments.len()
     }
 
+    /// Queue an already-loaded attachment for the next turn.
+    /// Used by the TUI `/image` handler that loads the file itself.
+    pub fn queue_attachment(&mut self, att: core_agentic::Attachment) {
+        self.pending_attachments.push(att);
+    }
+
+    /// Read-only reference to the current configuration.
+    /// Used by TUI commands that need provider/model lists.
+    pub fn config_ref(&self) -> &Config {
+        &self.config
+    }
+
     /// Render the `/image <path>` slash command: load the file, validate
     /// it (size cap + MIME), and queue it for the next user turn. The
     /// next call to `run()` will attach all queued images to the
@@ -1333,32 +1345,54 @@ impl Commands {
         let mut plan = plan;
         planner.on({
             move |event: core_agentic::Event| {
-                if let core_agentic::Event::PlanProgress {
-                    step_description,
-                    step_status,
-                    steps_total,
-                    steps_completed,
-                    steps_failed,
-                    ..
-                } = event
-                {
-                    let icon = match step_status.as_str() {
-                        "in_progress" => "▶",
-                        "completed" => "✅",
-                        "failed" => "❌",
-                        _ => "⏳",
-                    };
-                    let bar = components::labeled_bar(
-                        &format!("{}/{}", steps_completed, steps_total),
-                        if steps_total > 0 { steps_completed as f32 / steps_total as f32 } else { 0.0 },
-                        30,
-                        if steps_failed > 0 { RColor::Red } else { RColor::Green },
-                        RColor::DarkGray,
-                    );
-                    inline::print_line(&bar);
-                    inline::print_line(&RLine::from(vec![
-                        RSpan::raw(format!("       {}  {}", icon, step_description)),
-                    ]));
+                match event {
+                    core_agentic::Event::PlanProgress {
+                        step_description,
+                        step_status,
+                        steps_total,
+                        steps_completed,
+                        steps_failed,
+                        ..
+                    } => {
+                        let icon = match step_status.as_str() {
+                            "in_progress" => "▶",
+                            "completed" => "✅",
+                            "failed" => "❌",
+                            _ => "⏳",
+                        };
+                        let bar = components::labeled_bar(
+                            &format!("{}/{}", steps_completed, steps_total),
+                            if steps_total > 0 { steps_completed as f32 / steps_total as f32 } else { 0.0 },
+                            30,
+                            if steps_failed > 0 { RColor::Red } else { RColor::Green },
+                            RColor::DarkGray,
+                        );
+                        inline::print_line(&bar);
+                        inline::print_line(&RLine::from(vec![
+                            RSpan::raw(format!("       {}  {}", icon, step_description)),
+                        ]));
+                    }
+                    core_agentic::Event::PlanReplanned {
+                        reason,
+                        steps_carried_over,
+                        steps_total,
+                        ..
+                    } => {
+                        inline::print_blank();
+                        inline::print_line(&RLine::from(vec![
+                            RSpan::styled("       🔄 ".to_string(), RStyle::default().fg(RColor::Yellow)),
+                            RSpan::styled("Re-planning: ".to_string(), RStyle::default().add_modifier(RModifier::BOLD)),
+                            RSpan::styled(reason.clone(), RStyle::default().fg(RColor::Yellow)),
+                        ]));
+                        inline::print_line(&RLine::from(vec![
+                            RSpan::raw(format!(
+                                "          {} carried over, {} total revised steps",
+                                steps_carried_over, steps_total
+                            )),
+                        ]));
+                        inline::print_blank();
+                    }
+                    _ => {}
                 }
             }
         });
