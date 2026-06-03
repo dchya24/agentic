@@ -1,9 +1,9 @@
 # Tasks: Agentic CLI
 
 **Feature**: agentic-cli — Standalone CLI binary using core-agentic
-**Status**: Foundation done; shared widgets stack landed; alignment refactor merged
+**Status**: Foundation done; shared widgets stack landed; alignment refactor merged; Phase 9–11 planned
 **Created**: 2026-04-20
-**Updated**: 2026-05-31
+**Updated**: 2026-06-03
 **Depends on**: `tasks-core-agentic.md`
 
 ---
@@ -109,12 +109,44 @@
 - [x] 12.2 End-to-end smoke test for `agentic run` against a mock provider
   - 3 tests in `commands.rs`: basic tool→text flow, event emission, ScriptedProvider
 
-### Open / future work
+### Phase 9 — Planner Agent (CLI integration)
 
-- [x] Markdown rendering polish for streaming responses
-  - `close_unclosed_fence` extended: trailing whitespace, nested balanced fences, multiple openers, 4-space indent edge cases
-  - `canonical_lang` extended: `|` separator in info strings
-  - 7 new edge-case tests
+- [x] 13.0 `/plan` slash command exists
+  - [x] 13.1 Numbered list rendering of plan steps in inline output
+  - [x] 13.2 `plan_inline()` method: create plan → render → dialoguer Confirm → execute
+  - [x] 13.3 Conversation tracking: plan entries pushed to conversation history with timing
+
+- [x] 13.0b TUI & inline enhancements
+  - [x] 13.4 TUI panel widget created (`agentic-cli/src/tui/plan_panel.rs`) — integration blocked by pre-existing TUI build errors (crossterm in dev-dependencies)
+  - [x] 13.5 Plan progress bar in inline mode: live `labeled_bar` + step description rendering during execution
+  - [ ] 13.6 Replan notification: surface when planner revises remaining steps (requires event extension)
+  - [x] 13.7 Wire planner events (`PlanProgress`) to inline widget renderer via `planner.on()` callback
+
+- [ ] 14.0 Plan mode integration
+  - [ ] 14.1 `agentic run --mode plan` works with the new planner (not just deny writes)
+  - [ ] 14.2 `agentic run --plan "<goal>"` shorthand for plan-then-execute without entering interactive mode
+
+### Phase 10 — Skill System (CLI integration)
+
+- [ ] 15.0 `/skills` REPL command
+  - [ ] 15.1 List available skills with name, description, source directory
+  - [ ] 15.2 `/skills <name>` — show skill details (instructions preview)
+  - [ ] 15.3 Auto-complete skill names in `/skills <name>`
+- [ ] 16.0 `agentic skill create <name>` wizard
+  - [ ] 16.1 Scaffold `SKILL.md` in `~/.config/agentic/skills/<name>/`
+  - [ ] 16.2 Interactive prompts: description, triggers, instructions
+- [ ] 17.0 Status bar indicators
+  - [ ] 17.1 Show `🧠 skill:<name>` chip when a skill is active in session
+  - [ ] 17.2 Banner panel line: `📄 AGENT.md  ·  🧠 memory.md  ·  ⚡ skill:<name>`
+
+### Phase 11 — Prompt Caching (CLI integration)
+
+- [ ] 18.0 Cache observability in UI
+  - [ ] 18.1 Add cache hit ratio to status bar: `📦 cache 68%` (when provider supports it)
+  - [ ] 18.2 Add cached token counts to `/stats` output
+  - [ ] 18.3 Show cache savings in cost line: `$0.042 (−$0.378 cached)`
+- [ ] 19.0 Config integration
+  - [ ] 19.1 Expose `provider.cache.*` settings in `agentic config` wizard
 
 > **Architecture reference:** [docs/shared-widgets-architecture-26052026.md](../docs/shared-widgets-architecture-26052026.md)
 > **Roadmap:** [docs/ROADMAP.md](../docs/ROADMAP.md)

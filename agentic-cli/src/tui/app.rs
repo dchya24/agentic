@@ -47,6 +47,16 @@ pub enum AppMessage {
         output: serde_json::Value,
         is_error: bool,
     },
+    /// Plan progress update from the planner agent.
+    PlanProgress {
+        goal: String,
+        current_step: String,
+        step_status: String,
+        total: usize,
+        completed: usize,
+        failed: usize,
+        pending: usize,
+    },
 }
 
 /// Application state

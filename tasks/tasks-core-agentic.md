@@ -1,9 +1,9 @@
 # Tasks: Core Agentic Library
 
 **Feature**: core-agentic — Rust library for AI agent orchestration
-**Status**: Foundation complete; ~95% architecture coverage (post-M3 + alignment refactor)
+**Status**: Foundation complete; ~95% architecture coverage; Phase 9–11 planned
 **Created**: 2026-04-20
-**Updated**: 2026-05-31
+**Updated**: 2026-06-03
 
 ---
 
@@ -147,9 +147,62 @@
   - [x] 16.2 Three milestone docs (foundational / quality-of-life / additions)
   - [x] 16.3 Architecture alignment overview
 
-### Open / future work
+### Phase 9 — Planner Agent
 
-- [ ] LSP integration, prompt caching, file watching — out of scope per architecture doc
+- [x] 17.0 Planner core (implemented in `core-agentic/src/planner.rs`)
+  - [x] 17.1 `PlannerAgent` struct: `create_plan()` (LLM-driven), `execute_plan()`, `replan()`
+  - [x] 17.2 Plan representation: `Plan`, `Step`, `PlanStatus`, `StepStatus`, `PlanResult` with deps
+  - [x] 17.3 ~~`plan` tool~~ (not needed — planner is invoked by user via `/plan`, not by agent tool call)
+  - [x] 17.4 Step execution loop with status tracking (`Pending`→`InProgress`→`Completed`/`Failed`)
+  - [x] 17.5 Replanning on failure with `max_replan_attempts` config
+  - [x] 17.6 Event emission: emits `ToolCall`, `ToolOutput`, `System`, `ConfirmationRequest`, `Completed` events
+  - [x] 17.9 Unit tests: **47 tests** covering plan creation, serialization, approval, execution, replanning, subagent delegation
+
+- [x] 17.10 Integration tests: 7 E2E tests in `tests/planner_loop.rs` (manual execution, dependencies, failure, approval flow, LLM-driven, event emission, result summary)
+
+### Phase 9b — Planner Agent (completed items from remaining list)
+
+- [x] 17.7 Subagent delegation: steps with `tool: "spawn_subagent"` delegate to `SpawnSubagentTool` instead of direct execution
+- [x] 17.8 Config wiring: `planner.max_steps`, `planner.max_replan_attempts`, `planner.require_approval`, `planner.model`, `planner.provider` in `core_agentic::Config::agent.planner`
+- [x] 17.11 `PlanProgress` event type: specific event with plan_id, step_id, step_status, steps_total/completed/failed/pending
+- [x] 17.12 Wire planner events to CLI/TUI renderer: `planner.on()` handler in `plan_inline()` with labeled_bar + step description
+
+### Phase 10 — Skill System
+
+- [ ] 18.0 Skill format & discovery
+  - [ ] 18.1 Define `SKILL.md` schema (frontmatter: name, description, triggers; body: instructions)
+  - [ ] 18.2 Discovery: walk `~/.config/agentic/skills/` + `.agentic/skills/` (project-local)
+  - [ ] 18.3 `SkillIndex` — in-memory index of discovered skills with metadata & search
+  - [ ] 18.4 File watching / refresh for skill directories (optional, v2)
+- [ ] 19.0 `skill` tool
+  - [ ] 19.1 `SkillLoader` trait — reads SKILL.md + referenced resources (following the `QuestionHandler` callback pattern)
+  - [ ] 19.2 Tool schema: `{ "name": "skill", "arguments": { "skill_name": "..." } }`
+  - [ ] 19.3 Execution: load skill content → return as tool output → model absorbs into working context
+  - [ ] 19.4 Option: append skill instructions to system prompt for remaining session
+  - [ ] 19.5 Graceful degradation: unknown skill → return error, model recovers
+  - [ ] 19.6 Tests: discovery, load, missing skill, invalid SKILL.md parsing
+
+### Phase 11 — Prompt Caching
+
+- [ ] 20.0 Provider-level cache support
+  - [ ] 20.1 Anthropic: inject `cache_control` breakpoints in request payload (system prompt, conversation prefix)
+  - [ ] 20.2 OpenAI: no-op (automatic server-side caching, nothing to implement)
+  - [ ] 20.3 Config: `provider.cache.enabled`, `provider.cache.breakpoint_strategy` (system_only | prefix | full)
+- [ ] 21.0 Cache invalidation strategy
+  - [ ] 21.1 System prompt change (AGENT.md / memory.md updated) → new cache epoch → re-cache prefix
+  - [ ] 21.2 Tool list change → new cache epoch
+  - [ ] 21.3 Per-turn: only cache prefix up to last pinned/memory message, not the latest streaming turn
+- [ ] 22.0 Observability
+  - [ ] 22.1 Track cache hits/misses in cost tracking: `provider.cache_read_tokens`, `provider.cache_write_tokens`
+  - [ ] 22.2 Expose cache metrics via events / status bar (cache hit ratio, tokens saved)
+- [ ] 23.0 Tests
+  - [ ] 23.1 Unit tests for `cache_control` injection in Anthropic provider
+  - [ ] 23.2 Integration test: verify cached vs non-cached request shapes match expected payload
+  - [ ] 23.3 Cost tracking tests: correct token accounting with cache discounts
+
+### Out of scope (intentional)
+
+- LSP integration, file watching — out of scope per architecture doc
 
 > **Architecture reference:** [AGENT_ARCHITECTURE.md](../AGENT_ARCHITECTURE.md)
 > **Coverage detail:** [docs/architecture-alignment-overview-25052026.md](../docs/architecture-alignment-overview-25052026.md)
