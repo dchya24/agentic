@@ -6,6 +6,7 @@ mod commands;
 mod confirmation;
 mod error;
 mod file_ref;
+mod input_watcher;
 mod interactive;
 mod session;
 mod tui;

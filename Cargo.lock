@@ -24,6 +24,7 @@ dependencies = [
  "futures",
  "ignore",
  "indicatif",
+ "libc",
  "log",
  "nu-ansi-term",
  "pulldown-cmark",

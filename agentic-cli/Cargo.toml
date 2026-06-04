@@ -38,6 +38,10 @@ uuid = { version = "1", features = ["v4"] }
 
 # Terminal management
 crossterm = "0.28"
+
+# Unix terminal control (transitive dep — zero compile cost)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 ignore = "0.4"
 
 # TUI

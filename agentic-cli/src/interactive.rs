@@ -1268,58 +1268,30 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                         print_status_bar(&model_info, &stats);
                     }
                     _ => {
-                        conversation.push(ConversationEntry {
-                            role: "user".into(),
-                            content: input.clone(),
-                            timestamp: chrono::Local::now(),
-                        });
-                        stats.increment_messages();
+                        // Process the initial message and any queued messages
+                        // that arrive while the agent is running.
+                        let mut pending = vec![input.clone()];
 
-                        // Push to session and auto-save
-                        crate::session::push_message(
-                            &mut current_session,
-                            "user",
-                            &input,
-                        );
-
-                        // Visual break between user input (drawn by reedline)
-                        // and the assistant turn.
-                        print_turn_separator();
-
-                        // commands.run() owns its own transient spinner now,
-                        // so we just time the call here.
-                        let start = Instant::now();
-
-                        if let Err(e) = commands.run(&input).await {
-                            inline::print_blank();
-                            inline::print_line(&components::error_badge(&e.to_string()));
-                            inline::print_blank();
-                        } else {
-                            let elapsed = start.elapsed();
-
-                            let estimated_input = (input.len() as f32 / 4.0) as u32;
-                            stats.add_input_tokens(estimated_input);
-
-                            conversation.push(ConversationEntry {
-                                role: "assistant".into(),
-                                content: format!(
-                                    "(response in {:.1}s)",
-                                    elapsed.as_secs_f64()
-                                ),
-                                timestamp: chrono::Local::now(),
-                            });
-
-                            // Push assistant response to session
-                            crate::session::push_message(
+                        while let Some(msg) = pending.pop() {
+                            let should_break = process_message(
+                                &msg,
+                                &mut commands,
+                                &mut conversation,
                                 &mut current_session,
-                                "assistant",
-                                &format!("(response in {:.1}s)", elapsed.as_secs_f64()),
-                            );
+                                &stats,
+                                &mut pending,
+                                &model_info,
+                            ).await;
 
-                            // Auto-save session
-                            let _ = crate::session::save(&current_session);
+                            if should_break {
+                                // /quit or similar
+                                // (currently won't happen from plain text, but
+                                // future-proof)
+                                break;
+                            }
 
-                            print_response_summary(&stats, elapsed.as_millis());
+                            // Refresh model_info in case provider changed
+                            model_info = get_model_info(&commands);
                         }
                     }
                 }
@@ -1348,6 +1320,110 @@ pub async fn run(mut commands: Commands) -> Result<()> {
 
     print_goodbye(&stats);
     Ok(())
+}
+
+// ── Message processing with ESC abort + input queue ────────
+//
+// Processes a single user message through the agent. While the agent
+// runs, an InputWatcher detects ESC (abort) and collects queued
+// messages. Queued messages are appended to `pending` so the REPL
+// loop can process them after the current run finishes.
+//
+// Returns `true` if the REPL should break (e.g. /quit).
+
+/// Process a single user message. Runs the agent with an InputWatcher
+/// that allows ESC to abort and queues additional messages typed during
+/// processing. Any queued messages are pushed onto `pending`.
+async fn process_message(
+    input: &str,
+    commands: &mut Commands,
+    conversation: &mut Vec<ConversationEntry>,
+    current_session: &mut crate::session::Session,
+    stats: &SessionStats,
+    pending: &mut Vec<String>,
+    model_info: &ModelInfo,
+) -> bool {
+    conversation.push(ConversationEntry {
+        role: "user".into(),
+        content: input.to_string(),
+        timestamp: chrono::Local::now(),
+    });
+    stats.increment_messages();
+
+    crate::session::push_message(current_session, "user", input);
+
+    print_turn_separator();
+
+    // Start the input watcher (ESC abort + queuing).
+    let cancel = crate::cancel_flag();
+    cancel.store(false, Ordering::Relaxed);
+    let mut watcher = crate::input_watcher::InputWatcher::start(cancel.clone());
+
+    let start = Instant::now();
+    let result = commands.run(input).await;
+
+    // Stop watcher and collect queued messages.
+    let watcher_events = watcher.stop();
+
+    // Process watcher events.
+    let mut was_aborted = false;
+    for event in watcher_events {
+        match event {
+            crate::input_watcher::WatcherEvent::Abort => {
+                was_aborted = true;
+            }
+            crate::input_watcher::WatcherEvent::QueuedMessage(msg) => {
+                // Add to front of pending so they're processed in order.
+                pending.insert(0, msg);
+            }
+        }
+    }
+    // Reverse to restore original order (insert(0) reverses).
+    // Actually, the pending Vec is used as a stack (pop from end).
+    // Let's reverse so first-queued is processed first.
+    pending.reverse();
+
+    // Handle agent result.
+    if was_aborted {
+        inline::print_blank();
+        inline::print_line(&components::warning_badge("Cancelled."));
+        inline::print_blank();
+    } else if let Err(e) = result {
+        inline::print_blank();
+        inline::print_line(&components::error_badge(&e.to_string()));
+        inline::print_blank();
+    } else {
+        let elapsed = start.elapsed();
+        let estimated_input = (input.len() as f32 / 4.0) as u32;
+        stats.add_input_tokens(estimated_input);
+
+        conversation.push(ConversationEntry {
+            role: "assistant".into(),
+            content: format!("(response in {:.1}s)", elapsed.as_secs_f64()),
+            timestamp: chrono::Local::now(),
+        });
+
+        crate::session::push_message(
+            current_session,
+            "assistant",
+            &format!("(response in {:.1}s)", elapsed.as_secs_f64()),
+        );
+        let _ = crate::session::save(current_session);
+
+        print_response_summary(stats, elapsed.as_millis());
+    }
+
+    // Show queued messages indicator.
+    if !pending.is_empty() {
+        inline::print_blank();
+        inline::print_line(&components::info_badge(&format!(
+            "📬 {} queued message(s) — processing…",
+            pending.len()
+        )));
+        inline::print_blank();
+    }
+
+    false // don't break the REPL loop
 }
 
 // ── Model info ──────────────────────────────────────────────
