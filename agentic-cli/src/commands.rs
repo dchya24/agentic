@@ -1598,10 +1598,31 @@ impl Commands {
         // orchestrator's handler is also gone (after `clear_event_handlers`).
         drop(event_tx);
 
-        // Live transient spinner: a background task ticks the frame and
-        // redraws via `inline::print_transient` (no-op when not a TTY).
-        // The same task drains incoming events and renders them inline,
-        // briefly clearing the spinner so the events land in scrollback.
+        // ── Live rendering strategy ────────────────────────────
+        //
+        // We render streaming text in real-time (like pi, codex, opencode)
+        // instead of batch-rendering at the end. The flow:
+        //
+        //  1. Spinner ticks while the model is "thinking".
+        //  2. When text chunks arrive, stop spinner and print text directly.
+        //  3. When tool calls arrive (after text), render tool panels,
+        //     then restart the spinner for the next iteration.
+        //  4. For the final response (no tool calls), text is already
+        //     streamed — just print a completion marker.
+        //
+        // Thought events from the orchestrator are suppressed because
+        // we already stream the text in real-time via on_chunk.
+
+        // Shared state between the chunk callback and the event ticker.
+        // When `true`, the ticker skips spinner ticks because the chunk
+        // callback is actively printing text.
+        let streaming_text_active = std::sync::Arc::new(AtomicBool::new(false));
+        let streaming_text_active_clone = streaming_text_active.clone();
+
+        // Collect the streamed text so we can skip re-rendering it at the end.
+        let streamed_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let streamed_text_clone = streamed_text.clone();
+
         let progress = std::sync::Arc::new(std::sync::Mutex::new({
             let mut p = progress::ProgressState::new();
             p.start();
@@ -1621,11 +1642,14 @@ impl Commands {
                         if tick_stop.load(Ordering::Relaxed) {
                             break;
                         }
+                        // Don't overwrite text that the chunk callback
+                        // is actively streaming.
+                        if streaming_text_active_clone.load(Ordering::Relaxed) {
+                            continue;
+                        }
                         let line = {
                             let mut p = tick_progress.lock().unwrap();
                             p.tick();
-                            // Compact line = spinner + message + animated bar.
-                            // No elapsed seconds — motion comes from the bar.
                             spinner::compact_progress_line(&p, 18)
                         };
                         inline::print_transient(&line);
@@ -1636,6 +1660,12 @@ impl Commands {
                                 // Pause the spinner, render the event, then
                                 // let the next tick redraw the spinner.
                                 inline::clear_transient();
+                                // Suppress Thought events — text is already
+                                // streamed in real-time via on_chunk.
+                                if matches!(event, core_agentic::Event::Thought { .. }) {
+                                    continue;
+                                }
+                                streaming_text_active_clone.store(false, Ordering::Relaxed);
                                 render_event(&event);
                             }
                             None => {
@@ -1652,15 +1682,39 @@ impl Commands {
             // Drain anything still queued so we don't lose late events.
             while let Ok(event) = event_rx.try_recv() {
                 inline::clear_transient();
-                render_event(&event);
+                if !matches!(event, core_agentic::Event::Thought { .. }) {
+                    render_event(&event);
+                }
             }
         });
 
         let result = orchestrator
-            .run_stream_with_attachments(task, attachments, |_chunk| {
-                // Discard chunks; we render the final result once at the end.
+            .run_stream_with_attachments(task, attachments, |chunk| {
+                // Stream text in real-time. When the first chunk arrives,
+                // clear the spinner and start printing directly.
+                if !chunk.is_empty() {
+                    if !streaming_text_active.load(Ordering::Relaxed) {
+                        // First chunk — transition from spinner to text.
+                        inline::clear_transient();
+                        streaming_text_active.store(true, Ordering::Relaxed);
+                    }
+                    // Print the chunk directly to stdout.
+                    // We use print! instead of inline::print_line because
+                    // streaming is character-by-character, not line-by-line.
+                    use std::io::Write;
+                    let _ = std::io::stdout().write_all(chunk.as_bytes());
+                    let _ = std::io::stdout().flush();
+                    streamed_text_clone
+                        .lock()
+                        .unwrap()
+                        .push_str(&chunk);
+                }
             })
             .await;
+
+        // Streaming is done — reset the flag so the spinner can tick again
+        // if the ticker hasn't stopped yet.
+        streaming_text_active.store(false, Ordering::Relaxed);
 
         // Stop ticker. Dropping orchestrator's handler is what eventually
         // closes the receiver — do that by clearing handlers (the sender
@@ -1673,17 +1727,30 @@ impl Commands {
 
         match result {
             Ok(final_result) => {
-                inline::print_blank();
-                inline::print_line(&components::section_header(
-                    "🤖",
-                    "Response",
-                    RColor::Rgb(64, 224, 208),
-                ));
-                inline::print_blank();
+                let already_streamed = streamed_text.lock().unwrap().clone();
 
-                let parsed = md_widget::MarkdownContent::parse(&final_result);
-                inline::print_lines(&parsed.lines);
-                inline::print_blank();
+                if already_streamed.is_empty() {
+                    // No text was streamed (e.g. model returned empty
+                    // before tool calls, or only tool calls). Render the
+                    // final result in batch mode.
+                    inline::print_blank();
+                    inline::print_line(&components::section_header(
+                        "🤖",
+                        "Response",
+                        RColor::Rgb(64, 224, 208),
+                    ));
+                    inline::print_blank();
+                    let parsed = md_widget::MarkdownContent::parse(&final_result);
+                    inline::print_lines(&parsed.lines);
+                    inline::print_blank();
+                } else {
+                    // Text was already streamed in real-time.
+                    // Ensure the final newline is printed.
+                    if !already_streamed.ends_with('\n') {
+                        println!();
+                    }
+                    inline::print_blank();
+                }
             }
             Err(e) => {
                 inline::print_blank();
