@@ -7,7 +7,7 @@ mod tests {
     fn test_cli_run_command_parsing() {
         let cli = Cli::try_parse_from(&["agentic", "run", "my task"]).unwrap();
         match cli.command {
-            Some(Command::Run { task }) => assert_eq!(task, "my task"),
+            Some(Command::Run { task, .. }) => assert_eq!(task, "my task"),
             _ => panic!("Expected Run command"),
         }
     }

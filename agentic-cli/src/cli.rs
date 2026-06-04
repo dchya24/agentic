@@ -150,6 +150,24 @@ pub enum Command {
     #[command(subcommand)]
     Skill(SkillAction),
 
+    /// Check for updates and install if available
+    #[command(long_about = "Check GitHub for a newer release and install it.\n\
+        \n\
+        Uses the GitHub Releases API to find the latest version.\n\
+        When a newer version is found, downloads the binary and\n\
+        replaces the running executable in-place.\n\
+        \n\
+        Use --check to only check without installing.\n\
+        \n\
+        Examples:\n  \
+          agentic update              # Check and install\n  \
+          agentic update --check      # Check only")]
+    Update {
+        /// Only check for updates, don't install
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Show version information
     #[command(alias = "v")]
     Version,

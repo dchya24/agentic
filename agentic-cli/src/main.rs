@@ -9,6 +9,7 @@ mod file_ref;
 mod interactive;
 mod session;
 mod tui;
+mod update;
 mod widgets;
 
 use anyhow::Result;
@@ -211,6 +212,13 @@ async fn main() -> Result<()> {
         }
         Some(Command::Skill(action)) => {
             commands.skill_command(action)?;
+        }
+        Some(Command::Update { check }) => {
+            if *check {
+                update::check_and_print()?;
+            } else {
+                update::run_update()?;
+            }
         }
         Some(Command::Version) => {
             println!("agentic {}", env!("CARGO_PKG_VERSION"));
