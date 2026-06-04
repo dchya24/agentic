@@ -8,4 +8,4 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "MIT"
-authors = ["Termul Team"]
+authors = ["devchya"]

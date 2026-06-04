@@ -1359,8 +1359,18 @@ async fn process_message(
     cancel.store(false, Ordering::Relaxed);
     let mut watcher = crate::input_watcher::InputWatcher::start(cancel.clone());
 
+    // Inject watcher state so the spinner renders the input buffer.
+    let watcher_state = watcher.state().clone();
+    *commands = std::mem::take(commands)
+        .with_watcher_state(Some(watcher_state));
+
     let start = Instant::now();
     let result = commands.run(input).await;
+
+    // Remove watcher state so subsequent non-interactive runs don't
+    // try to render an input line.
+    *commands = std::mem::take(commands)
+        .with_watcher_state(None);
 
     // Stop watcher and collect queued messages.
     let watcher_events = watcher.stop();

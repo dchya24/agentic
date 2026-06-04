@@ -361,6 +361,16 @@ pub struct Commands {
     /// this instead of constructing a real provider from config.
     /// Only settable via `with_mock_provider` (gated to `#[cfg(test)]`).
     mock_provider: Option<std::sync::Arc<dyn core_agentic::LLMProvider>>,
+    /// Shared input watcher state. When set, the spinner ticker renders
+    /// a two-line transient area (spinner + input buffer).
+    watcher_state:
+        Option<std::sync::Arc<std::sync::Mutex<crate::input_watcher::WatcherState>>>,
+}
+
+impl Default for Commands {
+    fn default() -> Self {
+        Self::new(Config::fallback())
+    }
 }
 
 impl Commands {
@@ -378,6 +388,7 @@ impl Commands {
             interactive_mode: false,
             skill_index: None,
             mock_provider: None,
+            watcher_state: None,
         }
     }
 
@@ -410,6 +421,16 @@ impl Commands {
 
     pub fn with_debug(mut self, enabled: bool) -> Self {
         self.debug_enabled = enabled;
+        self
+    }
+
+    /// Attach the input watcher's shared state so the spinner ticker
+    /// can render the live input buffer below the progress line.
+    pub fn with_watcher_state(
+        mut self,
+        state: Option<std::sync::Arc<std::sync::Mutex<crate::input_watcher::WatcherState>>>,
+    ) -> Self {
+        self.watcher_state = state;
         self
     }
 
@@ -1633,6 +1654,7 @@ impl Commands {
 
         let tick_progress = progress.clone();
         let tick_stop = stop_flag.clone();
+        let tick_watcher = self.watcher_state.clone();
         let ticker = tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_millis(80));
@@ -1652,7 +1674,13 @@ impl Commands {
                             p.tick();
                             spinner::compact_progress_line(&p, 18)
                         };
-                        inline::print_transient(&line);
+
+                        // Render spinner + optional input line.
+                        if let Some(ref ws) = tick_watcher {
+                            render_two_line_transient(&line, ws);
+                        } else {
+                            inline::print_transient(&line);
+                        }
                     }
                     maybe_event = event_rx.recv() => {
                         match maybe_event {
@@ -2840,6 +2868,53 @@ Instructions the agent follows when this skill is loaded.
 //
 // Free function so it can be called from inside the spawned tokio task
 // without moving a closure (and therefore without capturing &self).
+
+/// Render a two-line transient area:
+///   Line 1: spinner progress
+///   Line 2: input buffer from watcher (if any)
+///
+/// Uses ANSI escape codes to manage two lines without scrolling.
+fn render_two_line_transient(
+    spinner_line: &ratatui::text::Line<'_>,
+    watcher_state: &std::sync::Mutex<crate::input_watcher::WatcherState>,
+) {
+    use std::io::Write;
+    use crossterm::ExecutableCommand;
+
+    let mut stdout = std::io::stdout();
+
+    // Render the spinner line.
+    inline::print_transient(spinner_line);
+
+    // Now render the input line below it.
+    let s = watcher_state.lock().unwrap();
+    let has_hint = !s.hint.is_empty();
+    let has_buffer = !s.buffer.is_empty();
+
+    if has_hint || has_buffer {
+        // Move to next line, clear it, print input.
+        let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
+        let _ = stdout.execute(crossterm::terminal::Clear(
+            crossterm::terminal::ClearType::CurrentLine,
+        ));
+        print!("\n");
+        let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
+
+        if has_hint {
+            // Show hint (e.g. "✓ Queued: ...")
+            print!("\x1b[32m  {}\x1b[0m", s.hint);
+        } else {
+            // Show live input buffer.
+            print!("\x1b[33m  > \x1b[0m{}", s.buffer);
+        }
+        let _ = stdout.flush();
+
+        // Move cursor back up to the spinner line so next tick
+        // overwrites correctly.
+        print!("\x1b[1A");
+        let _ = stdout.flush();
+    }
+}
 
 fn render_event(event: &core_agentic::Event) {
     use crate::widgets::{components, diff as diff_widget, inline, tool_call};

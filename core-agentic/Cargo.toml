@@ -3,7 +3,7 @@ name = "core-agentic"
 version = "0.1.0"
 edition = "2021"
 description = "Rust library for AI agent orchestration"
-authors = ["Termul Team"]
+authors = ["devchya"]
 license = "MIT"
 
 [dependencies]
