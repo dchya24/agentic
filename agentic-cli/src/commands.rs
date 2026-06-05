@@ -1680,17 +1680,24 @@ impl Commands {
                             spinner::compact_progress_line(&p, 18)
                         };
 
-                        // Render spinner by overwriting the permanent
-                        // thinking indicator line (move up 1, overwrite,
-                        // then add newline to return cursor below it).
-                        if let Some(ref ws) = tick_watcher {
-                            render_two_line_transient(&line, ws);
-                        } else {
-                            use crossterm::ExecutableCommand;
-                            use crossterm::cursor::MoveUp;
+                        // Update the permanent thinking indicator line
+                        // by moving up 1 and overwriting it with the new
+                        // spinner frame. This keeps the indicator animated.
+                        use crossterm::ExecutableCommand;
+                        use crossterm::cursor::MoveUp;
+                        {
                             let mut s = std::io::stdout();
                             let _ = s.execute(MoveUp(1));
                             inline::print_line(&line);
+                        }
+
+                        // When the watcher is active (interactive mode),
+                        // also render the input prompt so the user can
+                        // see their typed input below the spinner.
+                        if let Some(ref ws) = tick_watcher {
+                            // spinner on current line (replaces the blank
+                            // line after print_line above) + prompt below
+                            render_two_line_transient(&line, ws);
                         }
                     }
                     maybe_event = event_rx.recv() => {
@@ -1740,13 +1747,18 @@ impl Commands {
                 if !chunk.is_empty() {
                     if !streaming_text_active.load(Ordering::Relaxed) {
                         // First chunk — clear the permanent thinking
-                        // indicator line and start streaming text.
+                        // indicator line and any transient content below
+                        // it (redundant spinner + input prompt), then
+                        // start streaming the response text.
                         use crossterm::ExecutableCommand;
                         use crossterm::cursor::MoveUp;
                         use crossterm::terminal::{Clear, ClearType};
                         let mut s = std::io::stdout();
                         let _ = s.execute(MoveUp(1));
                         let _ = s.execute(Clear(ClearType::CurrentLine));
+                        // Also clear any transient lines below
+                        // (render_two_line_transient output).
+                        let _ = s.execute(Clear(ClearType::FromCursorDown));
                         streaming_text_active.store(true, Ordering::Relaxed);
                     }
                     // Print the chunk directly to stdout.
