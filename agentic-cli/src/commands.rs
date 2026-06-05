@@ -1680,11 +1680,17 @@ impl Commands {
                             spinner::compact_progress_line(&p, 18)
                         };
 
-                        // Render spinner + optional input line.
+                        // Render spinner by overwriting the permanent
+                        // thinking indicator line (move up 1, overwrite,
+                        // then add newline to return cursor below it).
                         if let Some(ref ws) = tick_watcher {
                             render_two_line_transient(&line, ws);
                         } else {
-                            inline::print_transient(&line);
+                            use crossterm::ExecutableCommand;
+                            use crossterm::cursor::MoveUp;
+                            let mut s = std::io::stdout();
+                            let _ = s.execute(MoveUp(1));
+                            inline::print_line(&line);
                         }
                     }
                     maybe_event = event_rx.recv() => {
@@ -1717,18 +1723,14 @@ impl Commands {
             }
         });
 
-        // Print initial spinner immediately so the user sees activity
-        // right away, even before the first ticker tick (80ms). The
-        // ticker will update this same transient line on each tick,
-        // keeping the spinner animated.
+        // Print initial thinking indicator as a permanent line so the
+        // user always sees activity immediately. The ticker overwrites
+        // this same line on each tick by moving up 1 line, keeping the
+        // spinner character animated.
         {
             let p = progress.lock().unwrap();
             let initial_line = spinner::compact_progress_line(&p, 18);
-            if let Some(ref ws) = self.watcher_state {
-                render_two_line_transient(&initial_line, ws);
-            } else {
-                inline::print_transient(&initial_line);
-            }
+            inline::print_line(&initial_line);
         }
 
         let result = orchestrator
@@ -1737,8 +1739,14 @@ impl Commands {
                 // clear the spinner and start printing directly.
                 if !chunk.is_empty() {
                     if !streaming_text_active.load(Ordering::Relaxed) {
-                        // First chunk — transition from spinner to text.
-                        inline::clear_transient();
+                        // First chunk — clear the permanent thinking
+                        // indicator line and start streaming text.
+                        use crossterm::ExecutableCommand;
+                        use crossterm::cursor::MoveUp;
+                        use crossterm::terminal::{Clear, ClearType};
+                        let mut s = std::io::stdout();
+                        let _ = s.execute(MoveUp(1));
+                        let _ = s.execute(Clear(ClearType::CurrentLine));
                         streaming_text_active.store(true, Ordering::Relaxed);
                     }
                     // Print the chunk directly to stdout.
