@@ -1698,12 +1698,7 @@ fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
 
 /// Role badge separator drawn before a user turn.
 fn print_turn_separator() {
-    inline::print_blank();
-    inline::print_line(&components::section_header(
-        "👤",
-        "You",
-        Color::Rgb(52, 152, 219),
-    ));
+    // No-op: turn markers hidden.
 }
 
 fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {

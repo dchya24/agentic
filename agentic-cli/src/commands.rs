@@ -1717,14 +1717,18 @@ impl Commands {
             }
         });
 
-        // Print initial thinking indicator as a permanent line so the
-        // user always sees activity, even when the model responds before
-        // the first ticker tick (<80ms). This line is replaced by the
-        // streamed response text when the first chunk arrives.
+        // Print initial spinner immediately so the user sees activity
+        // right away, even before the first ticker tick (80ms). The
+        // ticker will update this same transient line on each tick,
+        // keeping the spinner animated.
         {
             let p = progress.lock().unwrap();
-            let initial_line = spinner::spinner_line(&p);
-            inline::print_line(&initial_line);
+            let initial_line = spinner::compact_progress_line(&p, 18);
+            if let Some(ref ws) = self.watcher_state {
+                render_two_line_transient(&initial_line, ws);
+            } else {
+                inline::print_transient(&initial_line);
+            }
         }
 
         let result = orchestrator
@@ -1733,16 +1737,8 @@ impl Commands {
                 // clear the spinner and start printing directly.
                 if !chunk.is_empty() {
                     if !streaming_text_active.load(Ordering::Relaxed) {
-                        // First chunk — transition from thinking indicator to
-                        // streamed text. Move up one line (the permanent
-                        // "⏳ Thinking..." line) and clear it, then start
-                        // printing the response text on that line.
-                        use crossterm::ExecutableCommand;
-                        use crossterm::cursor::MoveUp;
-                        use crossterm::terminal::{Clear, ClearType};
-                        let mut s = std::io::stdout();
-                        let _ = s.execute(MoveUp(1));
-                        let _ = s.execute(Clear(ClearType::CurrentLine));
+                        // First chunk — transition from spinner to text.
+                        inline::clear_transient();
                         streaming_text_active.store(true, Ordering::Relaxed);
                     }
                     // Print the chunk directly to stdout.
@@ -1776,26 +1772,9 @@ impl Commands {
         let _ = ticker.await;
         progress.lock().unwrap().stop();
 
-        // After the ticker stops, the cursor is on whatever line the
-        // ticker last printed (transient spinner below the streamed text,
-        // or the empty line after the last chunk). Move to a clean
-        // position below the streamed content.
-        {
-            use crossterm::ExecutableCommand;
-            use crossterm::cursor::MoveToColumn;
-            use crossterm::terminal::{Clear, ClearType};
-            use std::io::Write;
-            let mut s = std::io::stdout();
-            // Clear the ticker's last transient line if any.
-            let _ = s.execute(MoveToColumn(0));
-            let _ = s.execute(Clear(ClearType::CurrentLine));
-            // If the streamed text ended without trailing \n, the cursor
-            // was mid-line after the last chunk. The MoveToColumn + Clear
-            // above would have erased that line. Print a \n so we're on a
-            // fresh line for the re-render logic below.
-            let _ = writeln!(s);
-            let _ = s.flush();
-        }
+        // Clear any residual transient from the ticker's last tick so the
+        // cursor is positioned cleanly for the re-render logic below.
+        inline::clear_transient();
 
         match result {
             Ok(final_result) => {
@@ -1820,28 +1799,24 @@ impl Commands {
                     // Text was already streamed in real-time as plaintext.
                     // Re-render with full markdown styling by replacing
                     // the streamed lines in-place.
-                    //
-                    // The cursor is now on a fresh line BELOW the streamed
-                    // text (see the clean-up block after ticker.await).
-                    // We need to move up past the streamed text + 1 blank
-                    // line (from the \n we just printed) + the original
-                    // "⏳ Thinking..." line.
-                    let total_text_lines = lines_printed.max(1);
-                    // +1 for the Thinking... line, +1 for the fresh \n
-                    let move_up = total_text_lines + 2;
+                    let total_lines = if already_streamed.ends_with('\n') {
+                        lines_printed
+                    } else {
+                        lines_printed + 1
+                    };
 
-                    if move_up <= 500 && inline::is_stdout_tty() {
+                    if total_lines > 0 && total_lines <= 500 && inline::is_stdout_tty() {
                         let full_text = if final_result.len() > already_streamed.len() {
                             final_result.clone()
                         } else {
                             already_streamed.clone()
                         };
                         let parsed = md_widget::MarkdownContent::parse(&full_text);
-                        inline::replace_lines(move_up, &parsed.lines);
+                        inline::replace_lines(total_lines, &parsed.lines);
                     } else {
-                        // Too many lines or non-TTY — just ensure the text
-                        // is printed (it was already streamed as plaintext).
-                        println!();
+                        if !already_streamed.ends_with('\n') {
+                            println!();
+                        }
                     }
                     inline::print_blank();
                 }
