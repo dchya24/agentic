@@ -770,46 +770,12 @@ impl Prompt for AgenticPrompt {
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
-        // Right prompt shows simple model info on the input line.
-        // Full status bar is printed manually above the prompt.
-        let branch_part = match &self.git_branch {
-            Some(b) => format!(" \u{1f4cc}{}", b),
-            None => String::new(),
-        };
-        let info = format!(
-            "{} {}{}",
-            self.provider, self.model, branch_part
-        );
-
-        let w = term_width();
-        let left_len = self.dir_name.len().min(w.saturating_sub(40).max(10)) + 3;
-        let max_right = w.saturating_sub(left_len).saturating_sub(2).max(0);
-
-        let display = if info.len() > max_right {
-            let no_branch = format!("{} {}", self.provider, self.model);
-            if no_branch.len() <= max_right {
-                no_branch
-            } else if self.model.len() + 3 <= max_right {
-                format!("...{}", &self.model[self.model.len() - (max_right - 3)..])
-            } else {
-                format!("{:.w$}", info, w = max_right)
-            }
-        } else {
-            info
-        };
-
-        if display.is_empty() {
-            return Cow::Borrowed("");
-        }
-
-        let dim = AnsiColor::DarkGray.prefix().to_string();
-        let reset = Style::new().prefix().to_string();
-
-        let right = format!(
-            "{}{}{}",
-            dim, display, reset
-        );
-        Cow::Owned(right)
+        // Right prompt is intentionally empty — model/provider/branch info
+        // is shown in the permanent status bar printed above each prompt.
+        let _ = self.provider;
+        let _ = self.model;
+        let _ = self.git_branch;
+        Cow::Borrowed("")
     }
 
     fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'_, str> {
@@ -1358,7 +1324,7 @@ async fn process_message(
     // exactly like the normal REPL prompt.
     let prompt = AgenticPrompt::new(model_info);
     let prompt_left = prompt.render_prompt_left().into_owned();
-    let prompt_right = prompt.render_prompt_right().into_owned();
+    let prompt_right = "".to_string();  // empty — status bar handles model info
 
     let mut watcher = crate::input_watcher::InputWatcher::start(
         cancel.clone(),
