@@ -15,7 +15,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use std::io::{self, Write};
 
-use super::capabilities::{is_stdout_tty, should_use_color};
+use super::capabilities::should_use_color;
 
 /// Print a single `Line` to stdout. Styling is dropped automatically when
 /// the terminal does not support color (NO_COLOR, TERM=dumb, piped output,
@@ -104,12 +104,59 @@ pub fn clear_transient() {
     let _ = stdout.flush();
 }
 
+/// Replace the last `count` terminal lines with new styled content.
+///
+/// Moves cursor up `count` lines, clears from cursor down, then prints
+/// each new line. Used for re-rendering streamed plaintext as styled
+/// markdown once the LLM finishes.
+///
+/// **Panics** if `count` is 0. No-op when stdout is not a TTY.
+pub fn replace_lines(count: u32, new_lines: &[Line<'_>]) {
+    if !is_stdout_tty() || count == 0 {
+        // When piped, just print the new lines normally.
+        for line in new_lines {
+            print_line(line);
+        }
+        return;
+    }
+    let mut stdout = io::stdout();
+    let styled = should_use_color();
+
+    // Move cursor up N lines
+    let _ = stdout.execute(crossterm::cursor::MoveUp(count.min(u16::MAX as u32) as u16));
+    // Clear from cursor to end of screen
+    let _ = stdout.execute(Clear(ClearType::FromCursorDown));
+
+    // Print each new line
+    for line in new_lines {
+        if styled {
+            for span in &line.spans {
+                apply_style(&mut stdout, &span.style);
+                let _ = stdout.execute(Print(&span.content));
+                let _ = stdout.execute(ResetColor);
+                let _ = stdout.execute(SetAttribute(Attribute::Reset));
+            }
+        } else {
+            for span in &line.spans {
+                let _ = stdout.execute(Print(&span.content));
+            }
+        }
+        let _ = writeln!(stdout);
+    }
+    let _ = stdout.flush();
+}
+
 /// Get terminal width, defaulting to 80.
 pub fn terminal_width() -> usize {
     crossterm::terminal::size()
         .map(|(w, _)| w as usize)
         .unwrap_or(80)
         .max(40)
+}
+
+/// Re-export `is_stdout_tty` from capabilities for use by other modules.
+pub fn is_stdout_tty() -> bool {
+    super::capabilities::is_stdout_tty()
 }
 
 /// Apply a ratatui `Style` to stdout using crossterm commands.

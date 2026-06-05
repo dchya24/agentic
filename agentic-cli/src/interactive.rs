@@ -745,33 +745,6 @@ impl AgenticPrompt {
             provider: model_info.provider.clone(),
         }
     }
-
-    /// Build the prompt right-side info string, truncating to fit
-    /// within `max_width` visible characters.
-    fn build_right_info(&self, max_width: usize) -> String {
-        let branch_part = match &self.git_branch {
-            Some(b) => format!(" \u{1f4cc}{}", b),
-            None => String::new(),
-        };
-        let info = format!(
-            "{} {}{}",
-            self.provider, self.model, branch_part
-        );
-
-        if info.len() > max_width {
-            // Progressive truncation: drop branch, then truncate model
-            let no_branch = format!("{} {}", self.provider, self.model);
-            if no_branch.len() <= max_width {
-                no_branch
-            } else if self.model.len() + 3 <= max_width {
-                format!("...{}", &self.model[self.model.len() - (max_width - 3)..])
-            } else {
-                format!("{:.w$}", info, w = max_width)
-            }
-        } else {
-            info
-        }
-    }
 }
 
 impl Prompt for AgenticPrompt {
@@ -781,9 +754,7 @@ impl Prompt for AgenticPrompt {
         let cyan = AnsiColor::Cyan.prefix().to_string();
 
         // Single-line prompt: dirname>
-        // Responsive: uses current terminal width to decide how much to show.
         let w = term_width();
-        // Reserve ~40 chars for the right-side info + input area
         let max_dir = w.saturating_sub(40).max(10).min(self.dir_name.len());
         let dir_display = if self.dir_name.len() > max_dir {
             format!("...{}", &self.dir_name[self.dir_name.len() - max_dir + 3..])
@@ -799,13 +770,35 @@ impl Prompt for AgenticPrompt {
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
+        // Right prompt shows simple model info on the input line.
+        // Full status bar is printed manually above the prompt.
+        let branch_part = match &self.git_branch {
+            Some(b) => format!(" \u{1f4cc}{}", b),
+            None => String::new(),
+        };
+        let info = format!(
+            "{} {}{}",
+            self.provider, self.model, branch_part
+        );
+
         let w = term_width();
-        // Reserve space for left prompt + some input area
-        let left_len = self.dir_name.len().min(w.saturating_sub(40).max(10)) + 3; // "dir> "
+        let left_len = self.dir_name.len().min(w.saturating_sub(40).max(10)) + 3;
         let max_right = w.saturating_sub(left_len).saturating_sub(2).max(0);
 
-        let info = self.build_right_info(max_right);
-        if info.is_empty() {
+        let display = if info.len() > max_right {
+            let no_branch = format!("{} {}", self.provider, self.model);
+            if no_branch.len() <= max_right {
+                no_branch
+            } else if self.model.len() + 3 <= max_right {
+                format!("...{}", &self.model[self.model.len() - (max_right - 3)..])
+            } else {
+                format!("{:.w$}", info, w = max_right)
+            }
+        } else {
+            info
+        };
+
+        if display.is_empty() {
             return Cow::Borrowed("");
         }
 
@@ -814,13 +807,12 @@ impl Prompt for AgenticPrompt {
 
         let right = format!(
             "{}{}{}",
-            dim, info, reset
+            dim, display, reset
         );
         Cow::Owned(right)
     }
 
     fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'_, str> {
-        // Left empty so that left + right layout is used instead.
         Cow::Borrowed("")
     }
 
@@ -962,6 +954,10 @@ pub async fn run(mut commands: Commands) -> Result<()> {
     let mut conversation: Vec<ConversationEntry> = Vec::new();
 
     loop {
+        // Print status bar above the prompt. It becomes part of
+        // scrollback (intentional — provides context for each prompt).
+        print_prompt_status_bar(&model_info, &stats);
+
         let sig = line_editor.read_line(&prompt);
 
         match sig {
@@ -1357,7 +1353,18 @@ async fn process_message(
     // Start the input watcher (ESC abort + queuing).
     let cancel = crate::cancel_flag();
     cancel.store(false, Ordering::Relaxed);
-    let mut watcher = crate::input_watcher::InputWatcher::start(cancel.clone());
+
+    // Pre-render prompt strings for the input line so it looks
+    // exactly like the normal REPL prompt.
+    let prompt = AgenticPrompt::new(model_info);
+    let prompt_left = prompt.render_prompt_left().into_owned();
+    let prompt_right = prompt.render_prompt_right().into_owned();
+
+    let mut watcher = crate::input_watcher::InputWatcher::start(
+        cancel.clone(),
+        prompt_left,
+        prompt_right,
+    );
 
     // Inject watcher state so the spinner renders the input buffer.
     let watcher_state = watcher.state().clone();
@@ -1685,6 +1692,32 @@ fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
         info_lines.push(Line::from(spans));
     }
 
+    // Skills row — list all indexed skills so the user knows what
+    // capabilities are available at a glance.
+    let skills = core_agentic::list_skills();
+    if !skills.is_empty() {
+        const MAX_SKILL_NAMES: usize = 5;
+        let mut skill_names: Vec<String> = skills
+            .iter()
+            .take(MAX_SKILL_NAMES)
+            .map(|(name, _)| name.clone())
+            .collect();
+        let remaining = skills.len().saturating_sub(MAX_SKILL_NAMES);
+        if remaining > 0 {
+            skill_names.push(format!("+{} more", remaining));
+        }
+        let skill_str = skill_names.join(" · ");
+        info_lines.push(Line::from(vec![
+            RSpan::styled("📦 ", RStyle::default()),
+            RSpan::styled("skills", RStyle::default().add_modifier(Modifier::DIM)),
+            RSpan::raw(" "),
+            RSpan::styled(
+                skill_str,
+                RStyle::default().fg(Color::Rgb(241, 196, 15)),
+            ),
+        ]));
+    }
+
     let panel_lines = components::panel(
         "Welcome",
         &info_lines,
@@ -1697,11 +1730,14 @@ fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
     print_status_bar(model_info, stats);
 }
 
-/// Light separator drawn between a user turn and the assistant response.
+/// Role badge separator drawn before a user turn.
 fn print_turn_separator() {
     inline::print_blank();
-    inline::print_line(&components::dotted_separator(Color::Rgb(80, 80, 100)));
-    inline::print_blank();
+    inline::print_line(&components::section_header(
+        "👤",
+        "You",
+        Color::Rgb(52, 152, 219),
+    ));
 }
 
 fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
@@ -1805,12 +1841,99 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
     inline::print_blank();
 }
 
+/// Print a compact status bar above the reedline prompt.
+/// Intentionally permanent (part of scrollback) so each prompt has context.
+fn print_prompt_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
+    let in_tok = stats.format_tokens(stats.total_input_tokens());
+    let out_tok = stats.format_tokens(stats.total_output_tokens());
+    let cache_ratio = stats.cache_hit_ratio();
+
+    let sep = RSpan::styled(
+        " \u{2502} ",
+        RStyle::default().fg(Color::Rgb(60, 60, 80)),
+    );
+
+    // Directory + git branch
+    let cwd = std::env::current_dir()
+        .unwrap_or_default()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?")
+        .to_string();
+    let git_branch = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if b.is_empty() || b == "HEAD" { None } else { Some(b) }
+            } else { None }
+        });
+
+    let mut spans: Vec<RSpan<'static>> = vec![
+        RSpan::raw("  "),
+        RSpan::styled(
+            format!("\u{1f4c2} {}", cwd),
+            RStyle::default().fg(Color::Rgb(180, 180, 200)),
+        ),
+    ];
+
+    if let Some(ref branch) = git_branch {
+        spans.push(RSpan::styled(
+            format!(" \u{b7} {}", branch),
+            RStyle::default().fg(Color::Rgb(135, 206, 250)),
+        ));
+    }
+
+    spans.push(sep.clone());
+    spans.push(RSpan::styled(
+        format!("\u{26a1} {}/{}", model_info.provider, model_info.model),
+        RStyle::default().fg(Color::Rgb(255, 215, 0)),
+    ));
+
+    if model_info.vision_capable {
+        spans.push(RSpan::styled(
+            " \u{1f441}",
+            RStyle::default().fg(Color::Rgb(135, 206, 250)),
+        ));
+    }
+
+    spans.push(sep.clone());
+    spans.push(RSpan::styled(
+        format!("\u{1f4ac}{}", stats.messages_sent()),
+        RStyle::default().fg(Color::Rgb(135, 206, 250)),
+    ));
+    spans.push(RSpan::raw(" "));
+    spans.push(RSpan::styled(
+        format!("\u{1f4ca}{}\u{2191}/{}\u{2193}", in_tok, out_tok),
+        RStyle::default().fg(Color::Rgb(186, 85, 211)),
+    ));
+
+    if cache_ratio > 0.0 {
+        let pct = (cache_ratio * 100.0) as u8;
+        spans.push(RSpan::raw(" "));
+        spans.push(RSpan::styled(
+            format!("\u{1f4e6} {}% cached", pct),
+            RStyle::default().fg(Color::Rgb(46, 204, 113)),
+        ));
+    }
+
+    spans.push(sep);
+    spans.push(RSpan::styled(
+        format!("\u{23f1} {}", stats.elapsed_str()),
+        RStyle::default().fg(Color::Rgb(46, 204, 113)),
+    ));
+
+    inline::print_line(&Line::from(spans));
+}
+
 fn print_response_summary(stats: &SessionStats, ms: u128) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
     let sep = RSpan::styled(
-        "  │  ",
+        " │ ",
         RStyle::default().fg(Color::Rgb(60, 60, 80)),
     );
 
@@ -1819,7 +1942,7 @@ fn print_response_summary(stats: &SessionStats, ms: u128) {
     let has_cache = cache_read > 0 || cache_created > 0;
 
     inline::print_blank();
-    inline::print_line(&components::dashed_separator(Color::Rgb(60, 60, 80)));
+    inline::print_line(&components::rounded_dashed_separator(Color::Rgb(60, 60, 80)));
     inline::print_line(&Line::from(vec![
         RSpan::raw("  "),
         RSpan::styled(
@@ -1836,30 +1959,20 @@ fn print_response_summary(stats: &SessionStats, ms: u128) {
         ),
         sep.clone(),
         RSpan::styled(
-            format!("💬 {} msgs", stats.messages_sent()),
-            RStyle::default().fg(Color::Rgb(180, 180, 200)),
-        ),
-        sep.clone(),
-        RSpan::styled(
-            format!("📊 {} ↑ / {} ↓", in_tok, out_tok),
-            RStyle::default().fg(Color::Rgb(180, 180, 200)),
+            format!("📊 {}↑/{}↓", in_tok, out_tok),
+            RStyle::default().fg(Color::Rgb(186, 85, 211)),
         ),
         if has_cache {
             let pct = (stats.cache_hit_ratio() * 100.0) as u8;
             RSpan::styled(
-                format!("  📦 {}% cached", pct),
+                format!(" 📦 {}% cached", pct),
                 RStyle::default().fg(Color::Rgb(46, 204, 113)),
             )
         } else {
             RSpan::raw("")
         },
-        sep,
-        RSpan::styled(
-            format!("session {}", stats.elapsed_str()),
-            RStyle::default().fg(Color::Rgb(180, 180, 200)),
-        ),
     ]));
-    inline::print_line(&components::dashed_separator(Color::Rgb(60, 60, 80)));
+    inline::print_line(&components::rounded_dashed_separator(Color::Rgb(60, 60, 80)));
     inline::print_blank();
 }
 

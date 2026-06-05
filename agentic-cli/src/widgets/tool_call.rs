@@ -22,6 +22,117 @@ use serde_json::Value;
 
 use super::components::{notification, panel, BoxStyle};
 
+// ── Compact inline rendering (interactive mode) ────────────
+//
+// Single-line tool call + result rendering for scrollback efficiency.
+// Used by inline/interactive mode. The full panel rendering (TUI mode)
+// remains in render_call() / render_result() below.
+
+/// Maximum total width for the compact tool call line.
+const COMPACT_MAX_WIDTH: usize = 80;
+
+/// Render a compact single-line tool call.
+///
+/// Format: ` ⚙ tool_name(path="src/main.rs", limit=100)`
+/// Truncates args if the total line exceeds COMPACT_MAX_WIDTH.
+pub fn render_call_compact(tool_name: &str, arguments: &Value) -> Line<'static> {
+    let icon_style = Style::default()
+        .fg(Color::Rgb(241, 196, 15))
+        .add_modifier(Modifier::BOLD);
+    let name_style = Style::default()
+        .fg(Color::Rgb(52, 152, 219))
+        .add_modifier(Modifier::BOLD);
+    let dim_style = Style::default()
+        .fg(Color::Rgb(180, 180, 200))
+        .add_modifier(Modifier::DIM);
+
+    let args_str = compact_args(arguments);
+
+    // Truncate args if total line would be too wide
+    let truncated_args = if tool_name.len() + args_str.len() + 6 > COMPACT_MAX_WIDTH {
+        let available = COMPACT_MAX_WIDTH
+            .saturating_sub(tool_name.len() + 6) // " ⚙ name(" ... ")"
+            .saturating_sub(1); // "…" char
+        if available > 0 && available < args_str.len() {
+            // Find a safe truncation point (don't split multi-byte)
+            let end = args_str
+                .char_indices()
+                .take_while(|(i, _)| *i < available)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0);
+            format!("{}…", &args_str[..end])
+        } else {
+            args_str
+        }
+    } else {
+        args_str
+    };
+
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled("\u{2699}", icon_style),
+        Span::raw(" "),
+        Span::styled(tool_name.to_string(), name_style),
+        Span::styled("(", dim_style.clone()),
+        Span::styled(truncated_args, dim_style.clone()),
+        Span::styled(")", dim_style),
+    ])
+}
+
+/// Render a compact result line.
+///
+/// Format: `   → ✓ 142 lines` or `   → ✗ error: permission denied`
+pub fn render_result_compact(output: &Value, is_error: bool) -> Line<'static> {
+    if is_error {
+        let body = match output {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        let msg = if body.len() > 60 {
+            format!("{}\u{2026}", &body[..57])
+        } else {
+            body
+        };
+        return Line::from(vec![
+            Span::raw("   "),
+            Span::styled("\u{2192}", Style::default().fg(Color::Rgb(180, 180, 200)).add_modifier(Modifier::DIM)),
+            Span::raw(" "),
+            Span::styled("\u{2717}", Style::default().fg(Color::Rgb(231, 76, 60)).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled(msg, Style::default().fg(Color::Rgb(231, 76, 60))),
+        ]);
+    }
+
+    let summary = result_summary(output);
+    Line::from(vec![
+        Span::raw("   "),
+        Span::styled("\u{2192}", Style::default().fg(Color::Rgb(180, 180, 200)).add_modifier(Modifier::DIM)),
+        Span::raw(" "),
+        Span::styled("\u{2713}", Style::default().fg(Color::Rgb(46, 204, 113)).add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        Span::styled(summary, Style::default().fg(Color::Rgb(46, 204, 113))),
+    ])
+}
+
+/// Format arguments as a compact inline string.
+/// e.g. `path="src/main.rs", limit=100`
+fn compact_args(arguments: &Value) -> String {
+    match arguments {
+        Value::Object(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, value_inline(v)))
+                .collect();
+            parts.join(", ")
+        }
+        Value::Null => String::new(),
+        other => value_inline(other),
+    }
+}
+
+// ── Full panel rendering (TUI mode) ────────────────────────
+
 /// Render a tool call: a bordered panel with the tool name as title and
 /// the arguments listed as `key = value` rows.
 pub fn render_call(tool_name: &str, arguments: &Value) -> Vec<Line<'static>> {
@@ -245,6 +356,51 @@ mod tests {
             false,
         );
         assert!(lines.iter().map(flatten).any(|l| l.contains("permission denied")));
+    }
+
+    #[test]
+    fn render_call_compact_single_line() {
+        let line = render_call_compact("read_file", &json!({"path": "src/main.rs", "limit": 100}));
+        let text = flatten(&line);
+        assert!(text.contains("\u{2699}"), "should contain gear icon");
+        assert!(text.contains("read_file"));
+        assert!(text.contains("path"));
+        assert!(text.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn render_call_compact_no_args() {
+        let line = render_call_compact("status", &Value::Null);
+        let text = flatten(&line);
+        assert!(text.contains("status"));
+        assert!(text.contains("("));
+        assert!(text.contains(")"));
+    }
+
+    #[test]
+    fn render_call_compact_truncates_long_args() {
+        let long_path = "x".repeat(200);
+        let line = render_call_compact("read_file", &json!({"path": long_path}));
+        let text = flatten(&line);
+        // Should be truncated — not the full 200-char string
+        assert!(text.len() < 200);
+        assert!(text.contains("\u{2026}") || text.len() < 100, "should truncate with ellipsis");
+    }
+
+    #[test]
+    fn render_result_compact_success() {
+        let line = render_result_compact(&Value::String("hello\nworld".into()), false);
+        let text = flatten(&line);
+        assert!(text.contains("\u{2713}"), "should contain checkmark");
+        assert!(text.contains("2 lines"));
+    }
+
+    #[test]
+    fn render_result_compact_error() {
+        let line = render_result_compact(&Value::String("Tool error: permission denied".into()), true);
+        let text = flatten(&line);
+        assert!(text.contains("\u{2717}"), "should contain X mark");
+        assert!(text.contains("permission denied"));
     }
 
     #[test]

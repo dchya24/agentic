@@ -7,7 +7,7 @@
 //!
 //! **This module never writes to the terminal.** All rendering is done by
 //! the spinner ticker in `commands.rs`, which reads the shared buffer and
-//! draws a two-line transient area (spinner + input).
+//! draws a two-line transient area (spinner + styled input line).
 //!
 //! Uses crossterm raw mode for individual key detection, with ONLCR
 //! output processing preserved so `println!()` / `\n` still works.
@@ -28,8 +28,12 @@ pub enum WatcherEvent {
 pub struct WatcherState {
     /// Current input buffer content (what the user has typed so far).
     pub buffer: String,
-    /// Hint shown in the input line (e.g. "Queued ✓").
+    /// Hint shown after queuing (e.g. "✓ Queued: ...").
     pub hint: String,
+    /// Pre-rendered left prompt (ANSI-styled directory name + ">").
+    pub prompt_left: String,
+    /// Pre-rendered right prompt (provider + model + branch).
+    pub prompt_right: String,
 }
 
 /// Spawns a background thread that watches for ESC and collects queued
@@ -50,11 +54,17 @@ pub struct InputWatcher {
 
 impl InputWatcher {
     /// Start watching. Call `stop()` when the agent finishes.
-    pub fn start(cancel_flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+    pub fn start(
+        cancel_flag: Arc<std::sync::atomic::AtomicBool>,
+        prompt_left: String,
+        prompt_right: String,
+    ) -> Self {
         let events: Arc<Mutex<Vec<WatcherEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let state: Arc<Mutex<WatcherState>> = Arc::new(Mutex::new(WatcherState {
             buffer: String::new(),
             hint: String::new(),
+            prompt_left,
+            prompt_right,
         }));
         let done = Arc::new(AtomicBool::new(false));
 

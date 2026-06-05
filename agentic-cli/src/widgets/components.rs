@@ -299,6 +299,41 @@ pub fn dashed_separator(color: Color) -> Line<'static> {
     Line::from(Span::styled(dashes, Style::default().fg(color)))
 }
 
+/// Rounded dashed separator: ╶╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╶
+pub fn rounded_dashed_separator(color: Color) -> Line<'static> {
+    let width = terminal_width().saturating_sub(2).max(40).min(100);
+    if width < 3 {
+        return Line::from(Span::styled("╌".repeat(width), Style::default().fg(color)));
+    }
+    let inner = width - 2;
+    Line::from(vec![
+        Span::styled("╶", Style::default().fg(color)),
+        Span::styled("╌".repeat(inner), Style::default().fg(color)),
+        Span::styled("╶", Style::default().fg(color)),
+    ])
+}
+
+/// Thinking header line. Shows `─ ─ thinking... ──────────` when `active`
+/// is true, or `─ ─ done thinking ──────────` when false.
+/// Uses DIM styling to visually distinguish from final response.
+pub fn thinking_header(active: bool) -> Line<'static> {
+    let width = terminal_width().saturating_sub(2).max(40).min(100);
+    let label = if active { " thinking... " } else { " done thinking " };
+    let label_len = label.chars().count() + 6; // "─ ─ " + label + " ─"
+    let remaining = width.saturating_sub(label_len);
+    let dim = Style::default()
+        .fg(Color::Indexed(242))
+        .add_modifier(Modifier::DIM);
+    let dim_bold = Style::default()
+        .fg(Color::Indexed(242))
+        .add_modifier(Modifier::DIM | Modifier::BOLD);
+    Line::from(vec![
+        Span::styled("─ ─", dim.clone()),
+        Span::styled(label.to_string(), dim_bold),
+        Span::styled(format!("{}", "─".repeat(remaining)), dim),
+    ])
+}
+
 /// Double-line separator
 #[allow(dead_code)]
 pub fn double_separator(color: Color) -> Line<'static> {

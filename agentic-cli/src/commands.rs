@@ -1640,9 +1640,14 @@ impl Commands {
         let streaming_text_active = std::sync::Arc::new(AtomicBool::new(false));
         let streaming_text_active_clone = streaming_text_active.clone();
 
-        // Collect the streamed text so we can skip re-rendering it at the end.
+        // Collect the streamed text so we can re-render it as styled
+        // markdown once streaming completes.
         let streamed_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let streamed_text_clone = streamed_text.clone();
+        // Track how many terminal lines were printed during streaming
+        // so we can MoveUp + replace them with styled markdown.
+        let streamed_lines = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let streamed_lines_clone = streamed_lines.clone();
 
         let progress = std::sync::Arc::new(std::sync::Mutex::new({
             let mut p = progress::ProgressState::new();
@@ -1688,11 +1693,9 @@ impl Commands {
                                 // Pause the spinner, render the event, then
                                 // let the next tick redraw the spinner.
                                 inline::clear_transient();
-                                // Suppress Thought events — text is already
-                                // streamed in real-time via on_chunk.
-                                if matches!(event, core_agentic::Event::Thought { .. }) {
-                                    continue;
-                                }
+                                // Thought events are rendered with DIM styling
+                                // (the LLM's reasoning before tool execution).
+                                // They are NOT the streamed final text.
                                 streaming_text_active_clone.store(false, Ordering::Relaxed);
                                 render_event(&event);
                             }
@@ -1710,11 +1713,21 @@ impl Commands {
             // Drain anything still queued so we don't lose late events.
             while let Ok(event) = event_rx.try_recv() {
                 inline::clear_transient();
-                if !matches!(event, core_agentic::Event::Thought { .. }) {
-                    render_event(&event);
-                }
+                render_event(&event);
             }
         });
+
+        // Print initial spinner immediately so the user sees activity
+        // right away, even before the first ticker tick (80ms).
+        {
+            let p = progress.lock().unwrap();
+            let initial_line = spinner::compact_progress_line(&p, 18);
+            if let Some(ref ws) = self.watcher_state {
+                render_two_line_transient(&initial_line, ws);
+            } else {
+                inline::print_transient(&initial_line);
+            }
+        }
 
         let result = orchestrator
             .run_stream_with_attachments(task, attachments, |chunk| {
@@ -1736,6 +1749,11 @@ impl Commands {
                         .lock()
                         .unwrap()
                         .push_str(&chunk);
+                    // Count newlines for re-render tracking.
+                    let newlines = chunk.chars().filter(|&c| c == '\n').count() as u32;
+                    if newlines > 0 {
+                        streamed_lines_clone.fetch_add(newlines, Ordering::Relaxed);
+                    }
                 }
             })
             .await;
@@ -1756,6 +1774,7 @@ impl Commands {
         match result {
             Ok(final_result) => {
                 let already_streamed = streamed_text.lock().unwrap().clone();
+                let lines_printed = streamed_lines.load(Ordering::Relaxed);
 
                 if already_streamed.is_empty() {
                     // No text was streamed (e.g. model returned empty
@@ -1772,10 +1791,28 @@ impl Commands {
                     inline::print_lines(&parsed.lines);
                     inline::print_blank();
                 } else {
-                    // Text was already streamed in real-time.
-                    // Ensure the final newline is printed.
-                    if !already_streamed.ends_with('\n') {
-                        println!();
+                    // Text was already streamed in real-time as plaintext.
+                    // Re-render with full markdown styling by replacing
+                    // the streamed lines in-place.
+                    let total_lines = if already_streamed.ends_with('\n') {
+                        lines_printed
+                    } else {
+                        lines_printed + 1 // last line without trailing newline
+                    };
+
+                    if total_lines > 0 && total_lines <= 500 && inline::is_stdout_tty() {
+                        let full_text = if final_result.len() > already_streamed.len() {
+                            final_result.clone()
+                        } else {
+                            already_streamed.clone()
+                        };
+                        let parsed = md_widget::MarkdownContent::parse(&full_text);
+                        inline::replace_lines(total_lines, &parsed.lines);
+                    } else {
+                        // Too many lines or non-TTY — just ensure newline.
+                        if !already_streamed.ends_with('\n') {
+                            println!();
+                        }
                     }
                     inline::print_blank();
                 }
@@ -2871,7 +2908,7 @@ Instructions the agent follows when this skill is loaded.
 
 /// Render a two-line transient area:
 ///   Line 1: spinner progress
-///   Line 2: input buffer from watcher (if any)
+///   Line 2: styled input line (same look as the normal REPL prompt)
 ///
 /// Uses ANSI escape codes to manage two lines without scrolling.
 fn render_two_line_transient(
@@ -2886,34 +2923,68 @@ fn render_two_line_transient(
     // Render the spinner line.
     inline::print_transient(spinner_line);
 
-    // Now render the input line below it.
+    // Read the current state.
     let s = watcher_state.lock().unwrap();
     let has_hint = !s.hint.is_empty();
-    let has_buffer = !s.buffer.is_empty();
+    let has_content = has_hint || !s.buffer.is_empty();
 
-    if has_hint || has_buffer {
-        // Move to next line, clear it, print input.
-        let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
-        let _ = stdout.execute(crossterm::terminal::Clear(
-            crossterm::terminal::ClearType::CurrentLine,
-        ));
-        print!("\n");
-        let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
+    // Always render the input line so the prompt is always visible.
+    // Move to next line, clear it.
+    let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
+    let _ = stdout.execute(crossterm::terminal::Clear(
+        crossterm::terminal::ClearType::CurrentLine,
+    ));
+    print!("\n");
+    let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
 
-        if has_hint {
-            // Show hint (e.g. "✓ Queued: ...")
-            print!("\x1b[32m  {}\x1b[0m", s.hint);
-        } else {
-            // Show live input buffer.
-            print!("\x1b[33m  > \x1b[0m{}", s.buffer);
-        }
-        let _ = stdout.flush();
-
-        // Move cursor back up to the spinner line so next tick
-        // overwrites correctly.
-        print!("\x1b[1A");
-        let _ = stdout.flush();
+    if has_hint {
+        // Show hint in green after the prompt.
+        print!("{}\x1b[32m{}\x1b[0m", s.prompt_left, s.hint);
+    } else {
+        // Show live input buffer after the prompt.
+        print!("{}{}", s.prompt_left, s.buffer);
     }
+
+    // Print right-side info (model / provider / branch) padded
+    // to fill the terminal width, just like the normal prompt.
+    // Calculate visible width of what we already printed.
+    let left_visible = strip_ansi_len(&s.prompt_left)
+        + if has_hint {
+            s.hint.len()
+        } else {
+            s.buffer.len()
+        };
+    let term_w = inline::terminal_width();
+    let right_visible = strip_ansi_len(&s.prompt_right);
+    let gap = term_w.saturating_sub(left_visible).saturating_sub(right_visible);
+    if gap > 2 && !s.prompt_right.is_empty() {
+        print!("\x1b[2m{}\x1b[0m{}", " ".repeat(gap), s.prompt_right);
+    }
+
+    let _ = stdout.flush();
+
+    // Move cursor back up to the spinner line so next tick
+    // overwrites correctly.
+    print!("\x1b[1A");
+    let _ = stdout.flush();
+}
+
+/// Calculate visible length of a string (strips ANSI escape sequences).
+fn strip_ansi_len(s: &str) -> usize {
+    let mut len = 0;
+    let mut in_escape = false;
+    for c in s.chars() {
+        if c == '\x1b' {
+            in_escape = true;
+        } else if in_escape {
+            if c.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+        } else {
+            len += c.len_utf8();
+        }
+    }
+    len
 }
 
 fn render_event(event: &core_agentic::Event) {
@@ -2931,8 +3002,7 @@ fn render_event(event: &core_agentic::Event) {
     const MAX_TOOL_OUTPUT_LINES: usize = 12;
     match event {
         core_agentic::Event::ToolCall { tool_name, arguments } => {
-            let lines = tool_call::render_call(tool_name, arguments);
-            inline::print_lines(&lines);
+            inline::print_line(&tool_call::render_call_compact(tool_name, arguments));
         }
         core_agentic::Event::ToolOutput { tool_name, output } => {
             // Heuristic: orchestrator records denied/skipped/error outcomes
@@ -2964,21 +3034,14 @@ fn render_event(event: &core_agentic::Event) {
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty());
 
-            // Always print the headline (success/error badge).
-            let lines = tool_call::render_result(
-                tool_name,
-                output,
-                is_error,
-                MAX_TOOL_OUTPUT_LINES,
-                /*verbose=*/ false,
-            );
-            inline::print_lines(&lines);
+            // Compact result line: → ✓ summary  or  → ✗ error
+            inline::print_line(&tool_call::render_result_compact(output, is_error));
 
-            // If there's a diff, render the summary line + the diff body.
+            // If there's a diff, render it inline without borders.
             if let Some(diff) = diff_text {
                 inline::print_line(&diff_widget::summary_line(diff));
                 let diff_lines = diff_widget::render(diff);
-                let max_diff_lines = 40;
+                let max_diff_lines = 20;
                 if diff_lines.len() > max_diff_lines {
                     inline::print_lines(&diff_lines[..max_diff_lines]);
                     let remaining = diff_lines.len() - max_diff_lines;
@@ -2993,16 +3056,23 @@ fn render_event(event: &core_agentic::Event) {
                     inline::print_lines(&diff_lines);
                 }
             }
+            let _ = tool_name;
         }
         core_agentic::Event::Thought { content } => {
-            // Display the LLM's thinking/explanation before tool execution
+            // Display the LLM's thinking/reasoning before tool execution
+            // with DIM styling so it's visually distinct from the final response.
             if !content.is_empty() {
-                let lines = crate::widgets::markdown::MarkdownContent::parse(&content);
-                inline::print_blank();
-                for line in &lines.lines {
-                    inline::print_line(line);
+                inline::print_line(&components::thinking_header(true));
+                // Print thinking content with DIM style
+                for line in content.lines() {
+                    inline::print_line(&RLine::from(RSpan::styled(
+                        format!("  {}", line),
+                        RStyle::default()
+                            .fg(RColor::Indexed(242))
+                            .add_modifier(RModifier::DIM),
+                    )));
                 }
-                inline::print_blank();
+                inline::print_line(&components::thinking_header(false));
             }
         }
         core_agentic::Event::Error { message } => {
