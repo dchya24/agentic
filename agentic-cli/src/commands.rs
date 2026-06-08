@@ -361,10 +361,6 @@ pub struct Commands {
     /// this instead of constructing a real provider from config.
     /// Only settable via `with_mock_provider` (gated to `#[cfg(test)]`).
     mock_provider: Option<std::sync::Arc<dyn core_agentic::LLMProvider>>,
-    /// Shared input watcher state. When set, the spinner ticker renders
-    /// a two-line transient area (spinner + input buffer).
-    watcher_state:
-        Option<std::sync::Arc<std::sync::Mutex<crate::input_watcher::WatcherState>>>,
 }
 
 impl Default for Commands {
@@ -388,7 +384,7 @@ impl Commands {
             interactive_mode: false,
             skill_index: None,
             mock_provider: None,
-            watcher_state: None,
+
         }
     }
 
@@ -426,13 +422,7 @@ impl Commands {
 
     /// Attach the input watcher's shared state so the spinner ticker
     /// can render the live input buffer below the progress line.
-    pub fn with_watcher_state(
-        mut self,
-        state: Option<std::sync::Arc<std::sync::Mutex<crate::input_watcher::WatcherState>>>,
-    ) -> Self {
-        self.watcher_state = state;
-        self
-    }
+
 
     pub fn with_permission_mode(mut self, mode: core_agentic::PermissionMode) -> Self {
         self.permission_mode = mode;
@@ -1659,7 +1649,6 @@ impl Commands {
 
         let tick_progress = progress.clone();
         let tick_stop = stop_flag.clone();
-        let tick_watcher = self.watcher_state.clone();
         let ticker = tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_millis(80));
@@ -1680,24 +1669,14 @@ impl Commands {
                             spinner::compact_progress_line(&p, 18)
                         };
 
-                        // Update the permanent thinking indicator line
-                        // by moving up 1 and overwriting it with the new
-                        // spinner frame. This keeps the indicator animated.
+                        // Update the spinner line in-place by moving up 1
+                        // and overwriting it with the new frame.
                         use crossterm::ExecutableCommand;
                         use crossterm::cursor::MoveUp;
                         {
                             let mut s = std::io::stdout();
                             let _ = s.execute(MoveUp(1));
                             inline::print_line(&line);
-                        }
-
-                        // When the watcher is active (interactive mode),
-                        // also render the input prompt so the user can
-                        // see their typed input below the spinner.
-                        if let Some(ref ws) = tick_watcher {
-                            // spinner on current line (replaces the blank
-                            // line after print_line above) + prompt below
-                            render_two_line_transient(&line, ws);
                         }
                     }
                     maybe_event = event_rx.recv() => {
@@ -1746,18 +1725,14 @@ impl Commands {
                 // clear the spinner and start printing directly.
                 if !chunk.is_empty() {
                     if !streaming_text_active.load(Ordering::Relaxed) {
-                        // First chunk — clear the permanent thinking
-                        // indicator line and any transient content below
-                        // it (redundant spinner + input prompt), then
-                        // start streaming the response text.
+                        // First chunk — clear the thinking spinner line
+                        // and start streaming the response text.
                         use crossterm::ExecutableCommand;
                         use crossterm::cursor::MoveUp;
                         use crossterm::terminal::{Clear, ClearType};
                         let mut s = std::io::stdout();
                         let _ = s.execute(MoveUp(1));
                         let _ = s.execute(Clear(ClearType::CurrentLine));
-                        // Also clear any transient lines below
-                        // (render_two_line_transient output).
                         let _ = s.execute(Clear(ClearType::FromCursorDown));
                         streaming_text_active.store(true, Ordering::Relaxed);
                     }
@@ -2932,83 +2907,7 @@ Instructions the agent follows when this skill is loaded.
 
 /// Render a two-line transient area:
 ///   Line 1: spinner progress
-///   Line 2: styled input line (same look as the normal REPL prompt)
-///
-/// Uses ANSI escape codes to manage two lines without scrolling.
-fn render_two_line_transient(
-    spinner_line: &ratatui::text::Line<'_>,
-    watcher_state: &std::sync::Mutex<crate::input_watcher::WatcherState>,
-) {
-    use std::io::Write;
-    use crossterm::ExecutableCommand;
 
-    let mut stdout = std::io::stdout();
-
-    // Render the spinner line.
-    inline::print_transient(spinner_line);
-
-    // Read the current state.
-    let s = watcher_state.lock().unwrap();
-    let has_hint = !s.hint.is_empty();
-
-    // Always render the input line so the prompt is always visible.
-    // Move to next line, clear it.
-    let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
-    let _ = stdout.execute(crossterm::terminal::Clear(
-        crossterm::terminal::ClearType::CurrentLine,
-    ));
-    print!("\n");
-    let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
-
-    if has_hint {
-        // Show hint in green after the prompt.
-        print!("{}\x1b[32m{}\x1b[0m", s.prompt_left, s.hint);
-    } else {
-        // Show live input buffer after the prompt.
-        print!("{}{}", s.prompt_left, s.buffer);
-    }
-
-    // Print right-side info (model / provider / branch) padded
-    // to fill the terminal width, just like the normal prompt.
-    // Calculate visible width of what we already printed.
-    let left_visible = strip_ansi_len(&s.prompt_left)
-        + if has_hint {
-            s.hint.len()
-        } else {
-            s.buffer.len()
-        };
-    let term_w = inline::terminal_width();
-    let right_visible = strip_ansi_len(&s.prompt_right);
-    let gap = term_w.saturating_sub(left_visible).saturating_sub(right_visible);
-    if gap > 2 && !s.prompt_right.is_empty() {
-        print!("\x1b[2m{}\x1b[0m{}", " ".repeat(gap), s.prompt_right);
-    }
-
-    let _ = stdout.flush();
-
-    // Move cursor back up to the spinner line so next tick
-    // overwrites correctly.
-    print!("\x1b[1A");
-    let _ = stdout.flush();
-}
-
-/// Calculate visible length of a string (strips ANSI escape sequences).
-fn strip_ansi_len(s: &str) -> usize {
-    let mut len = 0;
-    let mut in_escape = false;
-    for c in s.chars() {
-        if c == '\x1b' {
-            in_escape = true;
-        } else if in_escape {
-            if c.is_ascii_alphabetic() {
-                in_escape = false;
-            }
-        } else {
-            len += c.len_utf8();
-        }
-    }
-    len
-}
 
 fn render_event(event: &core_agentic::Event) {
     use crate::widgets::{components, diff as diff_widget, inline, tool_call};

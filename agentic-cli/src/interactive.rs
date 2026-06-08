@@ -1098,7 +1098,7 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                 });
                                 stats.increment_messages();
 
-                                print_turn_separator();
+                                print_turn_separator(&model_info);
                                 let start = Instant::now();
                                 if let Err(e) = commands.plan_inline(&goal).await {
                                     inline::print_blank();
@@ -1114,7 +1114,7 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                                         ),
                                         timestamp: chrono::Local::now(),
                                     });
-                                    print_response_summary(&stats, elapsed.as_millis());
+                                    print_response_summary(&stats);
                                 }
                             }
                             ReplAction::Skills => {
@@ -1230,31 +1230,17 @@ pub async fn run(mut commands: Commands) -> Result<()> {
                         print_status_bar(&model_info, &stats);
                     }
                     _ => {
-                        // Process the initial message and any queued messages
-                        // that arrive while the agent is running.
-                        let mut pending = vec![input.clone()];
+                        process_message(
+                            &input,
+                            &mut commands,
+                            &mut conversation,
+                            &mut current_session,
+                            &stats,
+                            &model_info,
+                        ).await;
 
-                        while let Some(msg) = pending.pop() {
-                            let should_break = process_message(
-                                &msg,
-                                &mut commands,
-                                &mut conversation,
-                                &mut current_session,
-                                &stats,
-                                &mut pending,
-                                &model_info,
-                            ).await;
-
-                            if should_break {
-                                // /quit or similar
-                                // (currently won't happen from plain text, but
-                                // future-proof)
-                                break;
-                            }
-
-                            // Refresh model_info in case provider changed
-                            model_info = get_model_info(&commands);
-                        }
+                        // Refresh model_info in case provider changed
+                        model_info = get_model_info(&commands);
                     }
                 }
             }
@@ -1284,27 +1270,21 @@ pub async fn run(mut commands: Commands) -> Result<()> {
     Ok(())
 }
 
-// ── Message processing with ESC abort + input queue ────────
+// ── Message processing ────────────────────────────────────
 //
-// Processes a single user message through the agent. While the agent
-// runs, an InputWatcher detects ESC (abort) and collects queued
-// messages. Queued messages are appended to `pending` so the REPL
-// loop can process them after the current run finishes.
-//
-// Returns `true` if the REPL should break (e.g. /quit).
+// Processes a single user message through the agent. No queuing
+// or ESC abort — user must wait for the agent to finish before
+// typing the next message.
 
-/// Process a single user message. Runs the agent with an InputWatcher
-/// that allows ESC to abort and queues additional messages typed during
-/// processing. Any queued messages are pushed onto `pending`.
+/// Process a single user message through the agent.
 async fn process_message(
     input: &str,
     commands: &mut Commands,
     conversation: &mut Vec<ConversationEntry>,
     current_session: &mut crate::session::Session,
     stats: &SessionStats,
-    pending: &mut Vec<String>,
     model_info: &ModelInfo,
-) -> bool {
+) {
     conversation.push(ConversationEntry {
         role: "user".into(),
         content: input.to_string(),
@@ -1314,64 +1294,15 @@ async fn process_message(
 
     crate::session::push_message(current_session, "user", input);
 
-    print_turn_separator();
-
-    // Start the input watcher (ESC abort + queuing).
-    let cancel = crate::cancel_flag();
-    cancel.store(false, Ordering::Relaxed);
-
-    // Pre-render prompt strings for the input line so it looks
-    // exactly like the normal REPL prompt.
-    let prompt = AgenticPrompt::new(model_info);
-    let prompt_left = prompt.render_prompt_left().into_owned();
-    let prompt_right = "".to_string();  // empty — status bar handles model info
-
-    let mut watcher = crate::input_watcher::InputWatcher::start(
-        cancel.clone(),
-        prompt_left,
-        prompt_right,
-    );
-
-    // Inject watcher state so the spinner renders the input buffer.
-    let watcher_state = watcher.state().clone();
-    *commands = std::mem::take(commands)
-        .with_watcher_state(Some(watcher_state));
+    print_turn_separator(model_info);
+    inline::print_line(&components::dotted_separator(Color::Rgb(60, 60, 80)));
+    inline::print_blank();
 
     let start = Instant::now();
     let result = commands.run(input).await;
 
-    // Remove watcher state so subsequent non-interactive runs don't
-    // try to render an input line.
-    *commands = std::mem::take(commands)
-        .with_watcher_state(None);
-
-    // Stop watcher and collect queued messages.
-    let watcher_events = watcher.stop();
-
-    // Process watcher events.
-    let mut was_aborted = false;
-    for event in watcher_events {
-        match event {
-            crate::input_watcher::WatcherEvent::Abort => {
-                was_aborted = true;
-            }
-            crate::input_watcher::WatcherEvent::QueuedMessage(msg) => {
-                // Add to front of pending so they're processed in order.
-                pending.insert(0, msg);
-            }
-        }
-    }
-    // Reverse to restore original order (insert(0) reverses).
-    // Actually, the pending Vec is used as a stack (pop from end).
-    // Let's reverse so first-queued is processed first.
-    pending.reverse();
-
     // Handle agent result.
-    if was_aborted {
-        inline::print_blank();
-        inline::print_line(&components::warning_badge("Cancelled."));
-        inline::print_blank();
-    } else if let Err(e) = result {
+    if let Err(e) = result {
         inline::print_blank();
         inline::print_line(&components::error_badge(&e.to_string()));
         inline::print_blank();
@@ -1393,20 +1324,8 @@ async fn process_message(
         );
         let _ = crate::session::save(current_session);
 
-        print_response_summary(stats, elapsed.as_millis());
+        print_response_summary(stats);
     }
-
-    // Show queued messages indicator.
-    if !pending.is_empty() {
-        inline::print_blank();
-        inline::print_line(&components::info_badge(&format!(
-            "📬 {} queued message(s) — processing…",
-            pending.len()
-        )));
-        inline::print_blank();
-    }
-
-    false // don't break the REPL loop
 }
 
 // ── Model info ──────────────────────────────────────────────
@@ -1696,9 +1615,35 @@ fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
     print_status_bar(model_info, stats);
 }
 
-/// Role badge separator drawn before a user turn.
-fn print_turn_separator() {
-    // No-op: turn markers hidden.
+/// Print model info line below the user's prompt after they submit input.
+fn print_turn_separator(model_info: &ModelInfo) {
+    let git_branch = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if b.is_empty() || b == "HEAD" { None } else { Some(b) }
+            } else { None }
+        });
+
+    let mut spans = vec![
+        RSpan::raw("  "),
+        RSpan::styled(
+            format!("⚡ {}/{}", model_info.provider, model_info.model),
+            RStyle::default().fg(Color::Rgb(255, 215, 0)),
+        ),
+    ];
+
+    if let Some(ref branch) = git_branch {
+        spans.push(RSpan::styled(
+            format!(" 📌 {}", branch),
+            RStyle::default().fg(Color::Rgb(135, 206, 250)).add_modifier(Modifier::DIM),
+        ));
+    }
+
+    inline::print_line(&Line::from(spans));
 }
 
 fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
@@ -1709,8 +1654,6 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
         "  │  ",
         RStyle::default().fg(Color::Rgb(60, 60, 80)),
     );
-
-    let cache_ratio = stats.cache_hit_ratio();
 
     inline::print_line(&Line::from(vec![
         RSpan::raw("  "),
@@ -1732,27 +1675,8 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
         },
         sep.clone(),
         RSpan::styled(
-            format!("💬 {} msgs", stats.messages_sent()),
-            RStyle::default().fg(Color::Rgb(135, 206, 250)),
-        ),
-        sep.clone(),
-        RSpan::styled(
             format!("📊 {} ↑ / {} ↓", in_tok, out_tok),
             RStyle::default().fg(Color::Rgb(186, 85, 211)),
-        ),
-        if cache_ratio > 0.0 {
-            let pct = (cache_ratio * 100.0) as u8;
-            RSpan::styled(
-                format!("  📦 {}% cached", pct),
-                RStyle::default().fg(Color::Rgb(46, 204, 113)),
-            )
-        } else {
-            RSpan::raw("")
-        },
-        sep,
-        RSpan::styled(
-            format!("⏱ {}", stats.elapsed_str()),
-            RStyle::default().fg(Color::Rgb(46, 204, 113)),
         ),
     ]));
 
@@ -1807,7 +1731,6 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
 fn print_prompt_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
-    let cache_ratio = stats.cache_hit_ratio();
 
     let sep = RSpan::styled(
         " \u{2502} ",
@@ -1862,34 +1785,14 @@ fn print_prompt_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
 
     spans.push(sep.clone());
     spans.push(RSpan::styled(
-        format!("\u{1f4ac}{}", stats.messages_sent()),
-        RStyle::default().fg(Color::Rgb(135, 206, 250)),
-    ));
-    spans.push(RSpan::raw(" "));
-    spans.push(RSpan::styled(
         format!("\u{1f4ca}{}\u{2191}/{}\u{2193}", in_tok, out_tok),
         RStyle::default().fg(Color::Rgb(186, 85, 211)),
-    ));
-
-    if cache_ratio > 0.0 {
-        let pct = (cache_ratio * 100.0) as u8;
-        spans.push(RSpan::raw(" "));
-        spans.push(RSpan::styled(
-            format!("\u{1f4e6} {}% cached", pct),
-            RStyle::default().fg(Color::Rgb(46, 204, 113)),
-        ));
-    }
-
-    spans.push(sep);
-    spans.push(RSpan::styled(
-        format!("\u{23f1} {}", stats.elapsed_str()),
-        RStyle::default().fg(Color::Rgb(46, 204, 113)),
     ));
 
     inline::print_line(&Line::from(spans));
 }
 
-fn print_response_summary(stats: &SessionStats, ms: u128) {
+fn print_response_summary(stats: &SessionStats) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
@@ -1897,10 +1800,6 @@ fn print_response_summary(stats: &SessionStats, ms: u128) {
         " │ ",
         RStyle::default().fg(Color::Rgb(60, 60, 80)),
     );
-
-    let cache_read = stats.total_cache_read_tokens();
-    let cache_created = stats.total_cache_creation_tokens();
-    let has_cache = cache_read > 0 || cache_created > 0;
 
     inline::print_blank();
     inline::print_line(&components::rounded_dashed_separator(Color::Rgb(60, 60, 80)));
@@ -1915,23 +1814,9 @@ fn print_response_summary(stats: &SessionStats, ms: u128) {
         ),
         sep.clone(),
         RSpan::styled(
-            format!("⏱ {}.{:03}s", ms / 1000, ms % 1000),
-            RStyle::default().fg(Color::Rgb(180, 180, 200)),
-        ),
-        sep.clone(),
-        RSpan::styled(
             format!("📊 {}↑/{}↓", in_tok, out_tok),
             RStyle::default().fg(Color::Rgb(186, 85, 211)),
         ),
-        if has_cache {
-            let pct = (stats.cache_hit_ratio() * 100.0) as u8;
-            RSpan::styled(
-                format!(" 📦 {}% cached", pct),
-                RStyle::default().fg(Color::Rgb(46, 204, 113)),
-            )
-        } else {
-            RSpan::raw("")
-        },
     ]));
     inline::print_line(&components::rounded_dashed_separator(Color::Rgb(60, 60, 80)));
     inline::print_blank();
