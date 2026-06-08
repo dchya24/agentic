@@ -8,8 +8,8 @@
 //! - Dropdown for `@` file completion
 
 mod app;
-mod dropdown;
-mod input;
+pub mod dropdown;
+pub mod input;
 mod ui;
 
 
