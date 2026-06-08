@@ -12,6 +12,7 @@
 
 use anyhow::Result;
 use crossterm::{
+    cursor::MoveUp,
     event::{self, Event, KeyCode, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
@@ -241,6 +242,12 @@ pub async fn run(mut commands: Commands) -> Result<()> {
 }
 
 // ── Inner REPL loop ─────────────────────────────────────────
+//
+// Rendering architecture:
+//   1. Status bar: printed ONCE per prompt cycle (permanent, part of scrollback)
+//   2. Input area (dropdown + prompt): transient block, cleared & re-rendered
+//      on every keystroke. Track newline count for proper cursor movement.
+//   3. On submit: clear input area, print submitted text as permanent.
 
 async fn repl_loop(
     buffer: &mut InputBuffer,
@@ -251,29 +258,42 @@ async fn repl_loop(
     stats: &SessionStats,
     model_info: &mut ModelInfo,
 ) -> Result<()> {
-    // Number of terminal lines currently used for the dropdown overlay.
-    // Used to clear the dropdown before re-rendering.
-    let mut dropdown_lines: u16 = 0;
+    // Number of newlines currently rendered in the input area.
+    // This includes dropdown title + dropdown items. The prompt line is
+    // transient (no \n) so it doesn't count as a newline, but it occupies
+    // the same row as the cursor after the last \n.
+    let mut area_newlines: u16 = 0;
+    // Whether we need to print the status bar for this prompt cycle.
+    let mut needs_status_bar = true;
 
     loop {
-        // Print status bar above the prompt (permanent, part of scrollback)
-        print_prompt_status_bar(model_info, stats);
+        // ── Print status bar once per prompt cycle ──
+        if needs_status_bar {
+            print_prompt_status_bar(model_info, stats);
+            needs_status_bar = false;
+        }
 
-        // Build prompt metadata
+        // ── Clear previous input area ──
+        clear_input_area(area_newlines);
+        area_newlines = 0;
+
+        // ── Render dropdown (if active) + prompt line ──
         let meta = PromptMetadata::new(
             model_info.provider.clone(),
             model_info.model.clone(),
         );
 
-        // Render the prompt + input as a transient line
-        input_renderer::render_prompt_line(&meta, buffer);
-
-        // Render dropdown if active
+        // Dropdown lines (each with \n)
         if let Some(ref dd) = dropdown {
-            dropdown_lines = input_renderer::render_dropdown_lines(dd) as u16;
+            if !dd.is_empty() {
+                area_newlines = input_renderer::render_dropdown_lines(dd) as u16;
+            }
         }
 
-        // Wait for key event
+        // Prompt line (transient, no \n)
+        input_renderer::render_prompt_line(&meta, buffer);
+
+        // ── Wait for key event ──
         let event = event::read()?;
 
         match event {
@@ -296,19 +316,18 @@ async fn repl_loop(
                         (KeyModifiers::NONE, KeyCode::Tab)
                         | (KeyModifiers::NONE, KeyCode::Enter) => {
                             accept_dropdown(buffer, dropdown);
-                            dropdown_lines = 0;
+                            area_newlines = 0;
                             continue;
                         }
                         (KeyModifiers::NONE, KeyCode::Esc) => {
                             *dropdown = None;
-                            dropdown_lines = 0;
+                            area_newlines = 0;
                             continue;
                         }
-                        // Any other key: close dropdown and fall through
+                        // Any other key: close dropdown and fall through to input handling
                         _ => {
-                            clear_dropdown_lines(dropdown_lines);
                             *dropdown = None;
-                            dropdown_lines = 0;
+                            area_newlines = 0;
                         }
                     }
                 }
@@ -317,12 +336,9 @@ async fn repl_loop(
                 match (key.modifiers, key.code) {
                     // ── Submit ──
                     (KeyModifiers::NONE, KeyCode::Enter) => {
-                        // Clear the transient prompt line
-                        inline::clear_transient();
-                        if dropdown_lines > 0 {
-                            clear_dropdown_lines(dropdown_lines);
-                            dropdown_lines = 0;
-                        }
+                        // Clear the input area
+                        clear_input_area(area_newlines);
+                        area_newlines = 0;
                         *dropdown = None;
 
                         let input = buffer.submit();
@@ -344,6 +360,7 @@ async fn repl_loop(
 
                         // Refresh model_info in case provider changed
                         *model_info = get_model_info(commands);
+                        needs_status_bar = true;
 
                         if should_break {
                             return Ok(());
@@ -352,20 +369,14 @@ async fn repl_loop(
 
                     // ── Exit ──
                     (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
-                        inline::clear_transient();
-                        if dropdown_lines > 0 {
-                            clear_dropdown_lines(dropdown_lines);
-                        }
+                        clear_input_area(area_newlines);
                         return Ok(());
                     }
 
                     // ── Cancel ──
                     (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                        inline::clear_transient();
-                        if dropdown_lines > 0 {
-                            clear_dropdown_lines(dropdown_lines);
-                            dropdown_lines = 0;
-                        }
+                        clear_input_area(area_newlines);
+                        area_newlines = 0;
                         *dropdown = None;
                         buffer.clear();
                         inline::print_blank();
@@ -373,6 +384,7 @@ async fn repl_loop(
                             "Use /quit or Ctrl+D to exit.",
                         ));
                         inline::print_blank();
+                        needs_status_bar = true;
                     }
 
                     // ── Character input ──
@@ -434,11 +446,8 @@ async fn repl_loop(
 
                     // ── Ctrl+L — clear screen ──
                     (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
-                        inline::clear_transient();
-                        if dropdown_lines > 0 {
-                            clear_dropdown_lines(dropdown_lines);
-                            dropdown_lines = 0;
-                        }
+                        clear_input_area(area_newlines);
+                        area_newlines = 0;
                         crossterm::execute!(
                             std::io::stdout(),
                             crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
@@ -446,6 +455,7 @@ async fn repl_loop(
                         )
                         .ok();
                         print_banner(model_info, stats);
+                        needs_status_bar = true;
                     }
 
                     // Ignore other key combinations
@@ -570,19 +580,24 @@ fn accept_dropdown(buffer: &mut InputBuffer, dropdown: &mut Option<Dropdown>) {
     }
 }
 
-/// Clear N dropdown lines from the terminal (move up and clear each).
-fn clear_dropdown_lines(count: u16) {
-    if count == 0 {
-        return;
-    }
-    use crossterm::cursor::MoveUp;
-    use crossterm::terminal::Clear;
+/// Clear the input area (dropdown lines + prompt line) from the terminal.
+///
+/// After rendering, cursor is `area_newlines` rows below the start of the area
+/// (the prompt line is on the same row as the cursor, without a `\n`).
+/// To clear: move cursor up `area_newlines` rows, then clear from cursor down.
+fn clear_input_area(area_newlines: u16) {
+    use crossterm::cursor::MoveToColumn;
+    use crossterm::terminal::{Clear, ClearType};
     use crossterm::ExecutableCommand;
+    use std::io::Write;
+
     let mut stdout = std::io::stdout();
-    for _ in 0..count {
-        let _ = stdout.execute(MoveUp(1));
-        let _ = stdout.execute(Clear(crossterm::terminal::ClearType::CurrentLine));
+    if area_newlines > 0 {
+        let _ = stdout.execute(MoveUp(area_newlines));
     }
+    let _ = stdout.execute(MoveToColumn(0));
+    let _ = stdout.execute(Clear(ClearType::FromCursorDown));
+    let _ = stdout.flush();
 }
 
 // ── Input handling ──────────────────────────────────────────
