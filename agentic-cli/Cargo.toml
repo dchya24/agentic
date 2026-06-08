@@ -31,9 +31,8 @@ indicatif = "0.17"
 comfy-table = "7"
 chrono = "0.4"
 console = "0.15"
-# rustyline removed - using reedline for interactive mode
-reedline = { version = "0.47", features = ["sqlite"] }
-nu-ansi-term = "0.50"
+# rustyline removed - using custom ratatui input widget
+# reedline removed - replaced by InputBuffer + crossterm raw mode
 uuid = { version = "1", features = ["v4"] }
 
 # Terminal management
