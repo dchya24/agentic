@@ -207,6 +207,15 @@ pub async fn run(mut commands: Commands) -> Result<()> {
     // Enter raw mode for key capture
     enable_raw_mode()?;
 
+    // Guard: ensure raw mode is disabled even on panic
+    struct RawModeGuard;
+    impl Drop for RawModeGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+        }
+    }
+    let _raw_guard = RawModeGuard;
+
     let result = repl_loop(
         &mut buffer,
         &mut dropdown,
@@ -218,8 +227,9 @@ pub async fn run(mut commands: Commands) -> Result<()> {
     )
     .await;
 
-    // Restore terminal
-    disable_raw_mode()?;
+    // Explicitly disable (guard also does this on drop)
+    drop(_raw_guard);
+    disable_raw_mode().ok();
 
     // Auto-save session on exit
     if !current_session.messages.is_empty() {
