@@ -12,7 +12,7 @@
 
 use anyhow::Result;
 use crossterm::{
-    cursor::MoveUp,
+    cursor::{MoveToColumn, MoveUp},
     event::{self, Event, KeyCode, KeyModifiers},
     terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
     ExecutableCommand,
@@ -283,13 +283,16 @@ async fn repl_loop(
         }
 
         // ── Clear previous input area ──
-        // Uses explicit MoveUp + ClearFromCursorDown instead of
+        // Uses explicit MoveUp + MoveToColumn(0) + ClearFromCursorDown instead of
         // SavePosition/RestorePosition to avoid terminal-specific
         // DECSC/DECRC issues when the screen has scrolled.
+        // MoveToColumn(0) ensures the prompt text on the current line is
+        // also cleared (ClearFromCursorDown only clears from cursor down).
         if input_area_saved {
             if prev_dropdown_lines > 0 {
                 let _ = stdout.execute(MoveUp(prev_dropdown_lines));
             }
+            let _ = stdout.execute(MoveToColumn(0));
             let _ = stdout.execute(Clear(ClearType::FromCursorDown));
             let _ = stdout.flush();
         } else {
@@ -355,9 +358,14 @@ async fn repl_loop(
                     // ── Submit ──
                     (KeyModifiers::NONE, KeyCode::Enter) => {
                         // Clear input area (dropdown + prompt)
+                        // MoveToColumn(0) first to wipe any prompt text
+                        // on the current line (ClearFromCursorDown alone
+                        // only clears from cursor-position to bottom,
+                        // leaving text before the cursor visible).
                         if prev_dropdown_lines > 0 {
                             let _ = stdout.execute(MoveUp(prev_dropdown_lines));
                         }
+                        let _ = stdout.execute(MoveToColumn(0));
                         let _ = stdout.execute(Clear(ClearType::FromCursorDown));
                         let _ = stdout.flush();
                         input_area_saved = false;
@@ -411,6 +419,7 @@ async fn repl_loop(
                             if prev_dropdown_lines > 0 {
                                 let _ = stdout.execute(MoveUp(prev_dropdown_lines));
                             }
+                            let _ = stdout.execute(MoveToColumn(0));
                             let _ = stdout.execute(Clear(ClearType::FromCursorDown));
                             let _ = stdout.flush();
                         }
@@ -423,6 +432,7 @@ async fn repl_loop(
                             if prev_dropdown_lines > 0 {
                                 let _ = stdout.execute(MoveUp(prev_dropdown_lines));
                             }
+                            let _ = stdout.execute(MoveToColumn(0));
                             let _ = stdout.execute(Clear(ClearType::FromCursorDown));
                             let _ = stdout.flush();
                             input_area_saved = false;
@@ -1469,8 +1479,6 @@ fn print_response_summary(stats: &SessionStats) {
         RStyle::default().fg(Color::Rgb(60, 60, 80)),
     );
 
-    inline::print_blank();
-    inline::print_line(&components::rounded_dashed_separator(Color::Rgb(60, 60, 80)));
     inline::print_line(&Line::from(vec![
         RSpan::raw("  "),
         RSpan::styled(
@@ -1486,7 +1494,6 @@ fn print_response_summary(stats: &SessionStats) {
             RStyle::default().fg(Color::Rgb(186, 85, 211)),
         ),
     ]));
-    inline::print_line(&components::rounded_dashed_separator(Color::Rgb(60, 60, 80)));
     inline::print_blank();
 }
 
