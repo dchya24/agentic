@@ -43,7 +43,7 @@ Selama processing, muncul `Thinking...` + spinner, tapi area input seolah menghi
 | Fungsi | Sebelum | Sesudah |
 |--------|---------|---------|
 | `print_status_bar()` | `⚡ model │ 💬 X │ 📊 X↑/X↓ │ 📦 X% │ ⏱ Xs` | `⚡ model │ 📊 X↑/X↓` |
-| `print_prompt_status_bar()` | `📂 dir │ ⚡ model │ 💬 X │ 📊 X↑/X↓ │ ⏱ Xs` | `📂 dir │ ⚡ model │ 📊 X↑/X↓` |
+| `print_prompt_status_bar()` | `📂 dir │ ⚡ model │ 💬 X │ 📊 X↑/X↓ │ ⏱ Xs` | `📂 dir │ 📊 X↑/X↓` |
 | `print_response_summary()` | `✓ done │ ⏱ X.XXs │ 📊 X↑/X↓ │ 📦 X%` | `✓ done │ 📊 X↑/X↓` |
 
 ### Q2 — Model Info di Bawah Prompt
@@ -110,7 +110,7 @@ Setelah Q3 fix, masih ada issue:
 
 ### Yang Tetap
 
-- ✅ **reedline** — REPL input normal sebelum/sesudah agent
+- ✅ **InputBuffer** — custom ratatui input widget (menggantikan reedline)
 - ✅ **Spinner animation** — `⠇ Thinking... [████░░]`
 - ✅ **Model info di bawah prompt** — via `print_turn_separator()`
 - ✅ **Dotted separator** — antara prompt dan spinner
@@ -145,20 +145,25 @@ Satu sistem rendering (ratatui → inline.rs) untuk semua komponen:
 | Komponen | Status |
 |----------|--------|
 | Render input + cursor | ✅ Ada di `tui/input.rs` |
-| Capture keystrokes | ✅ Ada di `InputWatcher` (raw mode) |
+| Capture keystrokes | ✅ Ada di `interactive.rs` (crossterm raw mode) |
 | Syntax highlighting | ✅ Ada di `tui/input.rs` |
-| History (↑/↓) | ❌ Perlu rebuild (reedline pakai SQLite) |
-| Tab completion | ✅ Ada di `AgenticCompleter` |
-| Multi-line editing | ❌ Perlu rebuild |
-| Completion popup | ❌ Perlu rebuild dari `tui/dropdown.rs` |
+| History (↑/↓) | ✅ In-memory via `InputBuffer` |
+| Tab completion | ✅ Dropdown di `interactive.rs` |
+| Multi-line editing | ❌ Belum diimplementasikan |
+| Completion popup (`/`, `@`) | ✅ Ada di `tui/dropdown.rs` + `input_renderer.rs` |
 
 ### Estimasi
 
 Feature parity dasar dengan reedline: **2-3 hari**.
 
+### Implementasi
+
+Semua komponen di atas sudah diimplementasikan. `InputWatcher`, `AgenticCompleter`, dan reedline sudah dihapus.
+
 ### Dokumen Terpisah
 
 Lihat `docs/ratatui-input-widget.md` untuk detail desain lebih lanjut.
+Lihat `docs/plans/2026-06-08-ratatui-input-widget.md` untuk rencana implementasi.
 
 ---
 
@@ -175,4 +180,30 @@ ratatui-input-widget.md dibuat ✅
 - Design concept untuk future reference
 - Analisis komponen yang diperlukan
 - Estimasi implementasi
+
+### Post-Opsi A — Cleanup Redundansi Metadata (09 Jun 2026)
+
+Setelah Opsi A, `print_prompt_status_bar()` masih menampilkan model info (provider/model 👁) dan git branch — redundan dengan `print_turn_separator()` yang juga menampilkan hal yang sama di bawah prompt setelah submit.
+
+**Keputusan:** Hapus model info dan git branch dari `print_prompt_status_bar()`. Sekarang:
+- `print_prompt_status_bar()` hanya menampilkan `📂 dir  │  📊 X↑/X↓`
+- `print_turn_separator()` adalah satu-satunya tempat untuk model info + git branch
+
+### Post-Opsi A — Dropdown Render Fix (09 Jun 2026)
+
+**Issue:** Setiap karakter diketik saat dropdown terbuka, dropdown sebelumnya tidak ter-clear dengan benar — muncul multiple tumpukan dropdown.
+
+**Penyebab:** Rendering menggunakan `SavePosition`/`RestorePosition` (DECSC/DECRC) yang bergantung pada implementasi terminal. Saat konten dropdown melebihi tinggi terminal dan terjadi scroll, `RestorePosition` tidak selalu mengembalikan kursor ke posisi yang benar, sehingga `ClearFromCursorDown` tidak membersihkan semua konten dropdown sebelumnya.
+
+**Fix:** Ganti `SavePosition`/`RestorePosition` dengan tracking eksplisit jumlah baris dropdown + `MoveUp(count)` + `ClearFromCursorDown`. Setiap iterasi:
+1. `MoveUp(prev_dropdown_lines)` — kembali ke posisi sebelum dropdown
+2. `ClearFromCursorDown` — hapus semua konten dropdown + prompt
+3. Render dropdown + prompt baru
+4. Simpan `prev_dropdown_lines` dari return value `render_dropdown_lines()`
+
+**File:** `interactive.rs`
+- Hapus imports `SavePosition`, `RestorePosition`, `MoveToColumn`
+- Ganti semua penggunaan `SavePosition`/`RestorePosition` dengan `MoveUp` + tracking
+- Update Enter, Ctrl+C, Ctrl+D, Ctrl+L handlers
+- Update komentar arsitektur rendering
 ```

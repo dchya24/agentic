@@ -14,12 +14,14 @@ use anyhow::Result;
 use crossterm::{
     cursor::MoveUp,
     event::{self, Event, KeyCode, KeyModifiers},
-    terminal::{disable_raw_mode, enable_raw_mode},
+    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
+    ExecutableCommand,
 };
 use ratatui::{
     style::{Color, Modifier, Style as RStyle},
     text::{Line, Span as RSpan},
 };
+use std::io::Write;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -243,11 +245,21 @@ pub async fn run(mut commands: Commands) -> Result<()> {
 
 // ── Inner REPL loop ─────────────────────────────────────────
 //
-// Rendering architecture:
-//   1. Status bar: printed ONCE per prompt cycle (permanent, part of scrollback)
-//   2. Input area (dropdown + prompt): transient block, cleared & re-rendered
-//      on every keystroke. Track newline count for proper cursor movement.
-//   3. On submit: clear input area, print submitted text as permanent.
+// Rendering architecture (MoveUp tracking):
+//
+//   On each keystroke:
+//     1. MoveUp(prev_dropdown_lines) → back to top of input area
+//     2. ClearFromCursorDown → wipe old dropdown + prompt
+//     3. Render dropdown + prompt
+//     4. Store new dropdown line count in prev_dropdown_lines
+//
+//   On Enter (submit):
+//     1. MoveUp + Clear → wipe input area
+//     2. Print user input as permanent line (echo)
+//     3. Process input
+//
+//   This avoids DECSC/DECRC (SavePosition/RestorePosition) which can
+//   behave unreliably across terminals when the screen has scrolled.
 
 async fn repl_loop(
     buffer: &mut InputBuffer,
@@ -258,39 +270,48 @@ async fn repl_loop(
     stats: &SessionStats,
     model_info: &mut ModelInfo,
 ) -> Result<()> {
-    // Number of newlines currently rendered in the input area.
-    // This includes dropdown title + dropdown items. The prompt line is
-    // transient (no \n) so it doesn't count as a newline, but it occupies
-    // the same row as the cursor after the last \n.
-    let mut area_newlines: u16 = 0;
-    // Whether we need to print the status bar for this prompt cycle.
     let mut needs_status_bar = true;
+    let mut input_area_saved = false;
+    let mut prev_dropdown_lines: u16 = 0;
+    let mut stdout = std::io::stdout();
 
     loop {
         // ── Print status bar once per prompt cycle ──
         if needs_status_bar {
-            print_prompt_status_bar(model_info, stats);
+            print_prompt_status_bar(stats);
             needs_status_bar = false;
         }
 
         // ── Clear previous input area ──
-        clear_input_area(area_newlines);
-        area_newlines = 0;
+        // Uses explicit MoveUp + ClearFromCursorDown instead of
+        // SavePosition/RestorePosition to avoid terminal-specific
+        // DECSC/DECRC issues when the screen has scrolled.
+        if input_area_saved {
+            if prev_dropdown_lines > 0 {
+                let _ = stdout.execute(MoveUp(prev_dropdown_lines));
+            }
+            let _ = stdout.execute(Clear(ClearType::FromCursorDown));
+            let _ = stdout.flush();
+        } else {
+            input_area_saved = true;
+        }
 
         // ── Render dropdown (if active) + prompt line ──
+        if let Some(ref dd) = dropdown {
+            if !dd.is_empty() {
+                let count = input_renderer::render_dropdown_lines(dd);
+                prev_dropdown_lines = count as u16;
+            } else {
+                prev_dropdown_lines = 0;
+            }
+        } else {
+            prev_dropdown_lines = 0;
+        }
+
         let meta = PromptMetadata::new(
             model_info.provider.clone(),
             model_info.model.clone(),
         );
-
-        // Dropdown lines (each with \n)
-        if let Some(ref dd) = dropdown {
-            if !dd.is_empty() {
-                area_newlines = input_renderer::render_dropdown_lines(dd) as u16;
-            }
-        }
-
-        // Prompt line (transient, no \n)
         input_renderer::render_prompt_line(&meta, buffer);
 
         // ── Wait for key event ──
@@ -316,18 +337,15 @@ async fn repl_loop(
                         (KeyModifiers::NONE, KeyCode::Tab)
                         | (KeyModifiers::NONE, KeyCode::Enter) => {
                             accept_dropdown(buffer, dropdown);
-                            area_newlines = 0;
                             continue;
                         }
                         (KeyModifiers::NONE, KeyCode::Esc) => {
                             *dropdown = None;
-                            area_newlines = 0;
                             continue;
                         }
-                        // Any other key: close dropdown and fall through to input handling
+                        // Any other key: close dropdown and fall through
                         _ => {
                             *dropdown = None;
-                            area_newlines = 0;
                         }
                     }
                 }
@@ -336,16 +354,36 @@ async fn repl_loop(
                 match (key.modifiers, key.code) {
                     // ── Submit ──
                     (KeyModifiers::NONE, KeyCode::Enter) => {
-                        // Clear the input area
-                        clear_input_area(area_newlines);
-                        area_newlines = 0;
+                        // Clear input area (dropdown + prompt)
+                        if prev_dropdown_lines > 0 {
+                            let _ = stdout.execute(MoveUp(prev_dropdown_lines));
+                        }
+                        let _ = stdout.execute(Clear(ClearType::FromCursorDown));
+                        let _ = stdout.flush();
+                        input_area_saved = false;
                         *dropdown = None;
 
                         let input = buffer.submit();
                         if input.is_empty() {
                             inline::print_blank();
+                            input_area_saved = true;
                             continue;
                         }
+
+                        // Echo the user's input as a permanent line
+                        let dir_name = std::env::current_dir()
+                            .unwrap_or_default()
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("?")
+                            .to_string();
+                        inline::print_line(&Line::from(vec![
+                            RSpan::styled(
+                                format!("{}> ", dir_name),
+                                RStyle::default().add_modifier(Modifier::DIM),
+                            ),
+                            RSpan::styled(input.clone(), RStyle::default().fg(Color::Rgb(220, 220, 230))),
+                        ]));
 
                         // Handle input
                         let should_break = handle_input(
@@ -369,14 +407,26 @@ async fn repl_loop(
 
                     // ── Exit ──
                     (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
-                        clear_input_area(area_newlines);
+                        if input_area_saved {
+                            if prev_dropdown_lines > 0 {
+                                let _ = stdout.execute(MoveUp(prev_dropdown_lines));
+                            }
+                            let _ = stdout.execute(Clear(ClearType::FromCursorDown));
+                            let _ = stdout.flush();
+                        }
                         return Ok(());
                     }
 
                     // ── Cancel ──
                     (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                        clear_input_area(area_newlines);
-                        area_newlines = 0;
+                        if input_area_saved {
+                            if prev_dropdown_lines > 0 {
+                                let _ = stdout.execute(MoveUp(prev_dropdown_lines));
+                            }
+                            let _ = stdout.execute(Clear(ClearType::FromCursorDown));
+                            let _ = stdout.flush();
+                            input_area_saved = false;
+                        }
                         *dropdown = None;
                         buffer.clear();
                         inline::print_blank();
@@ -387,8 +437,9 @@ async fn repl_loop(
                         needs_status_bar = true;
                     }
 
-                    // ── Character input ──
-                    (KeyModifiers::NONE, KeyCode::Char(c)) => {
+                    // ── Character input (normal + shift/capslock) ──
+                    (KeyModifiers::NONE, KeyCode::Char(c))
+                    | (KeyModifiers::SHIFT, KeyCode::Char(c)) => {
                         buffer.insert_char(c);
                         buffer.reset_history_browse();
                         update_dropdown(buffer, dropdown);
@@ -446,8 +497,7 @@ async fn repl_loop(
 
                     // ── Ctrl+L — clear screen ──
                     (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
-                        clear_input_area(area_newlines);
-                        area_newlines = 0;
+                        input_area_saved = false;
                         crossterm::execute!(
                             std::io::stdout(),
                             crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
@@ -462,9 +512,7 @@ async fn repl_loop(
                     _ => {}
                 }
             }
-            Event::Resize(_, _) => {
-                // Terminal resized — just re-render on next iteration
-            }
+            Event::Resize(_, _) => {}
             _ => {}
         }
     }
@@ -548,11 +596,9 @@ fn accept_dropdown(buffer: &mut InputBuffer, dropdown: &mut Option<Dropdown>) {
 
     match dd.dropdown_type {
         DropdownType::Command => {
-            // Replace entire input with /command
             buffer.set_text(format!("/{} ", selected_text));
         }
         DropdownType::File => {
-            // Replace from @ to cursor with the selected file path
             if let Some(at_pos) = find_at_trigger(buffer.text(), buffer.cursor()) {
                 let suffix = if is_dir { "" } else { " " };
                 let replacement = format!("{}{}", selected_text, suffix);
@@ -560,11 +606,9 @@ fn accept_dropdown(buffer: &mut InputBuffer, dropdown: &mut Option<Dropdown>) {
             }
         }
         DropdownType::Model => {
-            // Extract model ID from display string
             let model_id = dd
                 .get_model_id(&selected_text)
                 .unwrap_or_else(|| selected_text.clone());
-            // Replace from after "/models " to cursor with model ID
             let space_pos = buffer.text().find(' ').unwrap_or(buffer.text().len());
             let prefix = buffer.text()[..=space_pos].to_string();
             let after_cursor = buffer.text()[buffer.cursor()..].to_string();
@@ -578,26 +622,6 @@ fn accept_dropdown(buffer: &mut InputBuffer, dropdown: &mut Option<Dropdown>) {
         update_dropdown(buffer, &mut new_dd);
         *dropdown = new_dd;
     }
-}
-
-/// Clear the input area (dropdown lines + prompt line) from the terminal.
-///
-/// After rendering, cursor is `area_newlines` rows below the start of the area
-/// (the prompt line is on the same row as the cursor, without a `\n`).
-/// To clear: move cursor up `area_newlines` rows, then clear from cursor down.
-fn clear_input_area(area_newlines: u16) {
-    use crossterm::cursor::MoveToColumn;
-    use crossterm::terminal::{Clear, ClearType};
-    use crossterm::ExecutableCommand;
-    use std::io::Write;
-
-    let mut stdout = std::io::stdout();
-    if area_newlines > 0 {
-        let _ = stdout.execute(MoveUp(area_newlines));
-    }
-    let _ = stdout.execute(MoveToColumn(0));
-    let _ = stdout.execute(Clear(ClearType::FromCursorDown));
-    let _ = stdout.flush();
 }
 
 // ── Input handling ──────────────────────────────────────────
@@ -903,7 +927,11 @@ async fn handle_repl_action(
         }
 
         ReplAction::Models => {
-            if let Some((provider, model)) = commands.pick_model_interactive_inline() {
+            // dialoguer needs cooked mode (it controls the terminal itself)
+            disable_raw_mode().ok();
+            let result = commands.pick_model_interactive_inline();
+            enable_raw_mode().ok();
+            if let Some((provider, model)) = result {
                 inline::print_blank();
                 inline::print_line(&components::success_badge(&format!(
                     "Switched to {} / {}",
@@ -1399,7 +1427,7 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
     inline::print_blank();
 }
 
-fn print_prompt_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
+fn print_prompt_status_bar(stats: &SessionStats) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
@@ -1411,22 +1439,6 @@ fn print_prompt_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
         .and_then(|n| n.to_str())
         .unwrap_or("?")
         .to_string();
-    let git_branch = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if b.is_empty() || b == "HEAD" {
-                    None
-                } else {
-                    Some(b)
-                }
-            } else {
-                None
-            }
-        });
 
     let mut spans: Vec<RSpan<'static>> = vec![
         RSpan::raw("  "),
@@ -1435,26 +1447,6 @@ fn print_prompt_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
             RStyle::default().fg(Color::Rgb(180, 180, 200)),
         ),
     ];
-
-    if let Some(ref branch) = git_branch {
-        spans.push(RSpan::styled(
-            format!(" \u{b7} {}", branch),
-            RStyle::default().fg(Color::Rgb(135, 206, 250)),
-        ));
-    }
-
-    spans.push(sep.clone());
-    spans.push(RSpan::styled(
-        format!("\u{26a1} {}/{}", model_info.provider, model_info.model),
-        RStyle::default().fg(Color::Rgb(255, 215, 0)),
-    ));
-
-    if model_info.vision_capable {
-        spans.push(RSpan::styled(
-            " \u{1f441}",
-            RStyle::default().fg(Color::Rgb(135, 206, 250)),
-        ));
-    }
 
     spans.push(sep.clone());
     spans.push(RSpan::styled(

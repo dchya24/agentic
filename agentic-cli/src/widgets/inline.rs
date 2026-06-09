@@ -20,6 +20,10 @@ use super::capabilities::should_use_color;
 /// Print a single `Line` to stdout. Styling is dropped automatically when
 /// the terminal does not support color (NO_COLOR, TERM=dumb, piped output,
 /// or `--color=never`).
+///
+/// Uses `\r\n` (CRLF) instead of just `\n` so output is correct both in
+/// cooked mode (terminal driver strips the extra `\r`) and raw mode (where
+/// `\n` alone only moves the cursor down without returning to column 0).
 pub fn print_line(line: &Line<'_>) {
     let mut stdout = io::stdout();
     let styled = should_use_color();
@@ -33,7 +37,8 @@ pub fn print_line(line: &Line<'_>) {
             let _ = stdout.execute(SetAttribute(Attribute::Reset));
         }
     }
-    let _ = writeln!(stdout);
+    let _ = stdout.execute(Print("\r\n"));
+    let _ = stdout.flush();
 }
 
 /// Print multiple `Line`s to stdout.
@@ -59,8 +64,11 @@ pub fn print_rule(ch: char, style: Style) {
 }
 
 /// Print an empty line.
+/// Uses `\r\n` for raw mode compatibility.
 pub fn print_blank() {
-    println!();
+    let mut stdout = io::stdout();
+    let _ = stdout.execute(Print("\r\n"));
+    let _ = stdout.flush();
 }
 
 /// Print a `Line` as a transient status line that overwrites itself on each
@@ -141,7 +149,7 @@ pub fn replace_lines(count: u32, new_lines: &[Line<'_>]) {
                 let _ = stdout.execute(Print(&span.content));
             }
         }
-        let _ = writeln!(stdout);
+        let _ = stdout.execute(Print("\r\n"));
     }
     let _ = stdout.flush();
 }

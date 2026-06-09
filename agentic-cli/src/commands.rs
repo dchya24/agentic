@@ -1737,10 +1737,11 @@ impl Commands {
                         streaming_text_active.store(true, Ordering::Relaxed);
                     }
                     // Print the chunk directly to stdout.
-                    // We use print! instead of inline::print_line because
-                    // streaming is character-by-character, not line-by-line.
+                    // Replace bare \n with \r\n for raw mode compatibility.
+                    // (In cooked mode the extra \r is harmlessly ignored.)
+                    let safe_chunk = chunk.replace("\n", "\r\n");
                     use std::io::Write;
-                    let _ = std::io::stdout().write_all(chunk.as_bytes());
+                    let _ = std::io::stdout().write_all(safe_chunk.as_bytes());
                     let _ = std::io::stdout().flush();
                     streamed_text_clone
                         .lock()

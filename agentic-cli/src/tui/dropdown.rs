@@ -201,8 +201,14 @@ impl Dropdown {
             let path = entry.path();
             let path_str = path.to_string_lossy();
 
-            // Skip `.` itself
-            if path_str == "." || path_str == "./" {
+            // Skip `.` itself and `.git/` directory
+            if path_str == "." || path_str == "./" || path_str == "./.git" {
+                continue;
+            }
+
+            // Skip anything inside `.git/`
+            let normalized = path_str.replace('\\', "/");
+            if normalized.starts_with(".git/") || normalized.starts_with("./.git/") {
                 continue;
             }
 
