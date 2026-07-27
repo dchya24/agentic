@@ -1,15 +1,19 @@
 //! Custom input buffer replacing reedline for interactive REPL mode.
 //!
-//! Provides single-line text editing, cursor management, and in-memory history.
+//! Provides single-line and multi-line text editing, cursor management, and in-memory history.
 //! Used by the raw-mode event loop in `interactive.rs`.
 
 /// Maximum input length (single-line mode)
 const MAX_INPUT_LEN: usize = 4096;
 
+/// Maximum number of lines in multi-line mode
+const MAX_LINES: usize = 50;
+
 /// Input buffer with cursor position and in-memory history.
+/// Supports both single-line and multi-line editing.
 #[derive(Debug)]
 pub struct InputBuffer {
-    /// Current input text
+    /// Current input text (may contain newlines for multi-line mode)
     text: String,
     /// Cursor position (byte offset within `text`)
     cursor: usize,
@@ -19,6 +23,8 @@ pub struct InputBuffer {
     history_idx: Option<usize>,
     /// Saved input when user started browsing history
     saved_input: String,
+    /// Whether multi-line mode is active
+    multiline: bool,
 }
 
 impl InputBuffer {
@@ -29,6 +35,7 @@ impl InputBuffer {
             history: Vec::new(),
             history_idx: None,
             saved_input: String::new(),
+            multiline: false,
         }
     }
 
@@ -244,6 +251,122 @@ impl InputBuffer {
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
+        self.multiline = false;
+    }
+
+    // ── Multi-line support ──────────────────────────────────────
+
+    /// Check if multi-line mode is active
+    pub fn is_multiline(&self) -> bool {
+        self.multiline
+    }
+
+    /// Get the number of lines in the input
+    pub fn line_count(&self) -> usize {
+        if self.text.is_empty() {
+            1
+        } else {
+            // Count newlines + 1
+            self.text.chars().filter(|c| *c == '\n').count() + 1
+        }
+    }
+
+    /// Get the current line index (0-based)
+    pub fn current_line(&self) -> usize {
+        self.text[..self.cursor].lines().count().saturating_sub(1)
+    }
+
+    /// Insert a line break at cursor position (Shift+Enter)
+    pub fn insert_line_break(&mut self) {
+        if self.line_count() >= MAX_LINES {
+            return;
+        }
+        self.text.insert(self.cursor, '\n');
+        self.cursor += 1;
+        self.multiline = true;
+    }
+
+    /// Get lines as a vector of strings
+    pub fn lines(&self) -> Vec<&str> {
+        if self.text.is_empty() {
+            vec![""]
+        } else {
+            self.text.lines().collect()
+        }
+    }
+
+    /// Get the text of the current line
+    pub fn current_line_text(&self) -> &str {
+        let line_idx = self.current_line();
+        self.lines().get(line_idx).copied().unwrap_or("")
+    }
+
+    /// Move cursor up one line
+    pub fn cursor_up(&mut self) {
+        let lines: Vec<&str> = self.text.lines().collect();
+        let current_line = self.current_line();
+        
+        if current_line == 0 {
+            return;
+        }
+
+        let prev_line = current_line - 1;
+        let prev_line_start = lines[..prev_line].iter().map(|l| l.len() + 1).sum::<usize>();
+        let current_line_start = lines[..current_line].iter().map(|l| l.len() + 1).sum::<usize>();
+        let col = self.cursor - current_line_start;
+        let prev_line_len = lines[prev_line].len();
+        
+        // Move to same column or end of previous line
+        let new_col = col.min(prev_line_len);
+        self.cursor = prev_line_start + new_col;
+    }
+
+    /// Move cursor down one line
+    pub fn cursor_down(&mut self) {
+        let lines: Vec<&str> = self.text.lines().collect();
+        let current_line = self.current_line();
+        
+        if current_line + 1 >= lines.len() {
+            return;
+        }
+
+        let next_line = current_line + 1;
+        let current_line_start = lines[..current_line].iter().map(|l| l.len() + 1).sum::<usize>();
+        let next_line_start = lines[..next_line].iter().map(|l| l.len() + 1).sum::<usize>();
+        let col = self.cursor - current_line_start;
+        let next_line_len = lines[next_line].len();
+        
+        // Move to same column or end of next line
+        let new_col = col.min(next_line_len);
+        self.cursor = next_line_start + new_col;
+    }
+
+    /// Merge current line with previous line (Backspace at line start)
+    pub fn merge_with_previous_line(&mut self) {
+        // Find the newline before the cursor
+        if self.cursor == 0 {
+            return;
+        }
+        
+        // Find the last newline before cursor
+        let newline_pos = self.text[..self.cursor].rfind('\n');
+        
+        match newline_pos {
+            Some(pos) => {
+                // Remove the newline character
+                self.text.remove(pos);
+                self.cursor = pos;
+            }
+            None => {
+                // No newline before cursor, nothing to merge
+                return;
+            }
+        }
+        
+        // Update multiline flag
+        if self.line_count() <= 1 {
+            self.multiline = false;
+        }
     }
 
     /// Submit input — pushes to history, returns the text, clears buffer.
@@ -259,6 +382,7 @@ impl InputBuffer {
         self.text.clear();
         self.cursor = 0;
         self.history_idx = None;
+        self.multiline = false;
         input
     }
 
@@ -576,5 +700,113 @@ mod tests {
         assert_eq!(buf.cursor(), 3);
         buf.cursor_left(); // back to h
         assert_eq!(buf.cursor(), 1);
+    }
+
+    // ── Multi-line tests ──────────────────────────────────────
+
+    #[test]
+    fn test_multiline_insert_line_break() {
+        let mut buf = InputBuffer::new();
+        buf.set_text("hello".to_string());
+        buf.cursor_end();
+        
+        assert!(!buf.is_multiline());
+        assert_eq!(buf.line_count(), 1);
+        
+        buf.insert_line_break();
+        
+        assert!(buf.is_multiline());
+        assert_eq!(buf.text(), "hello\n");
+        assert_eq!(buf.line_count(), 2);
+    }
+
+    #[test]
+    fn test_multiline_current_line() {
+        let mut buf = InputBuffer::new();
+        buf.set_text("line1\nline2\nline3".to_string());
+        buf.multiline = true;
+        
+        // Cursor at end
+        buf.cursor_end();
+        assert_eq!(buf.current_line(), 2); // line3 (0-indexed)
+        
+        // Move to start
+        buf.cursor_home();
+        assert_eq!(buf.current_line(), 0); // line1
+    }
+
+    #[test]
+    fn test_multiline_lines() {
+        let mut buf = InputBuffer::new();
+        buf.set_text("line1\nline2\nline3".to_string());
+        buf.multiline = true;
+        
+        let lines = buf.lines();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "line1");
+        assert_eq!(lines[1], "line2");
+        assert_eq!(lines[2], "line3");
+    }
+
+    #[test]
+    fn test_multiline_cursor_navigation() {
+        let mut buf = InputBuffer::new();
+        buf.set_text("line1\nline2\nline3".to_string());
+        buf.multiline = true;
+        buf.cursor_end(); // at end of "line3"
+        
+        // Move up to "line2"
+        buf.cursor_up();
+        assert_eq!(buf.current_line(), 1);
+        
+        // Move up to "line1"
+        buf.cursor_up();
+        assert_eq!(buf.current_line(), 0);
+        
+        // Can't move up further
+        buf.cursor_up();
+        assert_eq!(buf.current_line(), 0);
+        
+        // Move down
+        buf.cursor_down();
+        assert_eq!(buf.current_line(), 1);
+    }
+
+    #[test]
+    fn test_multiline_merge_with_previous() {
+        let mut buf = InputBuffer::new();
+        buf.set_text("line1\nline2".to_string());
+        buf.multiline = true;
+        
+        // Move to start of line2
+        buf.cursor = 6; // after "line1\n"
+        
+        buf.merge_with_previous_line();
+        
+        assert_eq!(buf.text(), "line1line2");
+        assert!(!buf.is_multiline());
+    }
+
+    #[test]
+    fn test_multiline_clear_resets_flag() {
+        let mut buf = InputBuffer::new();
+        buf.set_text("line1\nline2".to_string());
+        buf.multiline = true;
+        
+        buf.clear();
+        
+        assert!(!buf.is_multiline());
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn test_multiline_submit() {
+        let mut buf = InputBuffer::new();
+        buf.set_text("line1\nline2\nline3".to_string());
+        buf.multiline = true;
+        
+        let result = buf.submit();
+        assert_eq!(result, "line1\nline2\nline3");
+        assert!(!buf.is_multiline());
     }
 }

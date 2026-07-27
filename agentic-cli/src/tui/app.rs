@@ -639,6 +639,109 @@ impl App {
         });
     }
 
+    // ── Skills ─────────────────────────────────────────────────
+
+    /// List all indexed skills
+    fn handle_skill_list(&mut self) {
+        use crate::cli::SkillAction;
+        match &self.commands {
+            Some(cmds) => {
+                let discovery_config: core_agentic::DiscoveryConfig =
+                    core_agentic::DiscoveryConfig::from(&cmds.get_config().skills);
+                let index = core_agentic::discover_skills(&discovery_config);
+
+                if index.is_empty() {
+                    self.messages.push(Message {
+                        role: MessageRole::System,
+                        content: "No skills found.\n\nCreate one: `agentic skill create <name>`".into(),
+                        timestamp: chrono::Local::now(),
+                    });
+                    return;
+                }
+
+                let mut skills: Vec<_> = index.all().into_iter().collect();
+                skills.sort_by(|a, b| a.name().cmp(b.name()));
+
+                let mut lines = format!("**Indexed Skills ({})**\n\n", skills.len());
+                for skill in &skills {
+                    lines.push_str(&format!("- **{}** — {}\n", skill.name(), skill.description()));
+                    lines.push_str(&format!("  *Path: `{}`*\n", skill.dir.display()));
+                }
+
+                if !index.blocked().is_empty() {
+                    lines.push_str("\n**Blocked:**\n");
+                    for name in index.blocked() {
+                        lines.push_str(&format!("- ✗ {}\n", name));
+                    }
+                }
+
+                self.messages.push(Message {
+                    role: MessageRole::System,
+                    content: lines,
+                    timestamp: chrono::Local::now(),
+                });
+            }
+            None => {
+                self.messages.push(Message {
+                    role: MessageRole::Error,
+                    content: "Commands not initialized.".into(),
+                    timestamp: chrono::Local::now(),
+                });
+            }
+        }
+    }
+
+    /// Load and display a skill
+    fn handle_skill_load(&mut self, name: &str) {
+        match &self.commands {
+            Some(cmds) => {
+                let discovery_config: core_agentic::DiscoveryConfig =
+                    core_agentic::DiscoveryConfig::from(&cmds.get_config().skills);
+                let index = core_agentic::discover_skills(&discovery_config);
+
+                match index.get(name) {
+                    Some(skill) => {
+                        let mut lines = format!(
+                            "**📦 {}** — {}\n\n",
+                            skill.name(),
+                            skill.description()
+                        );
+                        lines.push_str(&format!("Path: `{}`\n\n", skill.dir.display()));
+
+                        // Preview first 10 lines
+                        let preview: Vec<&str> = skill.body.lines().take(10).collect();
+                        for line in &preview {
+                            lines.push_str(&format!("{}\n", line));
+                        }
+                        if skill.body.lines().count() > 10 {
+                            lines.push_str(&format!("... ({} more lines)\n", skill.body.lines().count() - 10));
+                        }
+
+                        self.messages.push(Message {
+                            role: MessageRole::System,
+                            content: lines,
+                            timestamp: chrono::Local::now(),
+                        });
+                    }
+                    None => {
+                        self.messages.push(Message {
+                            role: MessageRole::Error,
+                            content: format!("Skill '{}' not found. Use `/skills` to list available skills.", name),
+                            timestamp: chrono::Local::now(),
+                        });
+                    }
+                }
+            }
+            None => {
+                self.messages.push(Message {
+                    role: MessageRole::Error,
+                    content: "Commands not initialized.".into(),
+                    timestamp: chrono::Local::now(),
+                });
+            }
+        }
+    }
+
     // ── G-10: /plan <goal> ────────────────────────────────────
 
     /// Generate and display a structured plan for the given goal.
@@ -733,8 +836,9 @@ impl App {
                         core_agentic::Event::Error { message } => {
                             let _ = event_tx.send(AppMessage::Error(message));
                         }
-                        core_agentic::Event::Thought { content } => {
-                            let _ = event_tx.send(AppMessage::Thought(content));
+                        core_agentic::Event::Thought { .. } => {
+                            // Skip — text was already streamed via on_chunk.
+                            // A separate Thought message would duplicate content.
                         }
                         _ => {}
                     },
@@ -1194,8 +1298,9 @@ impl App {
                             core_agentic::Event::Error { message } => {
                                 let _ = event_tx.send(AppMessage::Error(message));
                             }
-                            core_agentic::Event::Thought { content } => {
-                                let _ = event_tx.send(AppMessage::Thought(content));
+                            core_agentic::Event::Thought { .. } => {
+                                // Skip — text was already streamed via on_chunk.
+                                // A separate Thought message would duplicate content.
                             }
                             // Other event types aren't surfaced in TUI for now.
                             _ => {}
@@ -1234,18 +1339,20 @@ impl App {
 |---------|-------|-------------|
 | `/help` | `/h` | Show this help |
 | `/new` | `/n` | Start new session |
-| `/clear` | `/c` | Clear messages only |
+| `/clear` | `/cls` | Start new session (alias) |
 | `/sessions` | `/ss` | List & resume sessions |
 | `/models` | `/m` | Switch model |
 | `/provider` | | Switch provider |
-| `/search` | `/s` | Search conversation history |
+| `/search` | `/s`, `/find` | Search conversation history |
 | `/image` | `/img` | Attach image |
-| `/mcp` | | Show MCP server status |
+| `/skills` | | List indexed skills |
+| `/skills <name>` | | Load and display a skill |
 | `/plan` | `/p` | Generate a structured plan |
 | `/config` | `/cfg` | Show configuration |
 | `/tools` | `/t` | List available tools |
 | `/history` | `/hist` | Show message history |
 | `/stats` | | Show statistics |
+| `/mcp` | | Show MCP server status |
 | `/quit` | `/q` | Exit TUI |
 
 **Tips:**
@@ -1253,21 +1360,15 @@ impl App {
 - Type `@` anywhere to browse files
 - Use ↑/↓ to navigate history
 - Use PageUp/PageDown to scroll
-- Press Ctrl+C to cancel"#.into(),
+- Press Ctrl+C / Esc to cancel"#.into(),
                     timestamp: chrono::Local::now(),
                 });
             }
             "/new" | "/n" => {
                 self.new_session();
             }
-            "/clear" | "/c" | "/cls" => {
-                self.messages.clear();
-                self.messages.push(Message {
-                    role: MessageRole::System,
-                    content: "Conversation cleared.".into(),
-                    timestamp: chrono::Local::now(),
-                });
-                self.scroll_offset = 0;
+            "/clear" | "/cls" => {
+                self.new_session();
             }
             "/sessions" | "/ss" if !arg.is_empty() => {
                 // Resume specific session by ID or index
@@ -1294,7 +1395,7 @@ impl App {
                     timestamp: chrono::Local::now(),
                 });
             }
-            "/search" | "/s" => {
+            "/search" | "/s" | "/find" => {
                 self.handle_search(arg);
             }
             "/image" | "/img" => {
@@ -1308,6 +1409,12 @@ impl App {
             }
             "/mcp" => {
                 self.handle_mcp_status();
+            }
+            "/skills" | "/sk" if !arg.is_empty() => {
+                self.handle_skill_load(arg);
+            }
+            "/skills" | "/sk" => {
+                self.handle_skill_list();
             }
             "/plan" | "/p" if !arg.is_empty() => {
                 self.handle_plan(arg).await;
@@ -1323,16 +1430,70 @@ impl App {
                 self.should_quit = true;
             }
             "/config" | "/cfg" => {
+                let config_text = match &self.commands {
+                    Some(cmds) => {
+                        let cfg = cmds.config_ref();
+                        let mut lines = String::from("**Configuration:**\n\n");
+                        lines.push_str(&format!("- Config path: `{}`\n", core_agentic::Config::config_path().display()));
+                        if let Some(p) = cfg.active_provider() {
+                            lines.push_str(&format!("- Provider: **{}**\n", p.name));
+                            lines.push_str(&format!("- API Base: `{}`\n", p.api_base));
+                            if p.api_key.is_empty() {
+                                lines.push_str("- API Key: ✗ not set\n");
+                            } else {
+                                let masked = format!(
+                                    "{}...{}",
+                                    &p.api_key[..4.min(p.api_key.len())],
+                                    &p.api_key[p.api_key.len().saturating_sub(4)..]
+                                );
+                                lines.push_str(&format!("- API Key: `{}`\n", masked));
+                            }
+                            if let Some(m) = p.models.first() {
+                                lines.push_str(&format!(
+                                    "- Model: `{}` (temp: {}, max_tokens: {})\n",
+                                    m.model, m.temperature, m.max_tokens
+                                ));
+                            }
+                        } else {
+                            lines.push_str("- No provider configured.\n");
+                        }
+                        lines
+                    }
+                    None => "Commands not initialized.".into(),
+                };
                 self.messages.push(Message {
                     role: MessageRole::System,
-                    content: "Configuration display coming soon...".into(),
+                    content: config_text,
                     timestamp: chrono::Local::now(),
                 });
             }
             "/tools" | "/t" => {
+                let tools_text = {
+                    let registry = core_agentic::ToolRegistry::new();
+                    for tool in core_agentic::tools::builtin_tools() {
+                        registry.register(tool);
+                    }
+                    let tool_list = registry.list();
+                    let mut lines = format!("**Available Tools ({})**\n\n", tool_list.len());
+                    for t in &tool_list {
+                        lines.push_str(&format!("- **{}** — {}\n", t.name, t.description));
+                        if !t.parameters.is_empty() {
+                            let params: Vec<String> = t
+                                .parameters
+                                .keys()
+                                .map(|p| {
+                                    let required = t.required.contains(p);
+                                    format!("{}{}", p, if required { "*" } else { "" })
+                                })
+                                .collect();
+                            lines.push_str(&format!("  Params: `{}`\n", params.join(", ")));
+                        }
+                    }
+                    lines
+                };
                 self.messages.push(Message {
                     role: MessageRole::System,
-                    content: "Tools list coming soon...".into(),
+                    content: tools_text,
                     timestamp: chrono::Local::now(),
                 });
             }

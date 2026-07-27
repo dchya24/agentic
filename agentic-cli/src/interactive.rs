@@ -21,8 +21,8 @@ use ratatui::{
     style::{Color, Modifier, Style as RStyle},
     text::{Line, Span as RSpan},
 };
-use std::io::Write;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::io::{self, Stdout, Write};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -33,6 +33,8 @@ use crate::input_renderer::{self, PromptMetadata};
 use crate::tui::dropdown::{Dropdown, DropdownType};
 use crate::widgets::components;
 use crate::widgets::inline;
+use crate::widgets::spinner;
+use crate::widgets::toast::{Toast, ToastManager};
 
 // ── Session statistics ──────────────────────────────────────
 
@@ -184,6 +186,60 @@ struct ConversationEntry {
     timestamp: chrono::DateTime<chrono::Local>,
 }
 
+// ── Render state ───────────────────────────────────────────
+//
+/// Encapsulates the mutable rendering state used by the REPL
+/// loop so that cursor-position tracking and line-count
+/// calculations are kept together instead of being scattered
+/// across local variables.
+struct RenderState {
+    /// How many terminal lines the previous render covered
+    /// (prompt + dropdown).  Used by MoveUp(N) to target the
+    /// top of the input area before clearing.
+    pub prev_lines: usize,
+    /// Whether the status bar (+toasts) needs to be reprinted.
+    pub needs_status_bar: bool,
+}
+
+impl RenderState {
+    fn new() -> Self {
+        Self {
+            prev_lines: 0,
+            needs_status_bar: true,
+        }
+    }
+
+    /// Clear the previously rendered input area (prompt +
+    /// dropdown).  The caller MUST have ensured that the cursor
+    /// sits on a NEW line *below* the rendered area before
+    /// calling this — that invariant is maintained by
+    /// render_prompt_line / render_dropdown_lines which always
+    /// end with `print_line` (includes `\r\n`).
+    fn clear_input_area(&self, stdout: &mut Stdout) -> io::Result<()> {
+        if self.prev_lines == 0 {
+            return Ok(());
+        }
+        // Move up `prev_lines` → back to top of input area.
+        stdout.execute(MoveUp(self.prev_lines as u16))?;
+        stdout.execute(MoveToColumn(0))?;
+        stdout.execute(Clear(ClearType::FromCursorDown))?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    /// Reset when the input area is permanently consumed
+    /// (Enter submit, Ctrl+C, Ctrl+L).
+    fn reset(&mut self) {
+        self.prev_lines = 0;
+    }
+
+    /// Called when the prompt + dropdown have been rendered.
+    /// `lines` is the total number of lines emitted.
+    fn after_render(&mut self, lines: usize) {
+        self.prev_lines = lines;
+    }
+}
+
 // ── REPL loop ───────────────────────────────────────────────
 
 pub async fn run(mut commands: Commands) -> Result<()> {
@@ -207,17 +263,22 @@ pub async fn run(mut commands: Commands) -> Result<()> {
     let mut dropdown: Option<Dropdown> = None;
     let mut conversation: Vec<ConversationEntry> = Vec::new();
 
-    // Enter raw mode for key capture
+    // Enter raw mode for key capture and hide terminal cursor
+    // (cursor position is already rendered visually by render_input)
     enable_raw_mode()?;
+    crossterm::execute!(std::io::stdout(), crossterm::cursor::Hide)?;
 
-    // Guard: ensure raw mode is disabled even on panic
+    // Guard: ensure raw mode is disabled + cursor shown even on panic
     struct RawModeGuard;
     impl Drop for RawModeGuard {
         fn drop(&mut self) {
+            let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
             let _ = disable_raw_mode();
         }
     }
     let _raw_guard = RawModeGuard;
+
+    let mut toast_manager = ToastManager::new();
 
     let result = repl_loop(
         &mut buffer,
@@ -227,11 +288,13 @@ pub async fn run(mut commands: Commands) -> Result<()> {
         &mut current_session,
         &stats,
         &mut model_info,
+        &mut toast_manager,
     )
     .await;
 
     // Explicitly disable (guard also does this on drop)
     drop(_raw_guard);
+    crossterm::execute!(std::io::stdout(), crossterm::cursor::Show).ok();
     disable_raw_mode().ok();
 
     // Auto-save session on exit
@@ -245,21 +308,25 @@ pub async fn run(mut commands: Commands) -> Result<()> {
 
 // ── Inner REPL loop ─────────────────────────────────────────
 //
-// Rendering architecture (MoveUp tracking):
+// Rendering architecture (MoveUp tracking, encapsulated in RenderState):
 //
 //   On each keystroke:
-//     1. MoveUp(prev_dropdown_lines) → back to top of input area
-//     2. ClearFromCursorDown → wipe old dropdown + prompt
-//     3. Render dropdown + prompt
-//     4. Store new dropdown line count in prev_dropdown_lines
+//     1. RenderState::clear_input_area() — MoveUp(N) + Clear
+//     2. render_prompt_line() → returns line count N
+//     3. render_dropdown_lines() → returns line count D
+//     4. RenderState::after_render() — stores N+D in prev_lines
 //
-//   On Enter (submit):
-//     1. MoveUp + Clear → wipe input area
-//     2. Print user input as permanent line (echo)
-//     3. Process input
+//   Key invariant: **every** render path MUST leave the cursor on a
+//   new line below the rendered content so that MoveUp(N) can
+//   correctly return to the top of the input area on the next
+//   keystroke.  `render_prompt_line` uses `print_line` (which appends
+//   `\r\n`) for the last line, guaranteeing this.
 //
-//   This avoids DECSC/DECRC (SavePosition/RestorePosition) which can
-//   behave unreliably across terminals when the screen has scrolled.
+//   Terminal resize: clears render state + reprints status bar.
+//
+//   We avoid DECSC/DECRC (SavePosition/RestorePosition) because they
+//   are unreliable when the terminal scrolls.  MoveUp tracking is
+//   deterministic regardless of scroll state.
 
 async fn repl_loop(
     buffer: &mut InputBuffer,
@@ -269,53 +336,48 @@ async fn repl_loop(
     current_session: &mut crate::session::Session,
     stats: &SessionStats,
     model_info: &mut ModelInfo,
+    toast_manager: &mut ToastManager,
 ) -> Result<()> {
-    let mut needs_status_bar = true;
-    let mut input_area_saved = false;
-    let mut prev_dropdown_lines: u16 = 0;
-    let mut stdout = std::io::stdout();
+    let mut render = RenderState::new();
+    let mut stdout = io::stdout();
 
     loop {
+        // ── Clean up expired toasts ──
+        toast_manager.cleanup();
+        
         // ── Print status bar once per prompt cycle ──
-        if needs_status_bar {
+        if render.needs_status_bar {
             print_prompt_status_bar(stats);
-            needs_status_bar = false;
+            
+            // Render active toasts
+            if toast_manager.has_toasts() {
+                let toast_lines = toast_manager.render();
+                for line in toast_lines {
+                    inline::print_line(&line);
+                }
+            }
+            
+            render.needs_status_bar = false;
         }
 
         // ── Clear previous input area ──
-        // Uses explicit MoveUp + MoveToColumn(0) + ClearFromCursorDown instead of
-        // SavePosition/RestorePosition to avoid terminal-specific
-        // DECSC/DECRC issues when the screen has scrolled.
-        // MoveToColumn(0) ensures the prompt text on the current line is
-        // also cleared (ClearFromCursorDown only clears from cursor down).
-        if input_area_saved {
-            if prev_dropdown_lines > 0 {
-                let _ = stdout.execute(MoveUp(prev_dropdown_lines));
-            }
-            let _ = stdout.execute(MoveToColumn(0));
-            let _ = stdout.execute(Clear(ClearType::FromCursorDown));
-            let _ = stdout.flush();
-        } else {
-            input_area_saved = true;
-        }
+        render.clear_input_area(&mut stdout)?;
 
-        // ── Render dropdown (if active) + prompt line ──
-        if let Some(ref dd) = dropdown {
-            if !dd.is_empty() {
-                let count = input_renderer::render_dropdown_lines(dd);
-                prev_dropdown_lines = count as u16;
-            } else {
-                prev_dropdown_lines = 0;
-            }
-        } else {
-            prev_dropdown_lines = 0;
-        }
-
+        // ── Render prompt line first ──
         let meta = PromptMetadata::new(
             model_info.provider.clone(),
             model_info.model.clone(),
         );
-        input_renderer::render_prompt_line(&meta, buffer);
+        let prompt_lines = input_renderer::render_prompt_line(&meta, buffer, dropdown.is_some());
+        render.prev_lines = prompt_lines;
+
+        // ── Render dropdown below input (if active) ──
+        if let Some(ref dd) = dropdown {
+            if !dd.is_empty() {
+                let dd_lines = input_renderer::render_dropdown_lines(dd);
+                render.prev_lines += dd_lines;
+            }
+        }
 
         // ── Wait for key event ──
         let event = event::read()?;
@@ -357,24 +419,15 @@ async fn repl_loop(
                 match (key.modifiers, key.code) {
                     // ── Submit ──
                     (KeyModifiers::NONE, KeyCode::Enter) => {
-                        // Clear input area (dropdown + prompt)
-                        // MoveToColumn(0) first to wipe any prompt text
-                        // on the current line (ClearFromCursorDown alone
-                        // only clears from cursor-position to bottom,
-                        // leaving text before the cursor visible).
-                        if prev_dropdown_lines > 0 {
-                            let _ = stdout.execute(MoveUp(prev_dropdown_lines));
-                        }
-                        let _ = stdout.execute(MoveToColumn(0));
-                        let _ = stdout.execute(Clear(ClearType::FromCursorDown));
-                        let _ = stdout.flush();
-                        input_area_saved = false;
+                        // Clear input area (input + dropdown below)
+                        render.clear_input_area(&mut stdout)?;
+                        render.reset();
                         *dropdown = None;
 
                         let input = buffer.submit();
                         if input.is_empty() {
                             inline::print_blank();
-                            input_area_saved = true;
+                            render.reset();
                             continue;
                         }
 
@@ -401,12 +454,13 @@ async fn repl_loop(
                             current_session,
                             stats,
                             model_info,
+                            toast_manager,
                         )
                         .await;
 
                         // Refresh model_info in case provider changed
                         *model_info = get_model_info(commands);
-                        needs_status_bar = true;
+                        render.needs_status_bar = true;
 
                         if should_break {
                             return Ok(());
@@ -415,28 +469,14 @@ async fn repl_loop(
 
                     // ── Exit ──
                     (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
-                        if input_area_saved {
-                            if prev_dropdown_lines > 0 {
-                                let _ = stdout.execute(MoveUp(prev_dropdown_lines));
-                            }
-                            let _ = stdout.execute(MoveToColumn(0));
-                            let _ = stdout.execute(Clear(ClearType::FromCursorDown));
-                            let _ = stdout.flush();
-                        }
+                        render.clear_input_area(&mut stdout)?;
                         return Ok(());
                     }
 
                     // ── Cancel ──
                     (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                        if input_area_saved {
-                            if prev_dropdown_lines > 0 {
-                                let _ = stdout.execute(MoveUp(prev_dropdown_lines));
-                            }
-                            let _ = stdout.execute(MoveToColumn(0));
-                            let _ = stdout.execute(Clear(ClearType::FromCursorDown));
-                            let _ = stdout.flush();
-                            input_area_saved = false;
-                        }
+                        render.clear_input_area(&mut stdout)?;
+                        render.reset();
                         *dropdown = None;
                         buffer.clear();
                         inline::print_blank();
@@ -444,7 +484,7 @@ async fn repl_loop(
                             "Use /quit or Ctrl+D to exit.",
                         ));
                         inline::print_blank();
-                        needs_status_bar = true;
+                        render.needs_status_bar = true;
                     }
 
                     // ── Character input (normal + shift/capslock) ──
@@ -455,9 +495,21 @@ async fn repl_loop(
                         update_dropdown(buffer, dropdown);
                     }
 
+                    // ── Shift+Enter for multi-line ──
+                    (KeyModifiers::SHIFT, KeyCode::Enter) => {
+                        buffer.insert_line_break();
+                        buffer.reset_history_browse();
+                    }
+
                     // ── Backspace ──
                     (KeyModifiers::NONE, KeyCode::Backspace) => {
-                        buffer.delete_backward();
+                        // If at start of a line in multi-line mode, merge with previous line
+                        if buffer.is_multiline() && buffer.cursor() > 0 
+                            && buffer.text().as_bytes().get(buffer.cursor() - 1) == Some(&b'\n') {
+                            buffer.merge_with_previous_line();
+                        } else {
+                            buffer.delete_backward();
+                        }
                         buffer.reset_history_browse();
                         update_dropdown(buffer, dropdown);
                     }
@@ -497,17 +549,25 @@ async fn repl_loop(
                         buffer.cursor_end();
                     }
 
-                    // ── History navigation (only when no dropdown) ──
+                    // ── History navigation (only when no dropdown and not multi-line) ──
                     (KeyModifiers::NONE, KeyCode::Up) => {
-                        buffer.history_up();
+                        if buffer.is_multiline() {
+                            buffer.cursor_up();
+                        } else {
+                            buffer.history_up();
+                        }
                     }
                     (KeyModifiers::NONE, KeyCode::Down) => {
-                        buffer.history_down();
+                        if buffer.is_multiline() {
+                            buffer.cursor_down();
+                        } else {
+                            buffer.history_down();
+                        }
                     }
 
                     // ── Ctrl+L — clear screen ──
                     (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
-                        input_area_saved = false;
+                        render.reset();
                         crossterm::execute!(
                             std::io::stdout(),
                             crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
@@ -515,14 +575,20 @@ async fn repl_loop(
                         )
                         .ok();
                         print_banner(model_info, stats);
-                        needs_status_bar = true;
+                        render.needs_status_bar = true;
                     }
 
                     // Ignore other key combinations
                     _ => {}
                 }
             }
-            Event::Resize(_, _) => {}
+            Event::Resize(_, _) => {
+                // Terminal was resized — the previous rendered line
+                // count is now stale.  Force a status bar reprint so
+                // the user gets a clean visual anchor.
+                render.reset();
+                render.needs_status_bar = true;
+            }
             _ => {}
         }
     }
@@ -644,6 +710,7 @@ async fn handle_input(
     current_session: &mut crate::session::Session,
     stats: &SessionStats,
     model_info: &ModelInfo,
+    toast_manager: &mut ToastManager,
 ) -> bool {
     // Handle slash commands
     if input.starts_with('/') {
@@ -655,6 +722,7 @@ async fn handle_input(
                 current_session,
                 stats,
                 model_info,
+                toast_manager,
             )
             .await;
         }
@@ -693,6 +761,9 @@ async fn handle_input(
             inline::print_line(&components::success_badge("New session started."));
             inline::print_blank();
             print_status_bar(model_info, stats);
+            
+            // Show toast notification
+            toast_manager.add(Toast::success("New session started"));
         }
         _ => {
             process_message(input, commands, conversation, current_session, stats, model_info)
@@ -813,6 +884,7 @@ async fn handle_repl_action(
     current_session: &mut crate::session::Session,
     stats: &SessionStats,
     model_info: &ModelInfo,
+    toast_manager: &mut ToastManager,
 ) -> bool {
     match action {
         ReplAction::Quit => return true,
@@ -850,6 +922,9 @@ async fn handle_repl_action(
             inline::print_line(&components::success_badge("New session started."));
             inline::print_blank();
             print_status_bar(model_info, stats);
+            
+            // Show toast notification
+            toast_manager.add(Toast::success("New session started"));
         }
 
         ReplAction::Config => {
@@ -907,6 +982,12 @@ async fn handle_repl_action(
                     )));
                     inline::print_blank();
                     print_status_bar(model_info, stats);
+                    
+                    // Show toast notification
+                    toast_manager.add(Toast::success(&format!(
+                        "Session resumed: {}",
+                        current_session.title
+                    )));
                 }
                 Err(e) => {
                     inline::print_blank();
@@ -915,6 +996,12 @@ async fn handle_repl_action(
                         e
                     )));
                     inline::print_blank();
+                    
+                    // Show toast notification
+                    toast_manager.add(Toast::error(&format!(
+                        "Failed to load session: {}",
+                        e
+                    )));
                 }
             }
         }
@@ -949,6 +1036,12 @@ async fn handle_repl_action(
                 )));
                 inline::print_blank();
                 print_status_bar(model_info, stats);
+                
+                // Show toast notification
+                toast_manager.add(Toast::success(&format!(
+                    "Switched to {} / {}",
+                    provider, model
+                )));
             }
         }
 
@@ -961,6 +1054,12 @@ async fn handle_repl_action(
                         provider, model
                     )));
                     inline::print_blank();
+                    
+                    // Show toast notification
+                    toast_manager.add(Toast::success(&format!(
+                        "Switched to {} / {}",
+                        provider, model
+                    )));
                 }
                 Err(e) => {
                     inline::print_blank();
@@ -974,6 +1073,9 @@ async fn handle_repl_action(
                         RSpan::raw(" to see available models."),
                     ]));
                     inline::print_blank();
+                    
+                    // Show toast notification
+                    toast_manager.add(Toast::error(&e.to_string()));
                 }
             }
         }
@@ -992,7 +1094,7 @@ async fn handle_repl_action(
 
             print_turn_separator(model_info);
             let start = Instant::now();
-            if let Err(e) = commands.plan_inline(goal).await {
+            if let Err(e) = run_with_cancel(commands.plan_inline(goal)).await {
                 inline::print_blank();
                 inline::print_line(&components::error_badge(&e.to_string()));
                 inline::print_blank();
@@ -1090,6 +1192,43 @@ async fn handle_repl_action(
 
 // ── Message processing ────────────────────────────────────
 
+/// Run a future with Esc-key cancel support.
+///
+/// Spawns a background thread that polls stdin for Esc keypresses while
+/// the future runs. When Esc is detected, the process-global cancel flag
+/// is set, causing the orchestrator to stop at the next iteration boundary
+/// and return `AgenticError::Cancelled`.
+async fn run_with_cancel<F, T>(fut: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    let cancel = crate::cancel_flag();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_w = stop.clone();
+    let cancel_w = cancel.clone();
+
+    let watcher = std::thread::spawn(move || {
+        while !stop_w.load(Ordering::Relaxed) {
+            if let Ok(true) = crossterm::event::poll(std::time::Duration::from_millis(100)) {
+                if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
+                    if key.code == KeyCode::Esc {
+                        cancel_w.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                }
+            }
+        }
+    });
+
+    let result = fut.await;
+
+    stop.store(true, Ordering::Relaxed);
+    let _ = watcher.join();
+
+    result
+}
+
 /// Process a single user message through the agent.
 async fn process_message(
     input: &str,
@@ -1113,7 +1252,9 @@ async fn process_message(
     inline::print_blank();
 
     let start = Instant::now();
-    let result = commands.run(input).await;
+    // run_with_cancel sets the cancel flag on Esc; the orchestrator checks
+    // it at each iteration boundary and returns AgenticError::Cancelled.
+    let result = run_with_cancel(commands.run(input)).await;
 
     if let Err(e) = result {
         inline::print_blank();
@@ -1136,6 +1277,11 @@ async fn process_message(
             &format!("(response in {:.1}s)", elapsed.as_secs_f64()),
         );
         let _ = crate::session::save(current_session);
+
+        // Show completion message with elapsed time
+        let done_line = spinner::done_line(elapsed.as_millis());
+        inline::print_line(&done_line);
+        inline::print_blank();
 
         print_response_summary(stats);
     }
@@ -1440,6 +1586,8 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
 fn print_prompt_status_bar(stats: &SessionStats) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
+    let total_tok = stats.total_input_tokens() + stats.total_output_tokens();
+    let total_formatted = stats.format_tokens(total_tok);
 
     let sep = RSpan::styled(" \u{2502} ", RStyle::default().fg(Color::Rgb(60, 60, 80)));
 
@@ -1460,12 +1608,19 @@ fn print_prompt_status_bar(stats: &SessionStats) {
 
     spans.push(sep.clone());
     spans.push(RSpan::styled(
-        format!(
-            "\u{1f4ca}{}\u{2191}/{}\u{2193}",
-            in_tok, out_tok
-        ),
+        format!("\u{1f4ca} \u{2191}{} \u{2193}{} ({})", in_tok, out_tok, total_formatted),
         RStyle::default().fg(Color::Rgb(186, 85, 211)),
     ));
+
+    // Add cache hit ratio if available
+    let cache_ratio = stats.cache_hit_ratio();
+    if cache_ratio > 0.0 {
+        spans.push(sep.clone());
+        spans.push(RSpan::styled(
+            format!("\u{1f4e6} {:.0}%", cache_ratio * 100.0),
+            RStyle::default().fg(Color::Rgb(46, 204, 113)),
+        ));
+    }
 
     inline::print_line(&Line::from(spans));
 }

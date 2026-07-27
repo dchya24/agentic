@@ -1600,6 +1600,12 @@ impl Commands {
         if show_tool_calls {
             let tx = event_tx.clone();
             orchestrator.on_event(move |event| {
+                // Skip Thought events: the text was already streamed in
+                // real-time by the chunk callback. Re-rendering it here
+                // would duplicate the same content on screen.
+                if matches!(event, core_agentic::Event::Thought { .. }) {
+                    return;
+                }
                 // Best-effort send: if the receiver is dropped (run finished),
                 // silently ignore.
                 let _ = tx.send(event);

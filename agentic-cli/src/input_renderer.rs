@@ -55,25 +55,85 @@ impl PromptMetadata {
 
 /// Render the prompt line + input to stdout as a transient line.
 /// Overwrites the previous prompt render in-place.
-pub fn render_prompt_line(meta: &PromptMetadata, buffer: &InputBuffer) {
+///
+/// Returns the number of terminal lines rendered (including continuation
+/// lines and footer for multi-line mode).  The cursor is left on a NEW
+/// line below the prompt so the REPL loop can MoveUp(N) correctly.
+pub fn render_prompt_line(meta: &PromptMetadata, buffer: &InputBuffer, _has_dropdown: bool) -> usize {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let _cyan = Style::default().fg(Color::Cyan);
 
     // Build prompt prefix: "dirname> "
     let prompt_prefix = format!("{}> ", meta.dir_name);
 
-    // Build input content (highlighted or placeholder)
-    let input_line = if buffer.is_empty() {
-        render_placeholder()
+    // Check if multi-line mode
+    if buffer.is_multiline() {
+        // Render multi-line input
+        let lines = buffer.lines();
+        let current_line = buffer.current_line();
+        
+        for (i, line) in lines.iter().enumerate() {
+            if i == 0 {
+                // First line with prompt
+                let input_line = render_input(line, buffer.cursor().min(line.len()));
+                let mut spans: Vec<Span<'static>> = vec![Span::styled(prompt_prefix.clone(), dim)];
+                spans.extend(input_line.spans.into_iter());
+                inline::print_line(&Line::from(spans));
+            } else {
+                // Continuation lines with indent
+                let indent = "  "; // 2 spaces for continuation
+                let line_cursor = if i == current_line {
+                    // Calculate cursor position within this line
+                    let lines_before: usize = lines[..i].iter().map(|l| l.len() + 1).sum();
+                    if buffer.cursor() > lines_before {
+                        buffer.cursor() - lines_before
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                
+                let input_line = render_input(line, line_cursor.min(line.len()));
+                let mut spans: Vec<Span<'static>> = vec![
+                    Span::styled(indent.to_string(), dim),
+                    Span::styled("│ ".to_string(), Style::default().fg(Color::Rgb(100, 100, 120))),
+                ];
+                spans.extend(input_line.spans.into_iter());
+                inline::print_line(&Line::from(spans));
+            }
+        }
+        
+        // Show multi-line indicator
+        inline::print_line(&Line::from(vec![
+            Span::styled("  ", dim),
+            Span::styled(
+                format!("[{} lines] Shift+Enter: new line, Enter: submit", lines.len()),
+                Style::default().fg(Color::Rgb(100, 100, 120)).add_modifier(Modifier::DIM),
+            ),
+        ]));
+
+        lines.len() + 1 // input lines + indicator
     } else {
-        render_input(buffer.text(), buffer.cursor())
-    };
+        // Single-line mode
+        // NOTE: We use `print_line` (which appends `\r\n`) instead of
+        // `print_transient` so that the cursor ends up on the NEXT line
+        // after the prompt.  This lets the REPL loop's `MoveUp(1)`
+        // correctly return to the prompt line rather than overshooting
+        // to the status bar above it.
+        let input_line = if buffer.is_empty() {
+            render_placeholder()
+        } else {
+            render_input(buffer.text(), buffer.cursor())
+        };
 
-    // Combine: prompt prefix + input content
-    let mut spans: Vec<Span<'static>> = vec![Span::styled(prompt_prefix, dim)];
-    spans.extend(input_line.spans.into_iter());
+        // Combine: prompt prefix + input content
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(prompt_prefix, dim.clone())];
+        spans.extend(input_line.spans.into_iter());
 
-    inline::print_transient(&Line::from(spans));
+        inline::print_line(&Line::from(spans));
+        1 // single-line input
+    }
 }
 
 /// Render dropdown items below the prompt line.
@@ -84,6 +144,7 @@ pub fn render_dropdown_lines(dropdown: &Dropdown) -> usize {
     }
 
     let visible = dropdown.visible_items();
+    let query = dropdown.query();
     let icon = match dropdown.dropdown_type {
         DropdownType::Command => "⌘",
         DropdownType::File => "📁",
@@ -101,7 +162,7 @@ pub fn render_dropdown_lines(dropdown: &Dropdown) -> usize {
     let mut count = 1;
 
     for (_, item, selected) in &visible {
-        let style = if *selected {
+        let base_style = if *selected {
             Style::default()
                 .bg(Color::Rgb(52, 152, 219))
                 .fg(Color::White)
@@ -121,7 +182,15 @@ pub fn render_dropdown_lines(dropdown: &Dropdown) -> usize {
             _ => "  ",
         };
 
-        let mut spans = vec![Span::styled(format!("  {}{}", item_icon, item), style)];
+        // Build item text with fuzzy highlighting
+        let mut spans = vec![Span::styled(format!("  {}", item_icon), base_style)];
+        
+        if !query.is_empty() {
+            // Apply fuzzy match highlighting
+            spans.extend(fuzzy_match_highlight(item, &query, *selected));
+        } else {
+            spans.push(Span::styled(item.to_string(), base_style));
+        }
 
         if let Some(desc) = dropdown.get_description(item) {
             let desc_style = if *selected {
@@ -139,4 +208,46 @@ pub fn render_dropdown_lines(dropdown: &Dropdown) -> usize {
     }
 
     count
+}
+
+/// Highlight fuzzy match characters in text.
+///
+/// Returns a vector of spans with matched characters highlighted.
+/// Case-insensitive matching is used.
+fn fuzzy_match_highlight(text: &str, query: &str, is_selected: bool) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let query_chars: Vec<char> = query.to_lowercase().chars().collect();
+    let mut qi = 0;
+
+    let normal_style = if is_selected {
+        Style::default()
+            .bg(Color::Rgb(52, 152, 219))
+            .fg(Color::White)
+    } else {
+        Style::default().fg(Color::Rgb(200, 200, 200))
+    };
+
+    let highlight_style = if is_selected {
+        Style::default()
+            .bg(Color::Rgb(52, 152, 219))
+            .fg(Color::Rgb(255, 215, 0))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Rgb(255, 215, 0))
+            .add_modifier(Modifier::BOLD)
+    };
+
+    for c in text.chars() {
+        if qi < query_chars.len() && c.to_lowercase().next() == Some(query_chars[qi]) {
+            // Highlight matched character
+            spans.push(Span::styled(c.to_string(), highlight_style));
+            qi += 1;
+        } else {
+            // Normal character
+            spans.push(Span::styled(c.to_string(), normal_style));
+        }
+    }
+
+    spans
 }

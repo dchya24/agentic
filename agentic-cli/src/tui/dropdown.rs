@@ -28,6 +28,7 @@ pub struct Dropdown {
     pub items: Vec<String>,
     pub selected: usize,
     pub visible_count: usize,
+    pub query: String,
 }
 
 /// Available slash commands with aliases and descriptions
@@ -62,6 +63,7 @@ impl Dropdown {
             items,
             selected: 0,
             visible_count: 8,
+            query,
         }
     }
 
@@ -82,7 +84,13 @@ impl Dropdown {
             items,
             selected: 0,
             visible_count: 8,
+            query,
         }
+    }
+
+    /// Get the current query string
+    pub fn query(&self) -> &str {
+        &self.query
     }
 
     /// Filter slash commands by query (supports aliases)
@@ -442,5 +450,17 @@ mod tests {
                 item
             );
         }
+    }
+
+    #[test]
+    fn test_query_stored() {
+        let dropdown = Dropdown::new(DropdownType::Command, "he".to_string());
+        assert_eq!(dropdown.query(), "he");
+    }
+
+    #[test]
+    fn test_query_empty() {
+        let dropdown = Dropdown::new(DropdownType::Command, "".to_string());
+        assert_eq!(dropdown.query(), "");
     }
 }

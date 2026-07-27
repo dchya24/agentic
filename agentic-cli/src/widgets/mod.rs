@@ -13,4 +13,5 @@ pub mod inline;
 pub mod markdown;
 pub mod progress;
 pub mod spinner;
+pub mod toast;
 pub mod tool_call;
