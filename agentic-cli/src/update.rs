@@ -335,9 +335,12 @@ fn pick_asset(assets: &[GithubAsset]) -> Result<&GithubAsset> {
     )
 }
 
-/// Build expected asset name like `agentic-x86_64-unknown-linux-gnu`.
+/// Build expected asset name like `agentic-linux-x86_64`.
+/// Includes the OS so assets are unambiguous across platforms
+/// (e.g. `agentic-x86_64` alone would collide between Linux and
+/// macOS x86_64 builds).
 fn asset_target_name() -> String {
-    format!("agentic-{}", env::consts::ARCH)
+    format!("agentic-{}-{}", env::consts::OS, env::consts::ARCH)
 }
 
 // ── Display helpers ────────────────────────────────────────
@@ -407,5 +410,8 @@ mod tests {
     fn test_asset_target_name() {
         let name = asset_target_name();
         assert!(name.starts_with("agentic-"));
+        // Must be OS-qualified so platform assets never collide.
+        let os = name.trim_start_matches("agentic-");
+        assert!(os.contains('-'));
     }
 }
