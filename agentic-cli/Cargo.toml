@@ -6,6 +6,8 @@ description = "CLI for AI agent orchestration using core-agentic"
 authors = ["devchya"]
 license = "MIT"
 readme = "README.md"
+homepage = "https://github.com/dchya24/agentic"
+repository = "https://github.com/dchya24/agentic"
 
 [[bin]]
 name = "agentic"
@@ -38,13 +40,29 @@ uuid = { version = "1", features = ["v4"] }
 # Terminal management
 crossterm = "0.28"
 
+# TUI (full-screen mode)
+ratatui = "0.29"
+
+# Filesystem scanning for the TUI dropdown
+ignore = "0.4"
+
 # Unix terminal control (transitive dep — zero compile cost)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-ignore = "0.4"
 
-# TUI
-ratatui = "0.29"
+# ── Packaging metadata (cargo-deb → .deb, cargo-generate-rpm → .rpm) ──
+[package.metadata.deb]
+maintainer = "dchya24 <cahyadinar241@gmail.com>"
+copyright = "2026 dchya24 <cahyadinar241@gmail.com>"
+section = "utils"
+priority = "optional"
+extended-description = "AI agent orchestration CLI with an interactive REPL, full-screen TUI, agent safety controls, skill system, and MCP support."
+
+[package.metadata.generate-rpm]
+bindir = "/usr/bin"
+assets = [
+    { source = "target/release/agentic", dest = "/usr/bin/agentic", mode = "755" },
+]
 
 [dev-dependencies]
 futures = "0.3"

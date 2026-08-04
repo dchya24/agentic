@@ -10,6 +10,7 @@ use ratatui::text::{Line as RLine, Span as RSpan};
 use std::env;
 use std::fs;
 // No direct io imports needed; curl handles download
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -248,7 +249,10 @@ fn download_to_temp(url: &str) -> Result<PathBuf> {
 fn install_binary(tmp_path: &Path) -> Result<()> {
     let current_exe = env::current_exe().context("Cannot determine current executable path")?;
 
-    // Make the new binary executable.
+    // Make the new binary executable. Unix-only: Windows does not
+    // model execute permissions, and `Permissions::from_mode` does not
+    // exist there.
+    #[cfg(unix)]
     fs::set_permissions(tmp_path, fs::Permissions::from_mode(0o755))
         .context("Failed to set executable permissions")?;
 
