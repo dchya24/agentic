@@ -729,10 +729,7 @@ fn find_at_trigger(text: &str, cursor: usize) -> Option<usize> {
 fn accept_dropdown(buffer: &mut InputBuffer, dropdown: &mut Option<Dropdown>) -> Option<String> {
     let dd = dropdown.take()?;
 
-    let selected_text = match dd.selected_item() {
-        Some(s) => s.to_string(),
-        None => return None,
-    };
+    let selected_text = dd.selected_item()?.to_string();
 
     let is_dir = selected_text.ends_with('/');
 

@@ -2137,7 +2137,7 @@ Instructions the agent follows when this skill is loaded.
             let key_status = if p.api_key.is_empty() {
                 Cell::new("✗").fg(TColor::Red)
             } else if p.api_key.starts_with('$') {
-                Cell::new(format!("env:{}", &p.api_key)).fg(TColor::Yellow)
+                Cell::new(format!("env:{}", p.api_key)).fg(TColor::Yellow)
             } else {
                 Cell::new(format!(
                     "{}...{}",

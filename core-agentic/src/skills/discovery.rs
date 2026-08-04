@@ -473,8 +473,14 @@ description: Just enough
     #[test]
     fn expand_tilde_path() {
         let expanded = expand_path("~/something");
-        assert!(expanded.starts_with("/"));
-        assert!(expanded.to_string_lossy().ends_with("/something"));
+        // Must resolve to an absolute path under the user's home dir on
+        // every platform (Windows uses `C:\Users\...` — no leading slash).
+        assert!(
+            expanded.is_absolute(),
+            "expected ~ to expand to an absolute path, got {:?}",
+            expanded
+        );
+        assert!(expanded.to_string_lossy().ends_with("something"));
     }
 
     #[test]
