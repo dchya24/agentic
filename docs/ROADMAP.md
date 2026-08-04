@@ -153,6 +153,17 @@ prompt-injection scanner) added a lot of new surface area that benefits
 from end-to-end tests.
 
 ---
+## v0.3.0 (agentic-cli) / v0.1.1 (core-agentic)
+
+```text
+refactor(cli): TUI input widget (ratatui) replacing reedline, ESC to abort
+feat(cli): --log-file / --no-log-file session log persistence
+feat(cli): live streaming, thinking animation, toast notifications
+style: cargo fmt across the workspace
+docs: add CONTRIBUTING.md, LICENSE (MIT), SECURITY.md, CI workflow
+```
+
+---
 
 ## Recent history
 
