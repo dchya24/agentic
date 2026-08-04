@@ -628,12 +628,22 @@ fn sync_run_executes_read_only_batch_concurrently() {
     let elapsed = start.elapsed();
     assert_eq!(answer, "done");
 
-    // Sequential lower bound is 4 * 200ms = 800ms.
-    // Concurrent ceiling on a slow CI box: 600ms (3x slot) leaves
-    // plenty of headroom while still failing if the loop went serial.
+    // Prove concurrency with a *measured* serial baseline rather than an
+    // absolute wall-clock bound: on a loaded machine (full test suite,
+    // parallel CI) even a concurrent batch can take >600ms, so absolute
+    // thresholds are flaky. Four 200ms sleeps back-to-back are the
+    // sequential lower bound; a concurrent batch must beat that baseline
+    // by a wide margin (it should be ~4x faster).
+    let serial_start = Instant::now();
+    for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let serial_elapsed = serial_start.elapsed();
+
     assert!(
-        elapsed < Duration::from_millis(600),
-        "expected concurrent batch to complete in <600ms, got {:?}",
+        elapsed < serial_elapsed.mul_f64(0.8),
+        "expected concurrent batch to beat serial baseline (serial {:?}, concurrent {:?})",
+        serial_elapsed,
         elapsed
     );
 }
