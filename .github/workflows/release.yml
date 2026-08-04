@@ -82,6 +82,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Validate release tag
+        shell: bash
         run: |
           if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Not a release tag: $RELEASE_TAG"
