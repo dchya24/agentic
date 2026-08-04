@@ -1209,8 +1209,7 @@ mod wire_format_tests {
 
         // Earlier messages (indices 0-2) should not have cache_control either
         // — only one breakpoint is needed at the prefix boundary.
-        for i in 0..3 {
-            let msg = &msgs[i];
+        for (i, msg) in msgs.iter().take(3).enumerate() {
             if let Some(blocks) = msg["content"].as_array() {
                 for block in blocks {
                     // Images/tool results won't have cache_control; only text blocks.

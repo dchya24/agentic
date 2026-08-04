@@ -409,7 +409,6 @@ impl Commands {
 
     /// Attach the input watcher's shared state so the spinner ticker
     /// can render the live input buffer below the progress line.
-
     pub fn with_permission_mode(mut self, mode: core_agentic::PermissionMode) -> Self {
         self.permission_mode = mode;
         self
@@ -1787,7 +1786,9 @@ impl Commands {
             let _ = s.execute(MoveToColumn(0));
             let _ = s.execute(Clear(ClearType::FromCursorDown));
         }
-        drop(s); // release the stdout lock so inline::print_* can use it
+        // Flush buffered writes so inline::print_* output below is not
+        // reordered with the terminal-control sequences written above.
+        let _ = std::io::Write::flush(&mut s);
 
         match result {
             Ok(final_result) => {
@@ -2401,11 +2402,10 @@ Instructions the agent follows when this skill is loaded.
             .map_err(|e| anyhow::anyhow!("Failed to read input: {}", e))?;
 
         // Resolve if user typed env reference
-        let resolved_key = if api_key.starts_with('$') {
-            std::env::var(&api_key[1..]).unwrap_or_else(|_| api_key.clone())
-        } else {
-            api_key
-        };
+        let resolved_key = api_key
+            .strip_prefix('$')
+            .and_then(|rest| std::env::var(rest).ok())
+            .unwrap_or(api_key);
 
         // Step 4: Choose model
         let model = if preset.models.is_empty() {
@@ -2935,7 +2935,6 @@ Instructions the agent follows when this skill is loaded.
 
 /// Render a two-line transient area:
 ///   Line 1: spinner progress
-
 fn render_event(event: &core_agentic::Event) {
     use crate::widgets::{components, diff as diff_widget, inline, tool_call};
 

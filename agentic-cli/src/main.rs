@@ -1,3 +1,5 @@
+#![allow(dead_code)] // widget/TUI library grows ahead of usage; keep for active development
+
 #[cfg(test)]
 mod tests;
 

@@ -107,6 +107,10 @@ pub enum OrchestratorState {
     Completed,
 }
 
+/// Confirmation handler: a boxed closure deciding whether a risky
+/// state-changing tool call may proceed.
+type ConfirmationHandler = Box<dyn Fn(ConfirmationRequest) -> bool + Send + Sync>;
+
 pub struct Orchestrator {
     provider: Arc<dyn LLMProvider>,
     tools: ToolRegistry,
@@ -114,7 +118,7 @@ pub struct Orchestrator {
     safety: Safety,
     state: Mutex<OrchestratorState>,
     events: EventEmitter,
-    confirmation_handler: Mutex<Option<Box<dyn Fn(ConfirmationRequest) -> bool + Send + Sync>>>,
+    confirmation_handler: Mutex<Option<ConfirmationHandler>>,
     system_prompt: Option<String>,
     model: String,
     /// Hard cap on the agent loop. Prevents runaway tool-call loops.

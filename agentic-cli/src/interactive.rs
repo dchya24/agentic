@@ -325,6 +325,8 @@ pub async fn run(mut commands: Commands) -> Result<()> {
 //   are unreliable when the terminal scrolls.  MoveUp tracking is
 //   deterministic regardless of scroll state.
 
+/// Main REPL loop. Internal; args grouped per call site.
+#[allow(clippy::too_many_arguments)]
 async fn repl_loop(
     buffer: &mut InputBuffer,
     dropdown: &mut Option<Dropdown>,
@@ -1270,13 +1272,6 @@ async fn handle_repl_action(
 }
 
 // ── Message processing ────────────────────────────────────
-
-/// Run a future with Esc-key cancel support.
-///
-/// Spawns a background thread that polls stdin for Esc keypresses while
-/// the future runs. When Esc is detected, the process-global cancel flag
-/// is set, causing the orchestrator to stop at the next iteration boundary
-/// and return `AgenticError::Cancelled`.
 
 /// Process a single user message through the agent.
 async fn process_message(

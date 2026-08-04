@@ -249,9 +249,9 @@ fn expand_path(path: &str) -> PathBuf {
     }
 
     // Handle ~/
-    if path.starts_with("~/") {
+    if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = home_dir() {
-            return home.join(&path[2..]);
+            return home.join(rest);
         }
     }
 

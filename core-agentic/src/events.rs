@@ -92,8 +92,11 @@ impl Event {
     }
 }
 
+/// Event handler: a boxed closure invoked for every emitted `Event`.
+type EventHandler = Box<dyn Fn(Event) + Send + Sync>;
+
 pub struct EventEmitter {
-    handlers: Mutex<Vec<Box<dyn Fn(Event) + Send + Sync>>>,
+    handlers: Mutex<Vec<EventHandler>>,
 }
 
 impl EventEmitter {

@@ -189,13 +189,12 @@ impl Orchestrator {
 
             std::thread::scope(|s| {
                 let mut handles = Vec::with_capacity(end - start);
-                for slot_idx in start..end {
-                    if let Slot::Pending { name, id, args, .. } = &slots[slot_idx] {
+                for (local_idx, slot) in slots.iter().skip(start).take(end - start).enumerate() {
+                    if let Slot::Pending { name, id, args, .. } = slot {
                         let registry = registry.clone();
                         let name = name.clone();
                         let id = id.clone();
                         let args = args.clone();
-                        let local_idx = slot_idx - start;
                         let handle = s.spawn(move || {
                             let raw = match registry.execute_by_name(&name, &args) {
                                 Ok(v) => serde_json::to_string_pretty(&v)
@@ -409,8 +408,8 @@ impl Orchestrator {
             // is the right primitive because Tool::execute is sync and may
             // do filesystem / process I/O.
             let mut handles = Vec::with_capacity(end - start);
-            for slot_idx in start..end {
-                if let Slot::Pending { name, id, args, .. } = &slots[slot_idx] {
+            for (slot_idx, slot) in slots.iter().enumerate().skip(start).take(end - start) {
+                if let Slot::Pending { name, id, args, .. } = slot {
                     let registry = self.tools.clone();
                     let max_chars = self.tool_result_max_chars;
                     let name = name.clone();

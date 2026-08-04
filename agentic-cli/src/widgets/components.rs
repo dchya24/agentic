@@ -69,7 +69,7 @@ pub fn panel(
     style: BoxStyle,
     border_color: Color,
 ) -> Vec<Line<'static>> {
-    let width = terminal_width().saturating_sub(2).max(40).min(100);
+    let width = terminal_width().saturating_sub(2).clamp(40, 100);
     let (tl, tr, bl, br, h, v, _) = style.chars();
     let border_style = Style::default().fg(border_color);
     let inner_width = width.saturating_sub(4); // 2 border + 2 padding
@@ -138,7 +138,7 @@ pub fn box_content(
 /// ── 📊 Statistics ──────────────────────
 /// ```
 pub fn section_header(icon: &str, title: &str, color: Color) -> Line<'static> {
-    let width = terminal_width().saturating_sub(2).max(40).min(100);
+    let width = terminal_width().saturating_sub(2).clamp(40, 100);
     let prefix = format!("── {} {} ", icon, title);
     let prefix_len = prefix.chars().count();
     let remaining = width.saturating_sub(prefix_len);
@@ -308,21 +308,21 @@ pub fn banner_title(text: &str, from: Color, to: Color) -> Line<'static> {
 
 /// Dotted separator
 pub fn dotted_separator(color: Color) -> Line<'static> {
-    let width = terminal_width().saturating_sub(2).max(40).min(100);
+    let width = terminal_width().saturating_sub(2).clamp(40, 100);
     let dots: String = "· ".repeat(width / 2);
     Line::from(Span::styled(dots, Style::default().fg(color)))
 }
 
 /// Dashed separator
 pub fn dashed_separator(color: Color) -> Line<'static> {
-    let width = terminal_width().saturating_sub(2).max(40).min(100);
+    let width = terminal_width().saturating_sub(2).clamp(40, 100);
     let dashes: String = "╌".repeat(width);
     Line::from(Span::styled(dashes, Style::default().fg(color)))
 }
 
 /// Rounded dashed separator: ╶╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╶
 pub fn rounded_dashed_separator(color: Color) -> Line<'static> {
-    let width = terminal_width().saturating_sub(2).max(40).min(100);
+    let width = terminal_width().saturating_sub(2).clamp(40, 100);
     if width < 3 {
         return Line::from(Span::styled("╌".repeat(width), Style::default().fg(color)));
     }
@@ -338,7 +338,7 @@ pub fn rounded_dashed_separator(color: Color) -> Line<'static> {
 /// is true, or `─ ─ done thinking ──────────` when false.
 /// Uses DIM styling to visually distinguish from final response.
 pub fn thinking_header(active: bool) -> Line<'static> {
-    let width = terminal_width().saturating_sub(2).max(40).min(100);
+    let width = terminal_width().saturating_sub(2).clamp(40, 100);
     let label = if active {
         " thinking... "
     } else {
@@ -362,7 +362,7 @@ pub fn thinking_header(active: bool) -> Line<'static> {
 /// Double-line separator
 #[allow(dead_code)]
 pub fn double_separator(color: Color) -> Line<'static> {
-    let width = terminal_width().saturating_sub(2).max(40).min(100);
+    let width = terminal_width().saturating_sub(2).clamp(40, 100);
     let line: String = "═".repeat(width);
     Line::from(Span::styled(line, Style::default().fg(color)))
 }

@@ -204,10 +204,10 @@ pub fn render_result(
     };
 
     let dim = Style::default().add_modifier(Modifier::DIM);
-    let mut shown = 0usize;
-    for raw_line in body_text.lines() {
+    let total_lines = body_text.lines().count();
+    for (shown, raw_line) in body_text.lines().enumerate() {
         if shown >= max_body_lines {
-            let remaining = body_text.lines().count().saturating_sub(shown);
+            let remaining = total_lines.saturating_sub(shown);
             lines.push(Line::from(vec![
                 Span::raw("    "),
                 Span::styled(format!("… {} more line(s) truncated", remaining), dim),
@@ -218,7 +218,6 @@ pub fn render_result(
             Span::raw("    "),
             Span::raw(raw_line.to_string()),
         ]));
-        shown += 1;
     }
 
     lines

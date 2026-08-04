@@ -131,18 +131,15 @@ impl Tool for EditFileTool {
         // file was modified externally since then, refuse the edit and tell
         // the model to re-read.
         if let Some(t) = &self.tracker {
-            match t.check(path) {
-                Freshness::Stale { .. } => {
-                    return Err(ToolError::new(format!(
-                        "Stale read: {} was modified after the agent last read it. Re-read the file before editing.",
-                        path.display()
-                    )));
-                }
-                // NeverRead and Fresh both proceed. NeverRead is permissive
-                // because the model may legitimately edit a file it just
-                // wrote, or one it has strong context about from elsewhere.
-                _ => {}
+            if let Freshness::Stale { .. } = t.check(path) {
+                return Err(ToolError::new(format!(
+                    "Stale read: {} was modified after the agent last read it. Re-read the file before editing.",
+                    path.display()
+                )));
             }
+            // NeverRead and Fresh both proceed. NeverRead is permissive
+            // because the model may legitimately edit a file it just
+            // wrote, or one it has strong context about from elsewhere.
         }
 
         let content = std::fs::read_to_string(path)

@@ -116,8 +116,7 @@ fn find_file_refs(input: &str) -> Vec<(usize, String)> {
             let mut path_end = i + 1;
 
             // Collect characters that are valid in a file path
-            for j in (i + 1)..chars.len() {
-                let c = chars[j];
+            for (j, c) in chars.iter().enumerate().skip(i + 1) {
                 if c.is_whitespace() {
                     break;
                 }

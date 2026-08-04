@@ -18,13 +18,13 @@
 //! Detection priority (first match wins):
 //!   - `Cargo.toml`     → `cargo test [filter]`
 //!   - `package.json`   → `npm test -- [filter]` (or `pnpm`/`yarn` if their
-//!                         lockfile is present)
+//!     lockfile is present)
 //!   - `pyproject.toml` / `setup.py` / `pytest.ini` / `tests/`
-//!                       → `pytest [filter]`
+//!     → `pytest [filter]`
 //!   - `go.mod`         → `go test ./... [filter]`
 //!   - none of the above → return an `Unknown` error so the agent can
-//!                          fall back to `run_command` with an explicit
-//!                          test command.
+//!     fall back to `run_command` with an explicit
+//!     test command.
 //!
 //! Output is capped at 200 lines / 25k chars to keep the tool result
 //! within the orchestrator's truncation budget. Long suites lose head

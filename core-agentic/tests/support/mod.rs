@@ -1,5 +1,6 @@
 //! Test support: scripted provider + small helpers for orchestrator
 //! integration tests.
+#![allow(dead_code)]
 
 use core_agentic::providers::{
     ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, LLMProvider, ProviderError,
