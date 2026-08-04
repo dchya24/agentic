@@ -89,6 +89,30 @@ pub fn prompt_confirmation(request: &ConfirmationRequest) -> Option<Confirmation
 
     inline::print_line(&Line::from(Span::styled("  > ", dim)));
 
+    // The REPL runs with crossterm raw mode enabled, where `read_line`
+    // cannot work: Enter arrives as `\r` (not `\n`), echo is off, and
+    // there is no line buffering. Flip back to cooked mode for the
+    // duration of the prompt, then restore raw mode so the REPL keeps
+    // working. Outside the REPL (raw mode already off) this is a no-op.
+    let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+    if was_raw {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
+    }
+
+    /// Restores raw mode + hidden cursor on scope exit (incl. early
+    /// returns from the match arms below).
+    struct RawModeGuard(bool);
+    impl Drop for RawModeGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Hide);
+                let _ = crossterm::terminal::enable_raw_mode();
+            }
+        }
+    }
+    let _raw_guard = RawModeGuard(was_raw);
+
     loop {
         let mut input = String::new();
         if std::io::stdin().read_line(&mut input).is_err() {
