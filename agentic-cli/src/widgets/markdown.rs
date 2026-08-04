@@ -211,10 +211,8 @@ impl MarkdownRenderer {
                 self.push_style(Style::default().fg(color).add_modifier(Modifier::BOLD));
                 self.push_span(prefix);
             }
-            Tag::Paragraph => {
-                if !self.lines.is_empty() && !self.in_code_block {
-                    // Add blank line before paragraph (unless first)
-                }
+            Tag::Paragraph if !self.lines.is_empty() && !self.in_code_block => {
+                // Add blank line before paragraph (unless first)
             }
             Tag::Strong => {
                 self.push_style(Style::default().add_modifier(Modifier::BOLD));
@@ -385,8 +383,7 @@ impl MarkdownRenderer {
                     Style::default().fg(Color::Rgb(46, 204, 113)),
                 ));
                 if let Some(canonical) = lang {
-                    let spans =
-                        super::code_highlight::highlight_line(line, canonical);
+                    let spans = super::code_highlight::highlight_line(line, canonical);
                     for span in spans {
                         self.current_line.push(span);
                     }
@@ -512,7 +509,9 @@ mod tests {
     fn test_parse_blockquote() {
         let content = MarkdownContent::parse("> This is a quote");
         assert!(!content.lines.is_empty());
-        let all_text: String = content.lines.iter()
+        let all_text: String = content
+            .lines
+            .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
             .collect();

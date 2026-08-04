@@ -155,7 +155,7 @@ fn test_memory_clear() {
 fn test_memory_context_limit() {
     let mut memory = Memory::new(100);
     for i in 0..10 {
-        memory.add_message(Message::user(&format!("message {}", i)));
+        memory.add_message(Message::user(format!("message {}", i)));
     }
 
     let context = memory.get_context(3);
@@ -279,7 +279,8 @@ fn test_tool_call_result_parsing() {
 #[test]
 fn test_anthropic_config_new() {
     use crate::providers::AnthropicProviderConfig;
-    let config = AnthropicProviderConfig::new("test-provider", "sk-ant-test", "claude-3-5-sonnet-20241022");
+    let config =
+        AnthropicProviderConfig::new("test-provider", "sk-ant-test", "claude-3-5-sonnet-20241022");
     assert_eq!(config.id, "test-provider");
     assert_eq!(config.api_key, "sk-ant-test");
     assert_eq!(config.default_model, "claude-3-5-sonnet-20241022");
@@ -298,8 +299,7 @@ fn test_anthropic_config_with_base_url() {
 #[test]
 fn test_anthropic_config_with_version() {
     use crate::providers::AnthropicProviderConfig;
-    let config = AnthropicProviderConfig::new("test", "key", "model")
-        .with_version("2023-06-01");
+    let config = AnthropicProviderConfig::new("test", "key", "model").with_version("2023-06-01");
     assert_eq!(config.version, "2023-06-01");
 }
 
@@ -320,13 +320,13 @@ fn test_anthropic_retry_delay() {
         base_delay_ms: 1000,
         max_delay_ms: 30000,
     };
-    
+
     // Test exponential backoff with cap
     let delay0 = retry.delay_for_attempt(0);
     let delay1 = retry.delay_for_attempt(1);
     let delay2 = retry.delay_for_attempt(2);
     let delay10 = retry.delay_for_attempt(10);
-    
+
     assert_eq!(delay0.as_millis(), 1000);
     assert_eq!(delay1.as_millis(), 2000);
     assert_eq!(delay2.as_millis(), 4000);
@@ -341,12 +341,12 @@ fn test_anthropic_retry_config_serialization() {
         base_delay_ms: 2000,
         max_delay_ms: 60000,
     };
-    
+
     let json = serde_json::to_string(&retry).unwrap();
     assert!(json.contains("\"max_retries\":5"));
     assert!(json.contains("\"base_delay_ms\":2000"));
     assert!(json.contains("\"max_delay_ms\":60000"));
-    
+
     let parsed: RetryConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.max_retries, 5);
     assert_eq!(parsed.base_delay_ms, 2000);
@@ -357,11 +357,11 @@ fn test_anthropic_retry_config_serialization() {
 fn test_anthropic_config_serialization_roundtrip() {
     use crate::providers::AnthropicProviderConfig;
     let config = AnthropicProviderConfig::new("test-provider", "sk-ant-key", "claude-3-opus");
-    
+
     let json = serde_json::to_string(&config).unwrap();
     assert!(json.contains("\"type\":\"anthropic\""));
     assert!(json.contains("\"api_key\":\"sk-ant-key\""));
-    
+
     let parsed: AnthropicProviderConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.id, config.id);
     assert_eq!(config.api_key, "sk-ant-key");
@@ -373,7 +373,7 @@ fn test_anthropic_config_serialization_roundtrip() {
 fn test_anthropic_response_parsing() {
     use crate::providers::AnthropicResponse;
     let json = r#"{"id":"msg-123","type":"message","role":"assistant","content":[{"type":"text","text":"Hello! How can I help you?"}],"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":15}}"#;
-    
+
     let response: AnthropicResponse = serde_json::from_str(json).unwrap();
     assert_eq!(response.id, "msg-123");
     assert_eq!(response.role, "assistant");
@@ -388,15 +388,20 @@ fn test_anthropic_response_parsing() {
 
 #[test]
 fn test_anthropic_tool_use_response_parsing() {
-    use crate::providers::{AnthropicResponse, AnthropicContentBlockResponse};
+    use crate::providers::{AnthropicContentBlockResponse, AnthropicResponse};
     let json = r#"{"id":"msg-456","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_123","name":"read_file","input":{"path":"/tmp/file.txt"}}],"model":"claude-3-5-sonnet-20241022","stop_reason":"tool_use"}"#;
-    
+
     let response: AnthropicResponse = serde_json::from_str(json).unwrap();
     assert_eq!(response.id, "msg-456");
     assert_eq!(response.content.len(), 1);
-    
+
     match &response.content[0] {
-        AnthropicContentBlockResponse::ToolUse { tool_use_type, id, name, input } => {
+        AnthropicContentBlockResponse::ToolUse {
+            tool_use_type,
+            id,
+            name,
+            input,
+        } => {
             assert_eq!(tool_use_type, "tool_use");
             assert_eq!(id, "toolu_123");
             assert_eq!(name, "read_file");
@@ -410,7 +415,7 @@ fn test_anthropic_tool_use_response_parsing() {
 fn test_anthropic_error_parsing() {
     use crate::providers::AnthropicError;
     let json = r#"{"type":"error","error":{"type":"invalid_request_error","message":"Invalid request: missing required field 'model'"}}"#;
-    
+
     let error: AnthropicError = serde_json::from_str(json).unwrap();
     assert_eq!(error.r#type, "error");
     assert_eq!(error.error.r#type, "invalid_request_error");
@@ -421,7 +426,7 @@ fn test_anthropic_error_parsing() {
 fn test_anthropic_stream_event_parsing() {
     use crate::providers::AnthropicStreamEvent;
     let json = r#"{"type":"message_start","message":{"id":"msg-789","type":"message","model":"claude-3-5-sonnet-20241022","role":"assistant"}}"#;
-    
+
     let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
     assert_eq!(event.r#type, "message_start");
     assert!(event.message.is_some());
@@ -432,8 +437,9 @@ fn test_anthropic_stream_event_parsing() {
 #[test]
 fn test_anthropic_content_block_delta_parsing() {
     use crate::providers::AnthropicStreamEvent;
-    let json = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
-    
+    let json =
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
+
     let event: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
     assert_eq!(event.r#type, "content_block_delta");
     assert_eq!(event.index, Some(0));

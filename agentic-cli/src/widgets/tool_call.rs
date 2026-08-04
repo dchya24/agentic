@@ -74,8 +74,8 @@ pub fn render_call_compact(tool_name: &str, arguments: &Value) -> Line<'static> 
         Span::styled("\u{2699}", icon_style),
         Span::raw(" "),
         Span::styled(tool_name.to_string(), name_style),
-        Span::styled("(", dim_style.clone()),
-        Span::styled(truncated_args, dim_style.clone()),
+        Span::styled("(", dim_style),
+        Span::styled(truncated_args, dim_style),
         Span::styled(")", dim_style),
     ])
 }
@@ -96,9 +96,19 @@ pub fn render_result_compact(output: &Value, is_error: bool) -> Line<'static> {
         };
         return Line::from(vec![
             Span::raw("   "),
-            Span::styled("\u{2192}", Style::default().fg(Color::Rgb(180, 180, 200)).add_modifier(Modifier::DIM)),
+            Span::styled(
+                "\u{2192}",
+                Style::default()
+                    .fg(Color::Rgb(180, 180, 200))
+                    .add_modifier(Modifier::DIM),
+            ),
             Span::raw(" "),
-            Span::styled("\u{2717}", Style::default().fg(Color::Rgb(231, 76, 60)).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "\u{2717}",
+                Style::default()
+                    .fg(Color::Rgb(231, 76, 60))
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" "),
             Span::styled(msg, Style::default().fg(Color::Rgb(231, 76, 60))),
         ]);
@@ -107,9 +117,19 @@ pub fn render_result_compact(output: &Value, is_error: bool) -> Line<'static> {
     let summary = result_summary(output);
     Line::from(vec![
         Span::raw("   "),
-        Span::styled("\u{2192}", Style::default().fg(Color::Rgb(180, 180, 200)).add_modifier(Modifier::DIM)),
+        Span::styled(
+            "\u{2192}",
+            Style::default()
+                .fg(Color::Rgb(180, 180, 200))
+                .add_modifier(Modifier::DIM),
+        ),
         Span::raw(" "),
-        Span::styled("\u{2713}", Style::default().fg(Color::Rgb(46, 204, 113)).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "\u{2713}",
+            Style::default()
+                .fg(Color::Rgb(46, 204, 113))
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
         Span::styled(summary, Style::default().fg(Color::Rgb(46, 204, 113))),
     ])
@@ -190,10 +210,7 @@ pub fn render_result(
             let remaining = body_text.lines().count().saturating_sub(shown);
             lines.push(Line::from(vec![
                 Span::raw("    "),
-                Span::styled(
-                    format!("… {} more line(s) truncated", remaining),
-                    dim,
-                ),
+                Span::styled(format!("… {} more line(s) truncated", remaining), dim),
             ]));
             break;
         }
@@ -267,7 +284,8 @@ fn result_summary(output: &Value) -> String {
     match output {
         Value::String(s) => {
             let lines = s.lines().count();
-            format!("({} line{}, {} byte{})",
+            format!(
+                "({} line{}, {} byte{})",
                 lines,
                 if lines == 1 { "" } else { "s" },
                 s.len(),
@@ -311,8 +329,17 @@ mod tests {
 
     #[test]
     fn render_result_truncates_long_output() {
-        let big = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
-        let lines = render_result("bash", &Value::String(big), false, 10, /*verbose=*/ true);
+        let big = (0..50)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = render_result(
+            "bash",
+            &Value::String(big),
+            false,
+            10,
+            /*verbose=*/ true,
+        );
         let truncation_marker = lines
             .iter()
             .map(flatten)
@@ -322,8 +349,17 @@ mod tests {
 
     #[test]
     fn render_result_compact_omits_body_for_success() {
-        let big = (0..50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
-        let lines = render_result("bash", &Value::String(big), false, 10, /*verbose=*/ false);
+        let big = (0..50)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = render_result(
+            "bash",
+            &Value::String(big),
+            false,
+            10,
+            /*verbose=*/ false,
+        );
         // Only the headline notification line, no body.
         assert_eq!(lines.len(), 1);
         assert!(flatten(&lines[0]).contains("✓"));
@@ -355,7 +391,10 @@ mod tests {
             5,
             false,
         );
-        assert!(lines.iter().map(flatten).any(|l| l.contains("permission denied")));
+        assert!(lines
+            .iter()
+            .map(flatten)
+            .any(|l| l.contains("permission denied")));
     }
 
     #[test]
@@ -384,7 +423,10 @@ mod tests {
         let text = flatten(&line);
         // Should be truncated — not the full 200-char string
         assert!(text.len() < 200);
-        assert!(text.contains("\u{2026}") || text.len() < 100, "should truncate with ellipsis");
+        assert!(
+            text.contains("\u{2026}") || text.len() < 100,
+            "should truncate with ellipsis"
+        );
     }
 
     #[test]
@@ -397,7 +439,8 @@ mod tests {
 
     #[test]
     fn render_result_compact_error() {
-        let line = render_result_compact(&Value::String("Tool error: permission denied".into()), true);
+        let line =
+            render_result_compact(&Value::String("Tool error: permission denied".into()), true);
         let text = flatten(&line);
         assert!(text.contains("\u{2717}"), "should contain X mark");
         assert!(text.contains("permission denied"));

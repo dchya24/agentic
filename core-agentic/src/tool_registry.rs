@@ -147,20 +147,34 @@ mod tests {
 
     struct ReadTool;
     impl Tool for ReadTool {
-        fn name(&self) -> &str { "reader" }
-        fn description(&self) -> &str { "" }
-        fn schema(&self) -> ToolSchema { ToolSchema::new("reader", "") }
+        fn name(&self) -> &str {
+            "reader"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new("reader", "")
+        }
         fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ToolError> {
             Ok(serde_json::json!({"ok": true}))
         }
-        fn is_read_only(&self) -> bool { true }
+        fn is_read_only(&self) -> bool {
+            true
+        }
     }
 
     struct WriteTool;
     impl Tool for WriteTool {
-        fn name(&self) -> &str { "writer" }
-        fn description(&self) -> &str { "" }
-        fn schema(&self) -> ToolSchema { ToolSchema::new("writer", "") }
+        fn name(&self) -> &str {
+            "writer"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new("writer", "")
+        }
         fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ToolError> {
             Ok(serde_json::json!({"ok": true}))
         }

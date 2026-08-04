@@ -98,11 +98,8 @@ fn try_load_as_image(path_str: &str) -> Option<core_agentic::Attachment> {
     core_agentic::attachments::detect_image_mime(&head[..n])?;
     // Fully load + base64-encode through the canonical loader so size
     // caps + format validation apply uniformly.
-    core_agentic::attachments::load_image_from_path(
-        path,
-        core_agentic::AttachmentLimits::default(),
-    )
-    .ok()
+    core_agentic::attachments::load_image_from_path(path, core_agentic::AttachmentLimits::default())
+        .ok()
 }
 
 /// Find all `@path` references in the input.
@@ -157,48 +154,47 @@ fn looks_like_path(s: &str) -> bool {
             // Common extensions
             return matches!(
                 ext,
-                "rs"
-                | "ts"
-                | "tsx"
-                | "js"
-                | "jsx"
-                | "py"
-                | "go"
-                | "java"
-                | "c"
-                | "cpp"
-                | "h"
-                | "hpp"
-                | "rb"
-                | "php"
-                | "sh"
-                | "bash"
-                | "zsh"
-                | "fish"
-                | "css"
-                | "scss"
-                | "html"
-                | "htm"
-                | "xml"
-                | "json"
-                | "yaml"
-                | "yml"
-                | "toml"
-                | "ini"
-                | "cfg"
-                | "conf"
-                | "md"
-                | "txt"
-                | "csv"
-                | "sql"
-                | "lock"
-                | "log"
-                | "env"
-                | "gitignore"
-                | "dockerignore"
-                | "editorconfig"
-                | "Makefile"
-                | "Dockerfile"
+                "rs" | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "py"
+                    | "go"
+                    | "java"
+                    | "c"
+                    | "cpp"
+                    | "h"
+                    | "hpp"
+                    | "rb"
+                    | "php"
+                    | "sh"
+                    | "bash"
+                    | "zsh"
+                    | "fish"
+                    | "css"
+                    | "scss"
+                    | "html"
+                    | "htm"
+                    | "xml"
+                    | "json"
+                    | "yaml"
+                    | "yml"
+                    | "toml"
+                    | "ini"
+                    | "cfg"
+                    | "conf"
+                    | "md"
+                    | "txt"
+                    | "csv"
+                    | "sql"
+                    | "lock"
+                    | "log"
+                    | "env"
+                    | "gitignore"
+                    | "dockerignore"
+                    | "editorconfig"
+                    | "Makefile"
+                    | "Dockerfile"
             );
         }
     }
@@ -237,8 +233,6 @@ fn read_file_ref(path_str: &str) -> String {
         format!("<file path=\"{}\" />", path_str)
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -336,8 +330,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("agentic-fileref-{}-{}", std::process::id(), nanos));
+        let dir =
+            std::env::temp_dir().join(format!("agentic-fileref-{}-{}", std::process::id(), nanos));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
         std::fs::write(&p, bytes).unwrap();
@@ -348,9 +342,8 @@ mod tests {
         // Minimal PNG signature + IHDR (1×1 RGBA).
         let mut b = b"\x89PNG\r\n\x1a\n".to_vec();
         b.extend_from_slice(&[
-            0x00, 0x00, 0x00, 0x0D, b'I', b'H', b'D', b'R',
-            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
+            0x00, 0x00, 0x00, 0x0D, b'I', b'H', b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+            0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
         ]);
         b
     }

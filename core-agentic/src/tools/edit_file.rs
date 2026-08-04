@@ -9,6 +9,12 @@ pub struct EditFileTool {
     tracker: Option<Arc<FileTracker>>,
 }
 
+impl Default for EditFileTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EditFileTool {
     pub fn new() -> Self {
         Self { tracker: None }
@@ -276,10 +282,7 @@ mod edit_file_tests {
 
     #[test]
     fn edit_with_curly_quotes_falls_back_to_normalized_match() {
-        let path = write_tmp(
-            "curly.txt",
-            "let s = \"hello\";\n",
-        );
+        let path = write_tmp("curly.txt", "let s = \"hello\";\n");
         let tool = EditFileTool::new();
         // Old string uses curly quotes — must still match.
         let args = serde_json::json!({

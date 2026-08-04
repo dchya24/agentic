@@ -58,7 +58,7 @@ pub fn print_text(text: &Text<'_>) {
 #[allow(dead_code)]
 pub fn print_rule(ch: char, style: Style) {
     let width = terminal_width();
-    let rule_str: String = std::iter::repeat(ch).take(width).collect();
+    let rule_str: String = std::iter::repeat_n(ch, width).collect();
     let line = Line::from(Span::styled(rule_str, style));
     print_line(&line);
 }
@@ -230,10 +230,17 @@ mod tests {
     #[test]
     fn to_crossterm_color_maps_known_variants() {
         assert_eq!(to_crossterm_color(Color::Reset), None);
-        assert!(matches!(to_crossterm_color(Color::Red), Some(CtColor::DarkRed)));
+        assert!(matches!(
+            to_crossterm_color(Color::Red),
+            Some(CtColor::DarkRed)
+        ));
         assert!(matches!(
             to_crossterm_color(Color::Rgb(10, 20, 30)),
-            Some(CtColor::Rgb { r: 10, g: 20, b: 30 })
+            Some(CtColor::Rgb {
+                r: 10,
+                g: 20,
+                b: 30
+            })
         ));
         assert!(matches!(
             to_crossterm_color(Color::Indexed(42)),

@@ -107,7 +107,10 @@ fn key_and_mtime(path: &Path) -> Option<(PathBuf, SystemTime)> {
 /// Compare mtimes with millisecond tolerance — some filesystems round
 /// timestamps and a same-second write should not flag stale.
 fn mtime_eq(a: SystemTime, b: SystemTime) -> bool {
-    match (a.duration_since(SystemTime::UNIX_EPOCH), b.duration_since(SystemTime::UNIX_EPOCH)) {
+    match (
+        a.duration_since(SystemTime::UNIX_EPOCH),
+        b.duration_since(SystemTime::UNIX_EPOCH),
+    ) {
         (Ok(da), Ok(db)) => {
             let am = da.as_millis();
             let bm = db.as_millis();

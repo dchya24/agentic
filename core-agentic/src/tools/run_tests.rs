@@ -366,10 +366,11 @@ fn parse_pytest(output: &str) -> Summary {
 ///   `Tests:       1 failed, 5 passed, 6 total`
 fn parse_npm_test(output: &str) -> Summary {
     let mut s = Summary::default();
-    let re = match regex::Regex::new(r"(\d+)\s+(passed|passing|failed|failing|skipped|pending|todo)") {
-        Ok(r) => r,
-        Err(_) => return s,
-    };
+    let re =
+        match regex::Regex::new(r"(\d+)\s+(passed|passing|failed|failing|skipped|pending|todo)") {
+            Ok(r) => r,
+            Err(_) => return s,
+        };
     for caps in re.captures_iter(output) {
         let n = caps[1].parse::<u32>().unwrap_or(0);
         match &caps[2] {
@@ -454,8 +455,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let pid = std::process::id();
-        let dir =
-            std::env::temp_dir().join(format!("agentic-runtests-{}-{}-{}", pid, nanos, name));
+        let dir = std::env::temp_dir().join(format!("agentic-runtests-{}-{}-{}", pid, nanos, name));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

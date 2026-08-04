@@ -191,7 +191,8 @@ fn run_curl(url: &str, method: &str) -> Result<String> {
 
     // Optionally use GITHUB_TOKEN if available (higher rate limits).
     if let Ok(token) = env::var("GITHUB_TOKEN").or_else(|_| env::var("GH_TOKEN")) {
-        cmd.arg("-H").arg(format!("Authorization: Bearer {}", token));
+        cmd.arg("-H")
+            .arg(format!("Authorization: Bearer {}", token));
     }
 
     let output = cmd.output().context("Failed to run curl")?;
@@ -223,7 +224,8 @@ fn download_to_temp(url: &str) -> Result<PathBuf> {
         .arg(url);
 
     if let Ok(token) = env::var("GITHUB_TOKEN").or_else(|_| env::var("GH_TOKEN")) {
-        cmd.arg("-H").arg(format!("Authorization: Bearer {}", token));
+        cmd.arg("-H")
+            .arg(format!("Authorization: Bearer {}", token));
     }
 
     let status = cmd.status().context("Failed to run curl for download")?;
@@ -257,8 +259,7 @@ fn install_binary(tmp_path: &Path) -> Result<()> {
 
         // Fallback: copy to new path, then rename over original.
         let backup_path = current_exe.with_extension("bak");
-        fs::copy(&current_exe, &backup_path)
-            .context("Failed to backup current binary")?;
+        fs::copy(&current_exe, &backup_path).context("Failed to backup current binary")?;
         fs::copy(tmp_path, &current_exe).context("Failed to copy new binary")?;
         fs::remove_file(tmp_path).ok();
         fs::remove_file(&backup_path).ok();
@@ -310,8 +311,7 @@ fn pick_asset(assets: &[GithubAsset]) -> Result<&GithubAsset> {
     let candidates: Vec<&GithubAsset> = assets
         .iter()
         .filter(|a| {
-            a.name.contains("linux") && a.name.contains("x86_64")
-                || a.name.contains("x86-64")
+            a.name.contains("linux") && a.name.contains("x86_64") || a.name.contains("x86-64")
         })
         .collect();
 
@@ -327,7 +327,11 @@ fn pick_asset(assets: &[GithubAsset]) -> Result<&GithubAsset> {
     anyhow::bail!(
         "No compatible binary found for platform '{}'. Available: {}",
         target,
-        assets.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
+        assets
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     )
 }
 
@@ -350,10 +354,7 @@ fn print_update_available(info: &UpdateInfo) {
         ),
         RSpan::raw("  →  "),
         RSpan::styled("Latest: ", RStyle::default().add_modifier(RModifier::DIM)),
-        RSpan::styled(
-            format!("v{}", info.latest_version),
-            bold.fg(RColor::Green),
-        ),
+        RSpan::styled(format!("v{}", info.latest_version), bold.fg(RColor::Green)),
     ]));
 
     if !info.release_notes.is_empty() {

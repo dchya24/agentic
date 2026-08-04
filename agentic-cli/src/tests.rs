@@ -5,7 +5,7 @@ mod tests {
 
     #[test]
     fn test_cli_run_command_parsing() {
-        let cli = Cli::try_parse_from(&["agentic", "run", "my task"]).unwrap();
+        let cli = Cli::try_parse_from(["agentic", "run", "my task"]).unwrap();
         match cli.command {
             Some(Command::Run { task, .. }) => assert_eq!(task, "my task"),
             _ => panic!("Expected Run command"),
@@ -14,7 +14,7 @@ mod tests {
 
     #[test]
     fn test_cli_interactive_command_parsing() {
-        let cli = Cli::try_parse_from(&["agentic", "interactive"]).unwrap();
+        let cli = Cli::try_parse_from(["agentic", "interactive"]).unwrap();
         match cli.command {
             Some(Command::Interactive) => {}
             _ => panic!("Expected Interactive command"),
@@ -23,7 +23,7 @@ mod tests {
 
     #[test]
     fn test_cli_version() {
-        let cli = Cli::try_parse_from(&["agentic", "version"]).unwrap();
+        let cli = Cli::try_parse_from(["agentic", "version"]).unwrap();
         match cli.command {
             Some(Command::Version) => {}
             _ => panic!("Expected Version command"),

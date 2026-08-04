@@ -81,11 +81,11 @@ impl SkillIndex {
     /// Insert a skill. Returns `true` if this is the first skill with that name.
     pub fn insert(&mut self, skill: Skill) -> bool {
         let name = skill.name().to_string();
-        if self.skills.contains_key(&name) {
-            false
-        } else {
-            self.skills.insert(name, skill);
+        if let std::collections::hash_map::Entry::Vacant(e) = self.skills.entry(name) {
+            e.insert(skill);
             true
+        } else {
+            false
         }
     }
 

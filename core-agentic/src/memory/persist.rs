@@ -28,8 +28,7 @@ impl Memory {
         let filename = format!("{}.json", self.session.id);
         let path = dir.join(filename);
 
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
 
         fs::write(&path, json)?;
         Ok(path)
@@ -42,9 +41,7 @@ impl Memory {
 
     /// Load a session from a specific directory.
     pub fn load_from_dir(session_id: &str, dir: Option<&Path>) -> io::Result<Self> {
-        let dir = dir
-            .map(PathBuf::from)
-            .unwrap_or_else(default_persist_dir);
+        let dir = dir.map(PathBuf::from).unwrap_or_else(default_persist_dir);
 
         let path = dir.join(format!("{}.json", session_id));
         let content = fs::read_to_string(&path)?;
@@ -70,9 +67,7 @@ impl Memory {
 
     /// List all saved session IDs from a specific directory.
     pub fn list_sessions_from_dir(dir: Option<&Path>) -> io::Result<Vec<String>> {
-        let dir = dir
-            .map(PathBuf::from)
-            .unwrap_or_else(default_persist_dir);
+        let dir = dir.map(PathBuf::from).unwrap_or_else(default_persist_dir);
 
         if !dir.exists() {
             return Ok(Vec::new());
@@ -100,9 +95,7 @@ impl Memory {
 
     /// Delete a saved session file from a specific directory.
     pub fn delete_session_in_dir(session_id: &str, dir: Option<&Path>) -> io::Result<()> {
-        let dir = dir
-            .map(PathBuf::from)
-            .unwrap_or_else(default_persist_dir);
+        let dir = dir.map(PathBuf::from).unwrap_or_else(default_persist_dir);
         let path = dir.join(format!("{}.json", session_id));
         if path.exists() {
             fs::remove_file(path)

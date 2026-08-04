@@ -43,9 +43,7 @@ pub(crate) fn build_request_messages(
                 MessageRole::User => ("user", None),
                 MessageRole::Assistant => ("assistant", None),
                 MessageRole::System => ("system", None),
-                MessageRole::Tool { tool_call_id, .. } => {
-                    ("tool", Some(tool_call_id.clone()))
-                }
+                MessageRole::Tool { tool_call_id, .. } => ("tool", Some(tool_call_id.clone())),
             };
 
             let content = if matches!(m.role, MessageRole::Tool { .. })
@@ -137,9 +135,7 @@ pub(crate) fn truncate_tool_result(raw: &str, max_chars: usize) -> String {
 ///    messages that would otherwise lead the slice.
 ///
 /// All decisions are local: we never invent messages, only drop or trim.
-pub(crate) fn sanitize_for_provider(
-    messages: Vec<ChatMessageRequest>,
-) -> Vec<ChatMessageRequest> {
+pub(crate) fn sanitize_for_provider(messages: Vec<ChatMessageRequest>) -> Vec<ChatMessageRequest> {
     use std::collections::HashSet;
 
     if messages.is_empty() {
@@ -212,9 +208,7 @@ pub(crate) fn sanitize_for_provider(
                 // Plain assistant (no tool_calls). Drop if also empty
                 // content — same provider rejection as in failure mode #3.
                 if msg.content.trim().is_empty() {
-                    tracing::debug!(
-                        "sanitize_for_provider: dropping empty assistant message"
-                    );
+                    tracing::debug!("sanitize_for_provider: dropping empty assistant message");
                     continue;
                 }
                 sanitized.push(msg.clone());
@@ -251,9 +245,7 @@ pub(crate) fn sanitize_for_provider(
     sanitized.retain(|m| {
         if m.role == "system" {
             if leading_system_seen {
-                tracing::debug!(
-                    "sanitize_for_provider: dropping duplicate system message"
-                );
+                tracing::debug!("sanitize_for_provider: dropping duplicate system message");
                 return false;
             }
             leading_system_seen = true;
@@ -332,8 +324,7 @@ mod orchestrator_unit_tests {
         let out = build_request_messages(&ctx, 1);
 
         // Find each tool message in the output and check content.
-        let tool_msgs: Vec<&ChatMessageRequest> =
-            out.iter().filter(|m| m.role == "tool").collect();
+        let tool_msgs: Vec<&ChatMessageRequest> = out.iter().filter(|m| m.role == "tool").collect();
         assert_eq!(tool_msgs.len(), 3);
 
         // The two oldest tool results should be cleared
@@ -349,8 +340,7 @@ mod orchestrator_unit_tests {
         let ctx = make_context();
         let out = build_request_messages(&ctx, 10);
 
-        let tool_msgs: Vec<&ChatMessageRequest> =
-            out.iter().filter(|m| m.role == "tool").collect();
+        let tool_msgs: Vec<&ChatMessageRequest> = out.iter().filter(|m| m.role == "tool").collect();
         assert_eq!(tool_msgs.len(), 3);
 
         for msg in tool_msgs {
@@ -373,8 +363,7 @@ mod orchestrator_unit_tests {
         let ctx = make_context();
         let out = build_request_messages(&ctx, 1);
 
-        let user_msgs: Vec<&ChatMessageRequest> =
-            out.iter().filter(|m| m.role == "user").collect();
+        let user_msgs: Vec<&ChatMessageRequest> = out.iter().filter(|m| m.role == "user").collect();
         let assistant_msgs: Vec<&ChatMessageRequest> =
             out.iter().filter(|m| m.role == "assistant").collect();
 
@@ -504,7 +493,7 @@ mod orchestrator_unit_tests {
                 content: "".into(),
                 tool_call_id: None,
                 tool_calls: vec![],
-            attachments: vec![],
+                attachments: vec![],
             },
         ];
         let out = sanitize_for_provider(input);
@@ -522,7 +511,7 @@ mod orchestrator_unit_tests {
                 content: "hi from a previous turn".into(),
                 tool_call_id: None,
                 tool_calls: vec![],
-            attachments: vec![],
+                attachments: vec![],
             },
             user_msg("hello"),
         ];
@@ -540,7 +529,7 @@ mod orchestrator_unit_tests {
                 content: "you are helpful".into(),
                 tool_call_id: None,
                 tool_calls: vec![],
-            attachments: vec![],
+                attachments: vec![],
             },
             user_msg("hi"),
         ];
@@ -558,14 +547,14 @@ mod orchestrator_unit_tests {
                 content: "rule 1".into(),
                 tool_call_id: None,
                 tool_calls: vec![],
-            attachments: vec![],
+                attachments: vec![],
             },
             ChatMessageRequest {
                 role: "system".into(),
                 content: "rule 2".into(),
                 tool_call_id: None,
                 tool_calls: vec![],
-            attachments: vec![],
+                attachments: vec![],
             },
             user_msg("hi"),
         ];

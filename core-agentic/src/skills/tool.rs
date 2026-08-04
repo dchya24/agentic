@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
+use crate::skills::{SkillIndex, SkillLoader};
 use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
-use crate::skills::{SkillLoader, SkillIndex};
 use std::collections::HashMap;
 
 /// Tool name exposed to the model.
@@ -84,7 +84,8 @@ impl Tool for SkillTool {
                 param_type: "boolean".to_string(),
                 description: Some(
                     "Whether to keep the skill instructions active for the \
-                     session (default: true)".to_string(),
+                     session (default: true)"
+                        .to_string(),
                 ),
                 default: Some(serde_json::Value::Bool(true)),
             },
@@ -119,10 +120,7 @@ impl Tool for SkillTool {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if path.is_file() {
-                            let fname = path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("");
+                            let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                             // Skip SKILL.md itself (already included as body)
                             if fname == "SKILL.md" {
                                 continue;
@@ -145,25 +143,35 @@ impl Tool for SkillTool {
 
         match result {
             Some(content) => {
-                // Optionally activate for session duration
+                // Optionally activate for session duration.
+                // Activation is BEST-EFFORT: if no `SkillLoader` is
+                // registered (e.g. the CLI didn't call
+                // `set_skill_loader`), the skill content is still
+                // returned as the tool result so the model receives
+                // the instructions immediately.  Activation failure
+                // should never discard or prevent the content from
+                // reaching the model.
+                let mut activated = false;
                 if activate {
                     let activation_result = if let Some(loader) = &self.loader {
                         loader.activate(name)
                     } else {
                         crate::skills::activate_skill(name)
                     };
-                    if let Err(e) = activation_result {
-                        return Err(ToolError::new(format!(
-                            "Skill '{}' found but failed to activate: {}",
-                            name, e
-                        )));
+                    activated = activation_result.is_ok();
+                    if let Err(ref e) = activation_result {
+                        tracing::warn!(
+                            skill = name,
+                            error = %e,
+                            "Skill found but activation failed (best-effort)"
+                        );
                     }
                 }
 
                 Ok(serde_json::json!({
                     "skill": name,
                     "content": content,
-                    "activated": activate,
+                    "activated": activated,
                 }))
             }
             None => Err(ToolError::new(format!(
@@ -201,7 +209,11 @@ mod tests {
         // Let's test with a skill where the dir exists.
         let dir = std::env::temp_dir().join("skill_tool_test");
         let _ = std::fs::create_dir_all(&dir);
-        std::fs::write(dir.join("SKILL.md"), "---\nname: test-skill\ndescription: A test\n---\n# Test\nDo stuff.").unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: A test\n---\n# Test\nDo stuff.",
+        )
+        .unwrap();
 
         let skill = Skill {
             metadata: SkillMetadata {
@@ -209,7 +221,8 @@ mod tests {
                 description: "A test".to_string(),
             },
             dir: dir.clone(),
-            content: "---\nname: test-skill\ndescription: A test\n---\n# Test\nDo stuff.".to_string(),
+            content: "---\nname: test-skill\ndescription: A test\n---\n# Test\nDo stuff."
+                .to_string(),
             frontmatter: "name: test-skill\ndescription: A test".to_string(),
             body: "# Test\nDo stuff.".to_string(),
         };
@@ -253,13 +266,11 @@ mod tests {
         std::fs::write(
             dir.join("SKILL.md"),
             "---\nname: refs-skill\ndescription: Skill with refs\n---\n# Main\nInstructions.",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Write a referenced file
-        std::fs::write(
-            dir.join("config.json"),
-            r#"{"setting": "value"}"#,
-        ).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"setting": "value"}"#).unwrap();
 
         let skill = Skill {
             metadata: SkillMetadata {

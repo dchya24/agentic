@@ -34,3 +34,5 @@ Thumbs.db
 # AI agent artifacts
 .claude/
 CLAUDE.md
+
+logs/

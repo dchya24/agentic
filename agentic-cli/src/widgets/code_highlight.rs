@@ -79,7 +79,7 @@ pub fn canonical_lang(raw: &str) -> Option<&'static str> {
     let lang = raw.trim().to_lowercase();
     // Strip off any qualifiers like `rust,no_run` or `python {linenos=true}`.
     let lang = lang
-        .split(|c: char| matches!(c, ',' | ' ' | '\t' | '{' | '|' | '\n' | '\r'))
+        .split([',', ' ', '\t', '{', '|', '\n', '\r'])
         .next()
         .unwrap_or("");
     match lang {
@@ -102,9 +102,9 @@ pub fn canonical_lang(raw: &str) -> Option<&'static str> {
 /// a non-canonical value renders plain.
 pub fn highlight_line(line: &str, lang: &str) -> Vec<Span<'static>> {
     let tokens = match lang {
-        "rust" => tokenize_clike(line, &RUST_KEYWORDS, /*hash_comments=*/ false),
-        "typescript" => tokenize_clike(line, &TS_KEYWORDS, /*hash_comments=*/ false),
-        "python" => tokenize_clike(line, &PYTHON_KEYWORDS, /*hash_comments=*/ true),
+        "rust" => tokenize_clike(line, RUST_KEYWORDS, /*hash_comments=*/ false),
+        "typescript" => tokenize_clike(line, TS_KEYWORDS, /*hash_comments=*/ false),
+        "python" => tokenize_clike(line, PYTHON_KEYWORDS, /*hash_comments=*/ true),
         "shell" => tokenize_shell(line),
         "json" => tokenize_json(line),
         "toml" => tokenize_toml(line),
@@ -121,37 +121,80 @@ pub fn highlight_line(line: &str, lang: &str) -> Vec<Span<'static>> {
 // ── Keyword tables ──────────────────────────────────────────────────────
 
 const RUST_KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
-    "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
-    "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static",
-    "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while",
-    "yield",
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
+    "unsafe", "use", "where", "while", "yield",
 ];
 
 const TS_KEYWORDS: &[&str] = &[
-    "abstract", "as", "async", "await", "break", "case", "catch", "class", "const",
-    "continue", "debugger", "default", "delete", "do", "else", "enum", "export",
-    "extends", "false", "finally", "for", "from", "function", "get", "if",
-    "implements", "import", "in", "instanceof", "interface", "let", "new", "null",
-    "of", "package", "private", "protected", "public", "return", "set", "static",
-    "super", "switch", "this", "throw", "true", "try", "type", "typeof", "undefined",
-    "var", "void", "while", "with", "yield",
+    "abstract",
+    "as",
+    "async",
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "from",
+    "function",
+    "get",
+    "if",
+    "implements",
+    "import",
+    "in",
+    "instanceof",
+    "interface",
+    "let",
+    "new",
+    "null",
+    "of",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "return",
+    "set",
+    "static",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "type",
+    "typeof",
+    "undefined",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
 ];
 
 const PYTHON_KEYWORDS: &[&str] = &[
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break",
-    "class", "continue", "def", "del", "elif", "else", "except", "finally", "for",
-    "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or",
-    "pass", "raise", "return", "try", "while", "with", "yield", "match", "case",
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield", "match", "case",
 ];
 
 // ── C-like tokenizer (rust, ts/js, python) ──────────────────────────────
 
-fn tokenize_clike(
-    line: &str,
-    keywords: &[&str],
-    hash_comments: bool,
-) -> Vec<(TokenKind, String)> {
+fn tokenize_clike(line: &str, keywords: &[&str], hash_comments: bool) -> Vec<(TokenKind, String)> {
     let mut out = Vec::new();
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -269,10 +312,9 @@ fn tokenize_clike(
 // ── Shell ───────────────────────────────────────────────────────────────
 
 const SHELL_KEYWORDS: &[&str] = &[
-    "if", "then", "else", "elif", "fi", "case", "esac", "for", "while", "until",
-    "do", "done", "in", "function", "select", "time", "return", "break", "continue",
-    "exit", "export", "local", "readonly", "set", "unset", "shift", "trap", "true",
-    "false",
+    "if", "then", "else", "elif", "fi", "case", "esac", "for", "while", "until", "do", "done",
+    "in", "function", "select", "time", "return", "break", "continue", "exit", "export", "local",
+    "readonly", "set", "unset", "shift", "trap", "true", "false",
 ];
 
 fn tokenize_shell(line: &str) -> Vec<(TokenKind, String)> {
@@ -322,9 +364,7 @@ fn tokenize_shell(line: &str) -> Vec<(TokenKind, String)> {
                     i += 1; // skip closing }
                 }
             } else {
-                while i < bytes.len()
-                    && (bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric())
-                {
+                while i < bytes.len() && (bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric()) {
                     i += 1;
                 }
             }
@@ -559,11 +599,9 @@ fn tokenize_yaml(line: &str) -> Vec<(TokenKind, String)> {
         match (b, in_str) {
             (b'"', None) | (b'\'', None) => in_str = Some(b),
             (q, Some(c)) if q == c => in_str = None,
-            (b':', None) => {
-                if i + 1 == bytes.len() || bytes[i + 1].is_ascii_whitespace() {
-                    colon_idx = Some(i);
-                    break;
-                }
+            (b':', None) if (i + 1 == bytes.len() || bytes[i + 1].is_ascii_whitespace()) => {
+                colon_idx = Some(i);
+                break;
             }
             _ => {}
         }
@@ -616,11 +654,19 @@ fn tokenize_yaml_value(value: &str) -> Vec<(TokenKind, String)> {
         return out;
     }
     let lower = trimmed.to_lowercase();
-    let kind = if matches!(lower.as_str(), "true" | "false" | "null" | "yes" | "no" | "~") {
+    let kind = if matches!(
+        lower.as_str(),
+        "true" | "false" | "null" | "yes" | "no" | "~"
+    ) {
         TokenKind::Keyword
     } else if trimmed.starts_with('"') || trimmed.starts_with('\'') {
         TokenKind::String
-    } else if trimmed.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+    } else if trimmed
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
         TokenKind::Number
     } else {
         TokenKind::String
@@ -768,10 +814,7 @@ mod tests {
 
     #[test]
     fn typescript_strings_and_keywords() {
-        let spans = highlight_line(
-            "const x: string = `template ${y}` + 'plain';",
-            "typescript",
-        );
+        let spans = highlight_line("const x: string = `template ${y}` + 'plain';", "typescript");
         assert!(classify_words(&spans, "const").contains(&TokenKind::Keyword));
         assert!(spans.iter().any(|s| s.content.contains("`template")));
         assert!(spans.iter().any(|s| s.content.contains("'plain'")));
@@ -830,8 +873,12 @@ mod tests {
     fn toml_key_value_with_comment() {
         let spans = highlight_line(r#"name = "agentic"  # main name"#, "toml");
         assert!(classify_words(&spans, "name").contains(&TokenKind::Function));
-        assert!(spans.iter().any(|s| s.content.contains(r#""agentic""#)
-            && s.style == style_for(TokenKind::String)));
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.content.contains(r#""agentic""#)
+                    && s.style == style_for(TokenKind::String))
+        );
         assert!(classify_words(&spans, "# main name").contains(&TokenKind::Comment));
     }
 
@@ -845,8 +892,9 @@ mod tests {
     #[test]
     fn yaml_bullet_list_item() {
         let spans = highlight_line("  - item-one", "yaml");
-        assert!(spans.iter().any(|s| s.content == "-"
-            && s.style == style_for(TokenKind::Punctuation)));
+        assert!(spans
+            .iter()
+            .any(|s| s.content == "-" && s.style == style_for(TokenKind::Punctuation)));
     }
 
     #[test]

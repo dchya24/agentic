@@ -11,6 +11,12 @@ use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 
 pub struct RunScriptTool;
 
+impl Default for RunScriptTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RunScriptTool {
     pub fn new() -> Self {
         Self
@@ -56,7 +62,9 @@ impl Tool for RunScriptTool {
             "interpreter".to_string(),
             ToolParam {
                 param_type: "string".to_string(),
-                description: Some("Interpreter to use (default 'sh'). Use 'bash', 'python3', etc.".to_string()),
+                description: Some(
+                    "Interpreter to use (default 'sh'). Use 'bash', 'python3', etc.".to_string(),
+                ),
                 default: Some(serde_json::json!("sh")),
             },
         );
@@ -146,12 +154,20 @@ impl RunScriptTool {
         // Truncate output if too large (64KB limit)
         let max_output = 65536;
         let stdout_truncated = if stdout.len() > max_output {
-            format!("{}... (truncated, {} bytes total)", &stdout[..max_output], stdout.len())
+            format!(
+                "{}... (truncated, {} bytes total)",
+                &stdout[..max_output],
+                stdout.len()
+            )
         } else {
             stdout
         };
         let stderr_truncated = if stderr.len() > max_output {
-            format!("{}... (truncated, {} bytes total)", &stderr[..max_output], stderr.len())
+            format!(
+                "{}... (truncated, {} bytes total)",
+                &stderr[..max_output],
+                stderr.len()
+            )
         } else {
             stderr
         };

@@ -391,9 +391,7 @@ pub fn estimate_tokens(text: &str) -> u32 {
     {
         use std::sync::OnceLock;
         static ENCODER: OnceLock<Result<tiktoken_rs::CoreBPE, String>> = OnceLock::new();
-        let encoder = ENCODER.get_or_init(|| {
-            tiktoken_rs::cl100k_base().map_err(|e| e.to_string())
-        });
+        let encoder = ENCODER.get_or_init(|| tiktoken_rs::cl100k_base().map_err(|e| e.to_string()));
         if let Ok(bpe) = encoder.as_ref() {
             return bpe.encode_with_special_tokens(text).len() as u32;
         }

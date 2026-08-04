@@ -106,7 +106,7 @@ impl InputBuffer {
             if !self.text[prev..pos]
                 .chars()
                 .next()
-                .map_or(true, |c| c.is_whitespace())
+                .is_none_or(|c| c.is_whitespace())
             {
                 break;
             }
@@ -122,7 +122,7 @@ impl InputBuffer {
             if self.text[prev..pos]
                 .chars()
                 .next()
-                .map_or(false, |c| c.is_whitespace())
+                .is_some_and(|c| c.is_whitespace())
             {
                 break;
             }
@@ -180,7 +180,7 @@ impl InputBuffer {
             if !self.text[prev..pos]
                 .chars()
                 .next()
-                .map_or(true, |c| c.is_whitespace())
+                .is_none_or(|c| c.is_whitespace())
             {
                 break;
             }
@@ -196,7 +196,7 @@ impl InputBuffer {
             if self.text[prev..pos]
                 .chars()
                 .next()
-                .map_or(false, |c| c.is_whitespace())
+                .is_some_and(|c| c.is_whitespace())
             {
                 break;
             }
@@ -222,7 +222,7 @@ impl InputBuffer {
             if self.text[pos..next]
                 .chars()
                 .next()
-                .map_or(true, |c| c.is_whitespace())
+                .is_none_or(|c| c.is_whitespace())
             {
                 break;
             }
@@ -238,7 +238,7 @@ impl InputBuffer {
             if !self.text[pos..next]
                 .chars()
                 .next()
-                .map_or(true, |c| c.is_whitespace())
+                .is_none_or(|c| c.is_whitespace())
             {
                 break;
             }
@@ -305,17 +305,23 @@ impl InputBuffer {
     pub fn cursor_up(&mut self) {
         let lines: Vec<&str> = self.text.lines().collect();
         let current_line = self.current_line();
-        
+
         if current_line == 0 {
             return;
         }
 
         let prev_line = current_line - 1;
-        let prev_line_start = lines[..prev_line].iter().map(|l| l.len() + 1).sum::<usize>();
-        let current_line_start = lines[..current_line].iter().map(|l| l.len() + 1).sum::<usize>();
+        let prev_line_start = lines[..prev_line]
+            .iter()
+            .map(|l| l.len() + 1)
+            .sum::<usize>();
+        let current_line_start = lines[..current_line]
+            .iter()
+            .map(|l| l.len() + 1)
+            .sum::<usize>();
         let col = self.cursor - current_line_start;
         let prev_line_len = lines[prev_line].len();
-        
+
         // Move to same column or end of previous line
         let new_col = col.min(prev_line_len);
         self.cursor = prev_line_start + new_col;
@@ -325,17 +331,23 @@ impl InputBuffer {
     pub fn cursor_down(&mut self) {
         let lines: Vec<&str> = self.text.lines().collect();
         let current_line = self.current_line();
-        
+
         if current_line + 1 >= lines.len() {
             return;
         }
 
         let next_line = current_line + 1;
-        let current_line_start = lines[..current_line].iter().map(|l| l.len() + 1).sum::<usize>();
-        let next_line_start = lines[..next_line].iter().map(|l| l.len() + 1).sum::<usize>();
+        let current_line_start = lines[..current_line]
+            .iter()
+            .map(|l| l.len() + 1)
+            .sum::<usize>();
+        let next_line_start = lines[..next_line]
+            .iter()
+            .map(|l| l.len() + 1)
+            .sum::<usize>();
         let col = self.cursor - current_line_start;
         let next_line_len = lines[next_line].len();
-        
+
         // Move to same column or end of next line
         let new_col = col.min(next_line_len);
         self.cursor = next_line_start + new_col;
@@ -347,10 +359,10 @@ impl InputBuffer {
         if self.cursor == 0 {
             return;
         }
-        
+
         // Find the last newline before cursor
         let newline_pos = self.text[..self.cursor].rfind('\n');
-        
+
         match newline_pos {
             Some(pos) => {
                 // Remove the newline character
@@ -362,7 +374,7 @@ impl InputBuffer {
                 return;
             }
         }
-        
+
         // Update multiline flag
         if self.line_count() <= 1 {
             self.multiline = false;
@@ -690,8 +702,8 @@ mod tests {
         buf.insert_char('l');
         buf.insert_char('ö');
         assert_eq!(buf.text(), "hél lö".replace(" ", "")); // "hél lö" without space = "hél lö"... let me fix
-        // Actually: h, é, l, l, ö → "hél lö"? No, just "hél lö" without space
-        // Let's just check navigation works
+                                                           // Actually: h, é, l, l, ö → "hél lö"? No, just "hél lö" without space
+                                                           // Let's just check navigation works
         buf.cursor_home();
         assert_eq!(buf.cursor(), 0);
         buf.cursor_right(); // h
@@ -709,12 +721,12 @@ mod tests {
         let mut buf = InputBuffer::new();
         buf.set_text("hello".to_string());
         buf.cursor_end();
-        
+
         assert!(!buf.is_multiline());
         assert_eq!(buf.line_count(), 1);
-        
+
         buf.insert_line_break();
-        
+
         assert!(buf.is_multiline());
         assert_eq!(buf.text(), "hello\n");
         assert_eq!(buf.line_count(), 2);
@@ -725,11 +737,11 @@ mod tests {
         let mut buf = InputBuffer::new();
         buf.set_text("line1\nline2\nline3".to_string());
         buf.multiline = true;
-        
+
         // Cursor at end
         buf.cursor_end();
         assert_eq!(buf.current_line(), 2); // line3 (0-indexed)
-        
+
         // Move to start
         buf.cursor_home();
         assert_eq!(buf.current_line(), 0); // line1
@@ -740,7 +752,7 @@ mod tests {
         let mut buf = InputBuffer::new();
         buf.set_text("line1\nline2\nline3".to_string());
         buf.multiline = true;
-        
+
         let lines = buf.lines();
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0], "line1");
@@ -754,19 +766,19 @@ mod tests {
         buf.set_text("line1\nline2\nline3".to_string());
         buf.multiline = true;
         buf.cursor_end(); // at end of "line3"
-        
+
         // Move up to "line2"
         buf.cursor_up();
         assert_eq!(buf.current_line(), 1);
-        
+
         // Move up to "line1"
         buf.cursor_up();
         assert_eq!(buf.current_line(), 0);
-        
+
         // Can't move up further
         buf.cursor_up();
         assert_eq!(buf.current_line(), 0);
-        
+
         // Move down
         buf.cursor_down();
         assert_eq!(buf.current_line(), 1);
@@ -777,12 +789,12 @@ mod tests {
         let mut buf = InputBuffer::new();
         buf.set_text("line1\nline2".to_string());
         buf.multiline = true;
-        
+
         // Move to start of line2
         buf.cursor = 6; // after "line1\n"
-        
+
         buf.merge_with_previous_line();
-        
+
         assert_eq!(buf.text(), "line1line2");
         assert!(!buf.is_multiline());
     }
@@ -792,9 +804,9 @@ mod tests {
         let mut buf = InputBuffer::new();
         buf.set_text("line1\nline2".to_string());
         buf.multiline = true;
-        
+
         buf.clear();
-        
+
         assert!(!buf.is_multiline());
         assert!(buf.is_empty());
     }
@@ -804,7 +816,7 @@ mod tests {
         let mut buf = InputBuffer::new();
         buf.set_text("line1\nline2\nline3".to_string());
         buf.multiline = true;
-        
+
         let result = buf.submit();
         assert_eq!(result, "line1\nline2\nline3");
         assert!(!buf.is_multiline());

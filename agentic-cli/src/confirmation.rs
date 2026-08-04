@@ -26,9 +26,7 @@ pub fn prompt_confirmation(request: &ConfirmationRequest) -> Option<Confirmation
     };
 
     let label_style = Style::default().add_modifier(Modifier::BOLD);
-    let risk_style = Style::default()
-        .fg(risk_color)
-        .add_modifier(Modifier::BOLD);
+    let risk_style = Style::default().fg(risk_color).add_modifier(Modifier::BOLD);
     let dim = Style::default().add_modifier(Modifier::DIM);
 
     let body = vec![
@@ -89,10 +87,7 @@ pub fn prompt_confirmation(request: &ConfirmationRequest) -> Option<Confirmation
         inline::print_blank();
     }
 
-    inline::print_line(&Line::from(Span::styled(
-        "  > ",
-        dim,
-    )));
+    inline::print_line(&Line::from(Span::styled("  > ", dim)));
 
     loop {
         let mut input = String::new();

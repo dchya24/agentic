@@ -7,6 +7,12 @@ use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 
 pub struct GrepTool;
 
+impl Default for GrepTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GrepTool {
     pub fn new() -> Self {
         Self

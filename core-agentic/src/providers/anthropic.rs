@@ -1,7 +1,7 @@
 //! Anthropic Claude provider implementation
 
-use reqwest::blocking::Client;
 use futures::stream::StreamExt;
+use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
 use super::{ChatRequest, ChatResponse, ChatUsage, LLMProvider, ProviderError, ProviderResult};
@@ -17,9 +17,15 @@ pub struct RetryConfig {
     pub max_delay_ms: u64,
 }
 
-fn default_max_retries() -> u32 { 3 }
-fn default_base_delay_ms() -> u64 { 1000 }
-fn default_max_delay_ms() -> u64 { 30000 }
+fn default_max_retries() -> u32 {
+    3
+}
+fn default_base_delay_ms() -> u64 {
+    1000
+}
+fn default_max_delay_ms() -> u64 {
+    30000
+}
 
 impl Default for RetryConfig {
     fn default() -> Self {
@@ -167,13 +173,8 @@ enum AnthropicContentBlock {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicImageSource {
-    Base64 {
-        media_type: String,
-        data: String,
-    },
-    Url {
-        url: String,
-    },
+    Base64 { media_type: String, data: String },
+    Url { url: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -230,7 +231,9 @@ pub struct AnthropicResponse {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum AnthropicContentBlockResponse {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     ToolUse {
         #[serde(rename = "type")]
         tool_use_type: String,
@@ -315,7 +318,12 @@ impl AnthropicProvider {
             .expect("Failed to build async HTTP client");
 
         let retry = config.retry.clone();
-        Self { config, client, async_client, retry }
+        Self {
+            config,
+            client,
+            async_client,
+            retry,
+        }
     }
 
     fn convert_request(&self, request: ChatRequest) -> Result<AnthropicRequest, ProviderError> {
@@ -368,10 +376,7 @@ impl AnthropicProvider {
                         // input context for the prompt that follows.
                         let mut blocks = Vec::new();
                         for att in &msg.attachments {
-                            if !matches!(
-                                att.kind,
-                                crate::attachments::AttachmentKind::Image
-                            ) {
+                            if !matches!(att.kind, crate::attachments::AttachmentKind::Image) {
                                 continue;
                             }
                             let source = match &att.source {
@@ -433,39 +438,43 @@ impl AnthropicProvider {
 
         // For Prefix strategy, add cache_control to the second-to-last message
         // (everything before the current turn is cached as a prefix).
-        if cache_enabled && breakpoint_strategy == &BreakpointStrategy::Prefix {
-            if anthropic_messages.len() >= 2 {
-                // The prefix ends at the message before the current user turn.
-                let prefix_idx = anthropic_messages.len() - 2;
-                if let Some(last_text_block) = anthropic_messages[prefix_idx]
-                    .content
-                    .iter_mut()
-                    .rev()
-                    .find_map(|block| match block {
-                        AnthropicContentBlock::Text { ref mut cache_control, .. } => {
-                            Some(cache_control)
-                        }
-                        _ => None,
-                    })
-                {
-                    *last_text_block = Some(CacheControl::ephemeral());
-                }
+        if cache_enabled
+            && breakpoint_strategy == &BreakpointStrategy::Prefix
+            && anthropic_messages.len() >= 2
+        {
+            // The prefix ends at the message before the current user turn.
+            let prefix_idx = anthropic_messages.len() - 2;
+            if let Some(last_text_block) = anthropic_messages[prefix_idx]
+                .content
+                .iter_mut()
+                .rev()
+                .find_map(|block| match block {
+                    AnthropicContentBlock::Text {
+                        ref mut cache_control,
+                        ..
+                    } => Some(cache_control),
+                    _ => None,
+                })
+            {
+                *last_text_block = Some(CacheControl::ephemeral());
             }
         }
 
         // For Full strategy, add cache_control to every message up to the last.
         if cache_enabled && breakpoint_strategy == &BreakpointStrategy::Full {
             if let Some(last_msg) = anthropic_messages.last_mut() {
-                if let Some(last_text_block) = last_msg
-                    .content
-                    .iter_mut()
-                    .rev()
-                    .find_map(|block| match block {
-                        AnthropicContentBlock::Text { ref mut cache_control, .. } => {
-                            Some(cache_control)
-                        }
-                        _ => None,
-                    })
+                if let Some(last_text_block) =
+                    last_msg
+                        .content
+                        .iter_mut()
+                        .rev()
+                        .find_map(|block| match block {
+                            AnthropicContentBlock::Text {
+                                ref mut cache_control,
+                                ..
+                            } => Some(cache_control),
+                            _ => None,
+                        })
                 {
                     *last_text_block = Some(CacheControl::ephemeral());
                 }
@@ -515,6 +524,14 @@ impl AnthropicProvider {
     }
 
     pub fn chat(&self, request: ChatRequest) -> ProviderResult<ChatResponse> {
+        tracing::trace!(
+            provider = %self.config.id,
+            model = %request.model,
+            messages = request.messages.len(),
+            tools = request.tools.len(),
+            stream = false,
+            "anthropic chat request"
+        );
         let anthropic_request = self.convert_request(request)?;
 
         let mut last_error = None;
@@ -522,7 +539,12 @@ impl AnthropicProvider {
         for attempt in 0..=self.retry.max_retries {
             if attempt > 0 {
                 let delay = self.retry.delay_for_attempt(attempt - 1);
-                log::warn!("Retry attempt {}/{} after {:?}", attempt, self.retry.max_retries, delay);
+                log::warn!(
+                    "Retry attempt {}/{} after {:?}",
+                    attempt,
+                    self.retry.max_retries,
+                    delay
+                );
                 std::thread::sleep(delay);
             }
 
@@ -557,7 +579,7 @@ impl AnthropicProvider {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().unwrap_or_default();
-            
+
             // Try to parse as Anthropic error
             if let Ok(anthropic_err) = serde_json::from_str::<AnthropicError>(&text) {
                 return Err(ProviderError::new(format!(
@@ -565,7 +587,7 @@ impl AnthropicProvider {
                     status, anthropic_err.error.message
                 )));
             }
-            
+
             return Err(ProviderError::new(format!(
                 "API error ({}): {}",
                 status, text
@@ -576,7 +598,8 @@ impl AnthropicProvider {
             .json()
             .map_err(|e| ProviderError::new(format!("Failed to parse response: {}", e)))?;
 
-        let (content, tool_calls) = self.extract_content_and_tool_calls(&anthropic_response.content);
+        let (content, tool_calls) =
+            self.extract_content_and_tool_calls(&anthropic_response.content);
 
         let usage = anthropic_response.usage.map(|u| ChatUsage {
             prompt_tokens: u.input_tokens,
@@ -585,6 +608,16 @@ impl AnthropicProvider {
             cache_read_input_tokens: u.cache_read_input_tokens,
             cache_creation_input_tokens: u.cache_creation_input_tokens,
         });
+
+        tracing::trace!(
+            provider = %self.config.id,
+            model = %anthropic_response.model,
+            finish_reason = ?anthropic_response.stop_reason,
+            prompt_tokens = usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0),
+            completion_tokens = usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0),
+            tool_calls = tool_calls.len(),
+            "anthropic chat response"
+        );
 
         Ok(ChatResponse {
             id: anthropic_response.id,
@@ -664,6 +697,15 @@ impl LLMProvider for AnthropicProvider {
         &self,
         request: ChatRequest,
     ) -> super::StreamResult<super::ChatChunk, ProviderError> {
+        tracing::trace!(
+            provider = %self.config.id,
+            model = %request.model,
+            messages = request.messages.len(),
+            tools = request.tools.len(),
+            stream = true,
+            "anthropic chat_stream request"
+        );
+
         let url = format!("{}/messages", self.config.base_url.trim_end_matches('/'));
 
         let mut anthropic_request = self.convert_request(request)?;
@@ -679,7 +721,12 @@ impl LLMProvider for AnthropicProvider {
         for attempt in 0..=retry.max_retries {
             if attempt > 0 {
                 let delay = retry.delay_for_attempt(attempt - 1);
-                log::warn!("Stream retry attempt {}/{} after {:?}", attempt, retry.max_retries, delay);
+                log::warn!(
+                    "Stream retry attempt {}/{} after {:?}",
+                    attempt,
+                    retry.max_retries,
+                    delay
+                );
                 std::thread::sleep(delay);
             }
 
@@ -710,7 +757,7 @@ impl LLMProvider for AnthropicProvider {
                             match chunk_result {
                                 Ok(bytes) => {
                                     buffer.push_str(&String::from_utf8_lossy(&bytes));
-                                    
+
                                     while let Some(line) = Self::parse_sse_line(&mut buffer) {
                                         match serde_json::from_str::<AnthropicStreamEvent>(&line) {
                                             Ok(event) => {
@@ -851,7 +898,9 @@ impl LLMProvider for AnthropicProvider {
 
 #[cfg(test)]
 mod wire_format_tests {
-    use super::{AnthropicContentBlock, AnthropicImageSource, AnthropicProvider, AnthropicProviderConfig};
+    use super::{
+        AnthropicContentBlock, AnthropicImageSource, AnthropicProvider, AnthropicProviderConfig,
+    };
     use crate::attachments::{Attachment, AttachmentKind, AttachmentSource};
     use crate::providers::{ChatMessageRequest, ChatRequest};
 
@@ -913,13 +962,11 @@ mod wire_format_tests {
 
     #[test]
     fn single_image_renders_image_then_text() {
-        let msg = ChatMessageRequest::user("What's in this?")
-            .with_attachments(vec![png_attachment()]);
+        let msg =
+            ChatMessageRequest::user("What's in this?").with_attachments(vec![png_attachment()]);
         let req = ChatRequest::new("claude-3-5-sonnet-20241022", vec![msg]);
         let body = convert_and_serialize(req);
-        let blocks = body["messages"][0]["content"]
-            .as_array()
-            .expect("blocks");
+        let blocks = body["messages"][0]["content"].as_array().expect("blocks");
         assert_eq!(blocks.len(), 2);
         // Image first so the model sees it as input context.
         assert_eq!(blocks[0]["type"], "image");
@@ -943,17 +990,13 @@ mod wire_format_tests {
 
     #[test]
     fn remote_url_attachment_uses_url_source() {
-        let msg = ChatMessageRequest::user("caption")
-            .with_attachments(vec![remote_attachment()]);
+        let msg = ChatMessageRequest::user("caption").with_attachments(vec![remote_attachment()]);
         let req = ChatRequest::new("claude-3-5-sonnet-20241022", vec![msg]);
         let body = convert_and_serialize(req);
         let blocks = body["messages"][0]["content"].as_array().unwrap();
         assert_eq!(blocks[0]["type"], "image");
         assert_eq!(blocks[0]["source"]["type"], "url");
-        assert_eq!(
-            blocks[0]["source"]["url"],
-            "https://example.com/cat.png"
-        );
+        assert_eq!(blocks[0]["source"]["url"], "https://example.com/cat.png");
         // No `data` field on URL-source images.
         assert!(blocks[0]["source"]["data"].is_null());
     }
@@ -1063,11 +1106,8 @@ mod wire_format_tests {
 
     /// Helper: provider with cache enabled.
     fn cached_provider() -> AnthropicProvider {
-        let mut cfg = AnthropicProviderConfig::new(
-            "test-id",
-            "test-key",
-            "claude-3-5-sonnet-20241022",
-        );
+        let mut cfg =
+            AnthropicProviderConfig::new("test-id", "test-key", "claude-3-5-sonnet-20241022");
         cfg.cache = crate::config::CacheConfig {
             enabled: true,
             breakpoint_strategy: crate::config::BreakpointStrategy::SystemOnly,
@@ -1115,11 +1155,8 @@ mod wire_format_tests {
         // Anthropic's API only needs one cache_control breakpoint at the
         // boundary between cached and uncached content — the API caches
         // everything from the start up to that breakpoint.
-        let mut cfg = AnthropicProviderConfig::new(
-            "test-id",
-            "test-key",
-            "claude-3-5-sonnet-20241022",
-        );
+        let mut cfg =
+            AnthropicProviderConfig::new("test-id", "test-key", "claude-3-5-sonnet-20241022");
         cfg.cache = crate::config::CacheConfig {
             enabled: true,
             breakpoint_strategy: crate::config::BreakpointStrategy::Prefix,
@@ -1137,9 +1174,8 @@ mod wire_format_tests {
                 ChatMessageRequest::user("final turn"),
             ],
         );
-        let body = serde_json::to_value(
-            &p.convert_request(req).expect("convert")
-        ).expect("serialize");
+        let body =
+            serde_json::to_value(p.convert_request(req).expect("convert")).expect("serialize");
 
         // System has cache_control.
         let sys = body["system"].as_array().unwrap();
@@ -1153,8 +1189,11 @@ mod wire_format_tests {
         // should have cache_control on its last text block.
         let prefix_msg = &msgs[3];
         let prefix_blocks = prefix_msg["content"].as_array().unwrap();
-        let prefix_last_text = prefix_blocks.iter().rev()
-            .find(|b| b["type"] == "text").unwrap();
+        let prefix_last_text = prefix_blocks
+            .iter()
+            .rev()
+            .find(|b| b["type"] == "text")
+            .unwrap();
         assert_eq!(prefix_last_text["cache_control"]["type"], "ephemeral");
 
         // The final message (index 4 = user "final turn") should NOT have cache_control.
@@ -1178,7 +1217,8 @@ mod wire_format_tests {
                     if block["type"] == "text" {
                         assert!(
                             !block.as_object().unwrap().contains_key("cache_control"),
-                            "msg[{}] should NOT have cache_control (only the prefix boundary)", i
+                            "msg[{}] should NOT have cache_control (only the prefix boundary)",
+                            i
                         );
                     }
                 }
@@ -1190,11 +1230,8 @@ mod wire_format_tests {
     fn cache_control_not_applied_with_single_turn() {
         // With Prefix strategy, a single-turn conversation has no prefix
         // to cache, so only system gets cache_control.
-        let mut cfg = AnthropicProviderConfig::new(
-            "test-id",
-            "test-key",
-            "claude-3-5-sonnet-20241022",
-        );
+        let mut cfg =
+            AnthropicProviderConfig::new("test-id", "test-key", "claude-3-5-sonnet-20241022");
         cfg.cache = crate::config::CacheConfig {
             enabled: true,
             breakpoint_strategy: crate::config::BreakpointStrategy::Prefix,
@@ -1208,9 +1245,8 @@ mod wire_format_tests {
                 ChatMessageRequest::user("hello"),
             ],
         );
-        let body = serde_json::to_value(
-            &p.convert_request(req).expect("convert")
-        ).expect("serialize");
+        let body =
+            serde_json::to_value(p.convert_request(req).expect("convert")).expect("serialize");
 
         // System has cache_control.
         let sys = body["system"].as_array().unwrap();
@@ -1222,9 +1258,7 @@ mod wire_format_tests {
         assert_eq!(msgs.len(), 1);
         if let Some(blocks) = msgs[0]["content"].as_array() {
             for block in blocks {
-                assert!(
-                    !block.as_object().unwrap().contains_key("cache_control")
-                );
+                assert!(!block.as_object().unwrap().contains_key("cache_control"));
             }
         }
     }

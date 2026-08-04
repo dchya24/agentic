@@ -28,10 +28,11 @@ use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 // ---------------------------------------------------------------------------
 
 /// Status of a single todo item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TodoStatus {
     /// Not yet started.
     #[serde(rename = "pending")]
+    #[default]
     Pending,
     /// Currently being worked on.
     #[serde(rename = "in_progress")]
@@ -66,17 +67,13 @@ impl TodoStatus {
     }
 }
 
-impl Default for TodoStatus {
-    fn default() -> Self {
-        TodoStatus::Pending
-    }
-}
-
 /// Priority level for a todo item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum TodoPriority {
     Low = 0,
+    #[default]
     Medium = 1,
     High = 2,
 }
@@ -97,12 +94,6 @@ impl TodoPriority {
             "high" | "h" | "important" | "critical" => Some(TodoPriority::High),
             _ => None,
         }
-    }
-}
-
-impl Default for TodoPriority {
-    fn default() -> Self {
-        TodoPriority::Medium
     }
 }
 
@@ -131,15 +122,21 @@ impl<'de> serde::Deserialize<'de> for TodoItem {
             priority: Option<String>,
         }
         let raw = Raw::deserialize(de)?;
-        let status = raw.status
+        let status = raw
+            .status
             .as_deref()
             .and_then(TodoStatus::parse)
             .unwrap_or_default();
-        let priority = raw.priority
+        let priority = raw
+            .priority
             .as_deref()
             .and_then(TodoPriority::parse)
             .unwrap_or_default();
-        Ok(TodoItem { content: raw.content, status, priority })
+        Ok(TodoItem {
+            content: raw.content,
+            status,
+            priority,
+        })
     }
 }
 
@@ -154,9 +151,9 @@ pub trait TodoChangeHandler: Send + Sync {
 }
 
 /// Global handler for todo changes (optional, for UI rendering).
-pub(crate) static TODO_CHANGE_HANDLER:
-    std::sync::LazyLock<Mutex<Option<Box<dyn TodoChangeHandler>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(None));
+pub(crate) static TODO_CHANGE_HANDLER: std::sync::LazyLock<
+    Mutex<Option<Box<dyn TodoChangeHandler>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(None));
 
 /// Register a todo change handler.
 pub fn set_todo_change_handler(handler: Box<dyn TodoChangeHandler>) {
@@ -455,8 +452,14 @@ mod tests {
     #[test]
     fn todo_status_parse() {
         assert_eq!(TodoStatus::parse("pending"), Some(TodoStatus::Pending));
-        assert_eq!(TodoStatus::parse("in_progress"), Some(TodoStatus::InProgress));
-        assert_eq!(TodoStatus::parse("in-progress"), Some(TodoStatus::InProgress));
+        assert_eq!(
+            TodoStatus::parse("in_progress"),
+            Some(TodoStatus::InProgress)
+        );
+        assert_eq!(
+            TodoStatus::parse("in-progress"),
+            Some(TodoStatus::InProgress)
+        );
         assert_eq!(TodoStatus::parse("completed"), Some(TodoStatus::Completed));
         assert_eq!(TodoStatus::parse("done"), Some(TodoStatus::Completed));
         assert_eq!(TodoStatus::parse("cancelled"), Some(TodoStatus::Cancelled));

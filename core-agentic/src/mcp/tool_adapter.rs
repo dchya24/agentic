@@ -32,7 +32,7 @@ pub fn mcp_tools_from_config(
 
     Ok(tools
         .into_iter()
-        .zip(schemas.into_iter())
+        .zip(schemas)
         .map(|(mcp_tool, schema)| {
             let adapter = McpToolAdapter {
                 tool_name: mcp_tool.name.clone(),
@@ -112,7 +112,7 @@ pub async fn async_mcp_tools_from_config(
 
     Ok(tools
         .into_iter()
-        .zip(schemas.into_iter())
+        .zip(schemas)
         .map(|(mcp_tool, schema)| {
             let adapter = AsyncMcpToolAdapter::new(
                 mcp_tool.name.clone(),

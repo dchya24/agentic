@@ -1,17 +1,20 @@
 //! UI rendering for TUI
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect, Margin},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
     Frame,
 };
 
 use super::app::{App, MessageRole};
 use super::dropdown::DropdownType;
 use super::input::{render_input, render_placeholder};
-use crate::widgets::markdown::{MarkdownContent, role_prefix};
+use crate::widgets::markdown::{role_prefix, MarkdownContent};
 use crate::widgets::{diff as diff_widget, spinner, tool_call};
 
 /// Padding configuration
@@ -31,18 +34,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     };
 
     // Background
-    let bg_block = Block::default()
-        .style(Style::default().bg(Color::Rgb(20, 20, 30)));
+    let bg_block = Block::default().style(Style::default().bg(Color::Rgb(20, 20, 30)));
     frame.render_widget(bg_block, size);
 
     // Main layout: header, messages, input
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header
-            Constraint::Min(10),    // Messages
-            Constraint::Length(3),  // Progress (when loading)
-            Constraint::Length(3),  // Input
+            Constraint::Length(3), // Header
+            Constraint::Min(10),   // Messages
+            Constraint::Length(3), // Progress (when loading)
+            Constraint::Length(3), // Input
         ])
         .split(padded_area);
 
@@ -76,46 +78,36 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
                 .fg(Color::Rgb(46, 204, 113))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "│",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("│", Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!(" {} / {} ", provider, model),
             Style::default().fg(Color::Rgb(180, 180, 180)),
         ),
-        Span::styled(
-            "│",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("│", Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!(" 💬{} ", app.stats.messages_sent),
             Style::default().fg(Color::Rgb(135, 206, 250)),
         ),
         Span::styled(
-            format!(" 📊{}↑/{}↓ ",
+            format!(
+                " 📊{}↑/{}↓ ",
                 app.stats.format_tokens(app.stats.tokens_input),
-                app.stats.format_tokens(app.stats.tokens_output)),
+                app.stats.format_tokens(app.stats.tokens_output)
+            ),
             Style::default().fg(Color::Rgb(186, 85, 211)),
         ),
     ];
 
     // Context indicator (G-11): AGENT.md / memory.md
     if !context.is_empty() {
-        spans.push(Span::styled(
-            "│",
-            Style::default().fg(Color::DarkGray),
-        ));
+        spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(
             context,
             Style::default().fg(Color::Rgb(241, 196, 15)),
         ));
     }
 
-    spans.push(Span::styled(
-        "│",
-        Style::default().fg(Color::DarkGray),
-    ));
+    spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
     spans.push(Span::styled(
         format!(" {} ", session_id_short),
         Style::default().fg(Color::DarkGray),
@@ -125,8 +117,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::Rgb(241, 196, 15)),
     ));
 
-    let header = Paragraph::new(Line::from(spans))
-    .block(
+    let header = Paragraph::new(Line::from(spans)).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(60, 60, 80)))
@@ -139,7 +130,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 /// Draw messages area
 fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner_area = area.inner(Margin::new(1, 1));
-    
+
     // Build message lines
     let mut all_lines: Vec<Line> = Vec::new();
 
@@ -250,7 +241,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         if !all_lines.is_empty() {
             all_lines.push(Line::default());
         }
-        
+
         let (role_span, _) = role_prefix("assistant");
         all_lines.push(Line::from(vec![
             role_span,
@@ -271,7 +262,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     // Calculate scroll
     let visible_height = inner_area.height as usize;
     let total_lines = all_lines.len();
-    
+
     // Auto-scroll to bottom when new content arrives
     let max_scroll = total_lines.saturating_sub(visible_height);
     if app.scroll_offset > max_scroll {
@@ -321,8 +312,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 fn draw_progress(frame: &mut Frame, app: &App, area: Rect) {
     if !app.is_loading {
         // Empty space when not loading
-        let empty = Block::default()
-            .style(Style::default().bg(Color::Rgb(20, 20, 30)));
+        let empty = Block::default().style(Style::default().bg(Color::Rgb(20, 20, 30)));
         frame.render_widget(empty, area);
         return;
     }
@@ -351,35 +341,32 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         render_input(&app.input, app.cursor_pos)
     };
 
-    let input_widget = Paragraph::new(input_line)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(
-                    if app.is_loading {
+    let input_widget = Paragraph::new(input_line).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if app.is_loading {
+                Color::DarkGray
+            } else {
+                Color::Rgb(46, 204, 113)
+            }))
+            .title(Span::styled(
+                if app.is_loading {
+                    " Input (waiting...) ".to_string()
+                } else if let Some(ref img) = app.image_attachment {
+                    format!(" Input 📷 {} ", img)
+                } else {
+                    " Input ".to_string()
+                },
+                Style::default()
+                    .fg(if app.is_loading {
                         Color::DarkGray
                     } else {
                         Color::Rgb(46, 204, 113)
-                    },
-                ))
-                .title(Span::styled(
-                    if app.is_loading {
-                        " Input (waiting...) ".to_string()
-                    } else if let Some(ref img) = app.image_attachment {
-                        format!(" Input 📷 {} ", img)
-                    } else {
-                        " Input ".to_string()
-                    },
-                    Style::default()
-                        .fg(if app.is_loading {
-                            Color::DarkGray
-                        } else {
-                            Color::Rgb(46, 204, 113)
-                        })
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .style(Style::default().bg(Color::Rgb(30, 30, 45))),
-        );
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .style(Style::default().bg(Color::Rgb(30, 30, 45))),
+    );
 
     frame.render_widget(input_widget, area);
 }
@@ -398,7 +385,7 @@ fn draw_dropdown(frame: &mut Frame, app: &App, input_area: Rect) {
     // Calculate dropdown position (above input)
     let visible_items = dropdown.visible_items();
     let dropdown_height = (visible_items.len() + 2).min(10) as u16;
-    
+
     let dropdown_area = Rect {
         x: input_area.x + 1,
         y: input_area.y.saturating_sub(dropdown_height),
@@ -432,6 +419,7 @@ fn draw_dropdown(frame: &mut Frame, app: &App, input_area: Rect) {
                     }
                 }
                 DropdownType::Model => "🤖 ",
+                DropdownType::Skill => "⚡ ",
             };
 
             let mut spans = vec![
@@ -458,19 +446,18 @@ fn draw_dropdown(frame: &mut Frame, app: &App, input_area: Rect) {
         .collect();
 
     let title = format!(" {} {} ", dropdown.icon(), dropdown.title());
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(100, 100, 120)))
-                .title(Span::styled(
-                    title,
-                    Style::default()
-                        .fg(Color::Rgb(241, 196, 15))
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .style(Style::default().bg(Color::Rgb(35, 35, 50))),
-        );
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Rgb(100, 100, 120)))
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::Rgb(241, 196, 15))
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .style(Style::default().bg(Color::Rgb(35, 35, 50))),
+    );
 
     frame.render_widget(list, dropdown_area);
 }
@@ -577,19 +564,18 @@ fn draw_session_view(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(100, 100, 140)))
-                .title(Span::styled(
-                    format!(" Sessions ({}) ", view.summaries.len()),
-                    Style::default()
-                        .fg(Color::Rgb(241, 196, 15))
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .style(Style::default().bg(Color::Rgb(35, 35, 50))),
-        );
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Rgb(100, 100, 140)))
+            .title(Span::styled(
+                format!(" Sessions ({}) ", view.summaries.len()),
+                Style::default()
+                    .fg(Color::Rgb(241, 196, 15))
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .style(Style::default().bg(Color::Rgb(35, 35, 50))),
+    );
 
     frame.render_widget(list, popup_area);
 
@@ -600,13 +586,11 @@ fn draw_session_view(frame: &mut Frame, app: &App, area: Rect) {
         width: popup_area.width - 2,
         height: 1,
     };
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " ↑/↓ Navigate  Enter Resume  Esc Close ",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
-        ),
-    ]));
+    let footer = Paragraph::new(Line::from(vec![Span::styled(
+        " ↑/↓ Navigate  Enter Resume  Esc Close ",
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM),
+    )]));
     frame.render_widget(footer, footer_area);
 }

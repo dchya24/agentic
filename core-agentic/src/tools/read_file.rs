@@ -11,6 +11,12 @@ pub struct ReadFileTool {
     tracker: Option<Arc<FileTracker>>,
 }
 
+impl Default for ReadFileTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReadFileTool {
     pub fn new() -> Self {
         Self { tracker: None }

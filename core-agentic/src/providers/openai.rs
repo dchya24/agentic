@@ -15,9 +15,15 @@ pub struct RetryConfig {
     pub max_delay_ms: u64,
 }
 
-fn default_max_retries() -> u32 { 3 }
-fn default_base_delay_ms() -> u64 { 1000 }
-fn default_max_delay_ms() -> u64 { 30000 }
+fn default_max_retries() -> u32 {
+    3
+}
+fn default_base_delay_ms() -> u64 {
+    1000
+}
+fn default_max_delay_ms() -> u64 {
+    30000
+}
 
 impl Default for RetryConfig {
     fn default() -> Self {
@@ -144,7 +150,11 @@ impl OpenAIProvider {
             .expect("Failed to build async HTTP client");
 
         let retry = config.retry.clone();
-        Self { config, async_client, retry }
+        Self {
+            config,
+            async_client,
+            retry,
+        }
     }
 
     fn extract_sse_line(buffer: &mut String) -> Option<String> {
@@ -204,10 +214,7 @@ impl OpenAIProvider {
                         index: tc.index,
                         id: tc.id.clone(),
                         function_name: tc.function.as_ref().and_then(|f| f.name.clone()),
-                        function_arguments: tc
-                            .function
-                            .as_ref()
-                            .and_then(|f| f.arguments.clone()),
+                        function_arguments: tc.function.as_ref().and_then(|f| f.arguments.clone()),
                     })
                     .collect()
             })
@@ -268,12 +275,26 @@ impl OpenAIProvider {
             body["tools"] = serde_json::json!(request.tools);
         }
 
+        tracing::trace!(
+            provider = %self.config.id,
+            model = %request.model,
+            messages = request.messages.len(),
+            tools = request.tools.len(),
+            stream = false,
+            "openai chat request"
+        );
+
         let mut last_error = None;
 
         for attempt in 0..=self.retry.max_retries {
             if attempt > 0 {
                 let delay = self.retry.delay_for_attempt(attempt - 1);
-                log::warn!("Retry attempt {}/{} after {:?}", attempt, self.retry.max_retries, delay);
+                log::warn!(
+                    "Retry attempt {}/{} after {:?}",
+                    attempt,
+                    self.retry.max_retries,
+                    delay
+                );
                 std::thread::sleep(delay);
             }
 
@@ -352,6 +373,16 @@ impl OpenAIProvider {
             })
             .unwrap_or_default();
 
+        tracing::trace!(
+            provider = %self.config.id,
+            model = %oai_response.model,
+            finish_reason = ?choice.finish_reason,
+            prompt_tokens = usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0),
+            completion_tokens = usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0),
+            tool_calls = tool_calls.len(),
+            "openai chat response"
+        );
+
         Ok(ChatResponse {
             id: oai_response.id,
             model: oai_response.model,
@@ -417,6 +448,15 @@ impl LLMProvider for OpenAIProvider {
             body["tools"] = serde_json::json!(request.tools);
         }
 
+        tracing::trace!(
+            provider = %self.config.id,
+            model = %request.model,
+            messages = request.messages.len(),
+            tools = request.tools.len(),
+            stream = true,
+            "openai chat_stream request"
+        );
+
         let api_key = self.config.api_key.clone();
         let async_client = self.async_client.clone();
 
@@ -476,10 +516,7 @@ impl LLMProvider for OpenAIProvider {
     }
 
     fn health_check(&self) -> super::ProviderResult<bool> {
-        let url = format!(
-            "{}/models",
-            self.config.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
         let result = futures::executor::block_on(async {
             self.async_client
                 .get(&url)
@@ -501,10 +538,7 @@ impl LLMProvider for OpenAIProvider {
     }
 
     fn list_models(&self) -> super::ProviderResult<Vec<super::ModelInfo>> {
-        let url = format!(
-            "{}/models",
-            self.config.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
         let response = futures::executor::block_on(async {
             self.async_client
                 .get(&url)
@@ -530,8 +564,9 @@ impl LLMProvider for OpenAIProvider {
             id: String,
         }
 
-        let models: ModelsResponse = futures::executor::block_on(response.json())
-            .map_err(|e| super::ProviderError::new(format!("Failed to parse models response: {}", e)))?;
+        let models: ModelsResponse = futures::executor::block_on(response.json()).map_err(|e| {
+            super::ProviderError::new(format!("Failed to parse models response: {}", e))
+        })?;
 
         Ok(models
             .data
@@ -573,9 +608,7 @@ impl LLMProvider for OpenAIProvider {
 /// `Serialize` impl (string content) so the wire format stays unchanged
 /// for the common case. Tool calls + tool_call_id are forwarded
 /// verbatim.
-fn serialize_messages_for_wire(
-    messages: &[super::ChatMessageRequest],
-) -> Vec<serde_json::Value> {
+fn serialize_messages_for_wire(messages: &[super::ChatMessageRequest]) -> Vec<serde_json::Value> {
     messages
         .iter()
         .map(|m| {
@@ -593,9 +626,7 @@ fn serialize_messages_for_wire(
                 }
                 for att in &m.attachments {
                     let url = match &att.source {
-                        crate::attachments::AttachmentSource::RemoteUrl { url } => {
-                            url.clone()
-                        }
+                        crate::attachments::AttachmentSource::RemoteUrl { url } => url.clone(),
                         _ => att.as_data_url(),
                     };
                     parts.push(serde_json::json!({
@@ -620,8 +651,8 @@ fn serialize_messages_for_wire(
 
 #[cfg(test)]
 mod wire_format_tests {
-    use super::serialize_messages_for_wire;
     use super::super::ChatMessageRequest;
+    use super::serialize_messages_for_wire;
     use crate::attachments::{Attachment, AttachmentKind, AttachmentSource};
 
     fn png_attachment() -> Attachment {
@@ -659,8 +690,8 @@ mod wire_format_tests {
 
     #[test]
     fn single_image_produces_text_plus_image_url_parts() {
-        let msg = ChatMessageRequest::user("What's in this?")
-            .with_attachments(vec![png_attachment()]);
+        let msg =
+            ChatMessageRequest::user("What's in this?").with_attachments(vec![png_attachment()]);
         let wire = serialize_messages_for_wire(&[msg]);
         let parts = wire[0]["content"].as_array().expect("array content");
         assert_eq!(parts.len(), 2);
@@ -683,14 +714,10 @@ mod wire_format_tests {
 
     #[test]
     fn remote_url_attachment_passes_url_through() {
-        let msg = ChatMessageRequest::user("caption")
-            .with_attachments(vec![remote_attachment()]);
+        let msg = ChatMessageRequest::user("caption").with_attachments(vec![remote_attachment()]);
         let wire = serialize_messages_for_wire(&[msg]);
         let parts = wire[0]["content"].as_array().unwrap();
-        assert_eq!(
-            parts[1]["image_url"]["url"],
-            "https://example.com/cat.png"
-        );
+        assert_eq!(parts[1]["image_url"]["url"], "https://example.com/cat.png");
     }
 
     #[test]
@@ -707,10 +734,7 @@ mod wire_format_tests {
             .as_str()
             .unwrap()
             .starts_with("data:"));
-        assert_eq!(
-            parts[2]["image_url"]["url"],
-            "https://example.com/cat.png"
-        );
+        assert_eq!(parts[2]["image_url"]["url"], "https://example.com/cat.png");
     }
 
     #[test]

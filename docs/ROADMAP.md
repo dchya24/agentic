@@ -4,7 +4,7 @@
 > Last updated: 2026-05-31.
 
 This replaces the older `PLAN.md` / `IMPLEMENTATION_ROADMAP.md` /
-`QUICK_START_IMPLEMENTATION.md` triad, which mixed Tauri/Termul integration
+`QUICK_START_IMPLEMENTATION.md` triad
 work with the CLI/core scope. The Tauri integration is no longer tracked in
 this repo.
 
@@ -166,7 +166,6 @@ Key changes that landed recently:
 (latest)     refactor(cli): replace ratatui model_picker with dialoguer inline fuzzy-select
 (latest)     feat(cli): /models auto-complete via reedline completer
 (latest)     feat(cli): /restart slash command + AGENT.md/memory.md indicators
-722b32c  docs: drop Tauri/Termul-flavored plans, consolidate into ROADMAP
 3b1f740  feat(safety+cli): interactive diff preview in confirmation prompt
 72a7edf  feat(safety): prompt-injection detector for fetch / web_search
 3685965  feat(tools): add apply_patch tool for unified-diff application

@@ -2,8 +2,8 @@
 //! integration tests.
 
 use core_agentic::providers::{
-    ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, LLMProvider,
-    ProviderError, ProviderResult, StreamResult, ToolCallFunction, ToolCallResponse,
+    ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, LLMProvider, ProviderError,
+    ProviderResult, StreamResult, ToolCallFunction, ToolCallResponse,
 };
 use std::sync::Mutex;
 
@@ -100,6 +100,49 @@ pub fn text_response(s: &str) -> ChatResponse {
         },
         finish_reason: Some("stop".to_string()),
         usage: None,
+    }
+}
+
+/// Provider that returns scripted `ChatResponse`s in order, one per
+/// `chat()` call, AND records how many tools each request offered.
+/// Used by the graceful-finalization tests to assert that tools are
+/// stripped on the finalization turn.
+pub struct RecordingProvider {
+    responses: Mutex<Vec<ChatResponse>>,
+    /// One entry per `chat()` call: the tool count offered in that request.
+    pub tool_counts: Mutex<Vec<usize>>,
+}
+
+impl RecordingProvider {
+    pub fn new(responses: Vec<ChatResponse>) -> Self {
+        Self {
+            responses: Mutex::new(responses),
+            tool_counts: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl LLMProvider for RecordingProvider {
+    fn provider_type(&self) -> &str {
+        "recording"
+    }
+    fn provider_id(&self) -> &str {
+        "recording"
+    }
+    fn chat(&self, req: ChatRequest) -> ProviderResult<ChatResponse> {
+        self.tool_counts.lock().unwrap().push(req.tools.len());
+        let mut q = self.responses.lock().unwrap();
+        if q.is_empty() {
+            return Err(ProviderError::new(
+                "RecordingProvider: no scripted response left",
+            ));
+        }
+        Ok(q.remove(0))
+    }
+    fn chat_stream(&self, _req: ChatRequest) -> StreamResult<ChatChunk, ProviderError> {
+        Err(ProviderError::new(
+            "streaming not supported in RecordingProvider",
+        ))
     }
 }
 

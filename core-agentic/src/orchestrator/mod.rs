@@ -25,10 +25,23 @@ mod run;
 mod tool_exec;
 
 /// Default safety cap on agent iterations to avoid runaway loops.
-pub const DEFAULT_MAX_ITERATIONS: u32 = 30;
+///
+/// 50 is a balance: real agentic codebase work (explore → read → edit →
+/// verify) routinely needs 20–40 turns, and the loop now *gracefully
+/// finalizes* at the cap rather than hard-aborting, so the cost of
+/// touching the limit is low (you still get an answer). Override with
+/// [`Orchestrator::set_max_iterations`].
+pub const DEFAULT_MAX_ITERATIONS: u32 = 50;
 
-/// Number of consecutive same-tool calls before loop detection triggers.
+/// Number of consecutive *identical* tool calls (same tool **and** same
+/// arguments) before loop detection triggers. Calling the same tool with
+/// *different* arguments is legitimate progress and does not count.
 const LOOP_DETECTION_THRESHOLD: usize = 3;
+
+/// How many recent tool-call signatures loop detection remembers. Kept
+/// `>= LOOP_DETECTION_THRESHOLD` so a full repeat-run always fits inside
+/// the window and is never fragmented by the trim.
+const LOOP_DETECTION_WINDOW: usize = 8;
 
 /// Default tool-result truncation limit (chars). Layer 1 of context compression.
 pub const DEFAULT_TOOL_RESULT_MAX_CHARS: usize = 25_000;
@@ -37,6 +50,54 @@ pub const DEFAULT_TOOL_RESULT_MAX_CHARS: usize = 25_000;
 /// results are replaced with a `[Cleared]` placeholder. Layer 2 of context
 /// compression.
 pub const DEFAULT_KEEP_RECENT_TOOL_RESULTS: usize = 6;
+
+/// A tool call reduced to the fields that identify duplicate work.
+///
+/// Two calls with equal [`ToolCallSignature`]s are doing the *exact same
+/// thing* — same tool, same arguments — the hallmark of an agent stuck in
+/// a loop. Calls that share only a tool name but differ in arguments
+/// (e.g. `skill("brainstorming")` vs `skill("debugging")`) are distinct
+/// signatures and do **not** count toward loop detection, so legitimate
+/// multi-step tool usage is never falsely flagged.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ToolCallSignature {
+    tool: String,
+    /// Stable hash of the JSON arguments string. Hashed rather than stored
+    /// verbatim so the recent-call window stays small even when args are
+    /// large (file contents, command strings).
+    args_hash: u64,
+    /// Truncated argument preview, kept only so the loop-detected error
+    /// can show *what* was repeated.
+    args_preview: String,
+}
+
+impl ToolCallSignature {
+    fn new(tool: &str, args: &str) -> Self {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        args.hash(&mut hasher);
+        Self {
+            tool: tool.to_string(),
+            args_hash: hasher.finish(),
+            args_preview: truncate_args_preview(args, 120),
+        }
+    }
+}
+
+/// Truncate `s` to `max` bytes on a UTF-8 boundary, appending an ellipsis
+/// when trimmed. Used for compact diagnostic previews in log/error output.
+fn truncate_args_preview(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrchestratorState {
@@ -53,14 +114,13 @@ pub struct Orchestrator {
     safety: Safety,
     state: Mutex<OrchestratorState>,
     events: EventEmitter,
-    confirmation_handler:
-        Mutex<Option<Box<dyn Fn(ConfirmationRequest) -> bool + Send + Sync>>>,
+    confirmation_handler: Mutex<Option<Box<dyn Fn(ConfirmationRequest) -> bool + Send + Sync>>>,
     system_prompt: Option<String>,
     model: String,
     /// Hard cap on the agent loop. Prevents runaway tool-call loops.
     max_iterations: u32,
-    /// Recent tool call names for loop detection (circular buffer).
-    recent_tool_calls: Mutex<Vec<String>>,
+    /// Recent tool-call signatures for loop detection (sliding window).
+    recent_tool_calls: Mutex<Vec<ToolCallSignature>>,
     /// Cap individual tool result strings (Layer 1 of context compression).
     tool_result_max_chars: usize,
     /// Auto-compact memory when token usage exceeds the configured threshold.
@@ -130,18 +190,76 @@ impl Orchestrator {
         self.max_iterations = max.max(1);
     }
 
-    /// Record a tool call for loop detection. Returns `true` if a loop
-    /// is detected (same tool called consecutively >= threshold).
-    fn record_tool_call_for_loop_detection(&self, tool_name: &str) -> bool {
-        let mut recent = self.recent_tool_calls.lock().unwrap();
-        recent.push(tool_name.to_string());
-        // Keep only the last N entries
-        if recent.len() > LOOP_DETECTION_THRESHOLD {
-            recent.remove(0);
+    /// Record this turn's tool calls and return the offending signature
+    /// + run length if loop detection trips.
+    ///
+    /// Two rules keep legitimate work from being flagged:
+    ///
+    /// 1. **Arguments are part of the signature.** `skill("brainstorming")`
+    ///    and `skill("debugging")` are *different* calls — loading several
+    ///    skills is progress, not a loop. Only the *exact same* call
+    ///    (same tool **and** same arguments) counts as a repeat.
+    /// 2. **Identical calls within one assistant turn are de-duplicated.**
+    ///    A turn that batch-requests `slow_read({})` four times in parallel
+    ///    is one model decision, not a loop — the loop is the model
+    ///    *re-deciding* the same thing across separate turns.
+    ///
+    /// A loop is then `LOOP_DETECTION_THRESHOLD` consecutive identical
+    /// signatures in the recent window. Scattered repeats (e.g. legitimately
+    /// re-reading a file after editing it) don't form a consecutive run and
+    /// won't trip the guard.
+    fn record_tool_calls_for_loop_detection(
+        &self,
+        calls: &[(&str, &str)],
+    ) -> Option<(ToolCallSignature, usize)> {
+        // De-dup within this turn (rule 2). N is tiny, so a linear
+        // `contains` is cheaper than a HashSet and keeps first-seen order.
+        let mut new_sigs: Vec<ToolCallSignature> = Vec::with_capacity(calls.len());
+        for (name, args) in calls {
+            let sig = ToolCallSignature::new(name, args);
+            if !new_sigs.contains(&sig) {
+                new_sigs.push(sig);
+            }
         }
-        // Check if all recent calls are the same tool
-        recent.len() >= LOOP_DETECTION_THRESHOLD
-            && recent.iter().all(|t| t == tool_name)
+
+        let mut recent = self.recent_tool_calls.lock().unwrap();
+        recent.extend(new_sigs.iter().cloned());
+
+        // Trim to a sliding window. Must be >= threshold so a full
+        // repeat-run is never fragmented by the trim itself.
+        if recent.len() > LOOP_DETECTION_WINDOW {
+            let split = recent.len() - LOOP_DETECTION_WINDOW;
+            recent.drain(0..split);
+        }
+
+        // Consecutive-run detection: longest back-to-back run of an
+        // identical signature. Only newly-added signatures can be the ones
+        // that just crossed the threshold, so we only scan for those.
+        for sig in &new_sigs {
+            let run = Self::longest_consecutive_run(&recent, sig);
+            if run >= LOOP_DETECTION_THRESHOLD {
+                return Some((sig.clone(), run));
+            }
+        }
+        None
+    }
+
+    /// Length of the longest run of `target` appearing in consecutive
+    /// positions of `recent`. O(n) over a tiny window.
+    fn longest_consecutive_run(recent: &[ToolCallSignature], target: &ToolCallSignature) -> usize {
+        let mut best = 0;
+        let mut cur = 0;
+        for s in recent {
+            if s == target {
+                cur += 1;
+                if cur > best {
+                    best = cur;
+                }
+            } else {
+                cur = 0;
+            }
+        }
+        best
     }
 
     /// Clear the loop detection history (e.g. after a successful non-tool response).

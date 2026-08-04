@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::mcp::transport::{
-    AsyncHttpTransport, AsyncMcpTransport, AsyncSseTransport, AsyncStdioTransport,
-    HttpTransport, McpTransport, StdioTransport,
+    AsyncHttpTransport, AsyncMcpTransport, AsyncSseTransport, AsyncStdioTransport, HttpTransport,
+    McpTransport, StdioTransport,
 };
 use crate::mcp::types::*;
 use crate::tool::{ToolError, ToolParam, ToolSchema};
@@ -157,7 +157,7 @@ impl McpClient {
         let response = self
             .transport
             .send_and_recv(request)
-            .map_err(|e| ToolError::new(e))?;
+            .map_err(ToolError::new)?;
 
         if let Some(error) = response.error {
             return Err(ToolError::new(format!(
@@ -317,7 +317,9 @@ impl AsyncMcpClient {
     }
 
     /// Create the appropriate async transport based on config.
-    async fn create_transport(config: &McpServerConfig) -> Result<Box<dyn AsyncMcpTransport>, String> {
+    async fn create_transport(
+        config: &McpServerConfig,
+    ) -> Result<Box<dyn AsyncMcpTransport>, String> {
         if config.is_stdio() {
             let command = config
                 .command
@@ -325,7 +327,9 @@ impl AsyncMcpClient {
                 .ok_or("Missing command for stdio transport")?;
             let args = config.args.as_ref().cloned().unwrap_or_default();
             let env = config.env.as_ref().cloned().unwrap_or_default();
-            Ok(Box::new(AsyncStdioTransport::new(command, &args, &env).await?))
+            Ok(Box::new(
+                AsyncStdioTransport::new(command, &args, &env).await?,
+            ))
         } else if config.is_http() {
             let url = config
                 .url
@@ -454,7 +458,7 @@ impl AsyncMcpClient {
             .transport
             .send_and_recv(request)
             .await
-            .map_err(|e| ToolError::new(e))?;
+            .map_err(ToolError::new)?;
 
         if let Some(error) = response.error {
             return Err(ToolError::new(format!(
@@ -534,7 +538,11 @@ impl AsyncMcpClient {
                     }
                 }
                 Err(e) => {
-                    log::warn!("MCP transport creation failed on attempt {}: {}", attempt, e);
+                    log::warn!(
+                        "MCP transport creation failed on attempt {}: {}",
+                        attempt,
+                        e
+                    );
                 }
             }
         }
@@ -648,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_convert_tool_schemas() {
-        let schemas = McpClient::convert_tool_schemas(&vec![McpToolSchema {
+        let schemas = McpClient::convert_tool_schemas(&[McpToolSchema {
             name: "test_tool".to_string(),
             description: Some("A test tool".to_string()),
             input_schema: Some(serde_json::json!({
@@ -683,7 +691,7 @@ mod tests {
 
     #[test]
     fn test_convert_tool_schemas_no_input_schema() {
-        let schemas = McpClient::convert_tool_schemas(&vec![McpToolSchema {
+        let schemas = McpClient::convert_tool_schemas(&[McpToolSchema {
             name: "no_schema".to_string(),
             description: None,
             input_schema: None,

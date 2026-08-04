@@ -5,6 +5,12 @@ use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 
 pub struct GlobTool;
 
+impl Default for GlobTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GlobTool {
     pub fn new() -> Self {
         Self

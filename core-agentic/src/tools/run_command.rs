@@ -7,6 +7,12 @@ use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 
 pub struct RunCommandTool;
 
+impl Default for RunCommandTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RunCommandTool {
     pub fn new() -> Self {
         Self

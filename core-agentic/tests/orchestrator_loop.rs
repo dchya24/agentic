@@ -12,6 +12,9 @@
 //! orchestrator internals) and matches Cargo's standard layout.
 
 use core_agentic::{
+    providers::{
+        ChatChunk, ChatRequest, ChatResponse, ProviderError, ProviderResult, StreamResult,
+    },
     safety::PermissionMode,
     tools::builtin_tools_with_tracker,
     Event, FileTracker, LLMProvider, Orchestrator, ToolRegistry,
@@ -55,22 +58,20 @@ fn run_loop_executes_tool_then_returns_final_answer() {
 }
 
 /// The orchestrator must abort cleanly when the provider keeps returning
-/// tool calls beyond the configured cap. The error must mention the cap.
+/// At the iteration cap the loop now GRACEFULLY FINALIZES instead of
+/// hard-aborting: tools are stripped on the final turn and a "wrap up"
+/// nudge is injected, so the model returns a real text answer built
+/// from the work already done. This test verifies the user-facing
+/// outcome — `run` returns `Ok(answer)`, not an error.
 #[test]
-fn run_loop_aborts_at_max_iterations() {
-    // Script far more tool calls than max_iterations: every turn requests
-    // another no-op read. Use different tool names to avoid loop detection.
-    let mut script = Vec::new();
-    let tool_names = ["list_files", "search_files", "glob"];
-    for i in 0..20 {
-        let tool = tool_names[i % tool_names.len()];
-        script.push(support::tool_call_response(
-            &format!("call-{}", i),
-            tool,
-            &serde_json::json!({"path": "."}),
-        ));
-    }
-    let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(script));
+fn run_finalizes_gracefully_at_max_iterations() {
+    // max_iterations = 3. Two tool-call turns, then the third (final)
+    // turn returns a text answer because tools were stripped.
+    let provider: Arc<dyn LLMProvider> = Arc::new(support::RecordingProvider::new(vec![
+        support::tool_call_response("call-1", "list_files", &serde_json::json!({"path": "."})),
+        support::tool_call_response("call-2", "glob", &serde_json::json!({"pattern": "*.rs"})),
+        support::text_response("Based on what I found, here is the summary."),
+    ]));
 
     let tools = ToolRegistry::new();
     for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
@@ -81,12 +82,120 @@ fn run_loop_aborts_at_max_iterations() {
     orch.set_permission_mode(PermissionMode::Yolo);
     orch.set_max_iterations(3);
 
-    let err = orch.run("list things forever").expect_err("should hit cap");
-    let msg = err.to_string();
+    let answer = orch
+        .run("explore then summarize")
+        .expect("graceful finalization should return an answer, not error");
+    assert_eq!(answer, "Based on what I found, here is the summary.");
+}
+
+/// The finalization turn must offer NO tools to the provider (verified
+/// in `finalization_turn_advertises_zero_tools` below via a counting
+/// provider). This test instead checks the System event surface: a
+/// "finalizing" notice is emitted so the UI can tell the user why the
+/// run is ending.
+#[test]
+fn finalization_emits_system_event() {
+    let provider: Arc<dyn LLMProvider> = Arc::new(support::RecordingProvider::new(vec![
+        support::tool_call_response("c1", "list_files", &serde_json::json!({"path": "."})),
+        support::tool_call_response("c2", "glob", &serde_json::json!({"pattern": "*.rs"})),
+        support::text_response("final answer"),
+    ]));
+
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+
+    let mut orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+    orch.set_max_iterations(3);
+
+    let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    orch.on_event(move |event| {
+        if let Event::System { message } = event {
+            events_clone.lock().unwrap().push(message);
+        }
+    });
+
+    let answer = orch.run("go").expect("should finalize");
+    assert_eq!(answer, "final answer");
+
+    let captured = events.lock().unwrap();
     assert!(
-        msg.contains("max_iterations"),
-        "expected 'max_iterations' in error, got: {}",
-        msg
+        captured.iter().any(|m| m.contains("finalizing")),
+        "expected a 'finalizing' System event, got {:?}",
+        *captured
+    );
+}
+
+/// Dedicated tool-count capture: confirm turns before the cap advertise
+/// the full tool set, and the finalization turn advertises zero tools.
+#[test]
+fn finalization_turn_advertises_zero_tools() {
+    let counts: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // A tiny provider that records tool counts and replays 3 responses.
+    struct CountingProvider {
+        responses: Mutex<Vec<ChatResponse>>,
+        counts: Arc<Mutex<Vec<usize>>>,
+    }
+    impl LLMProvider for CountingProvider {
+        fn provider_type(&self) -> &str {
+            "counting"
+        }
+        fn provider_id(&self) -> &str {
+            "counting"
+        }
+        fn chat(&self, req: ChatRequest) -> ProviderResult<ChatResponse> {
+            self.counts.lock().unwrap().push(req.tools.len());
+            let mut q = self.responses.lock().unwrap();
+            if q.is_empty() {
+                return Err(ProviderError::new("empty"));
+            }
+            Ok(q.remove(0))
+        }
+        fn chat_stream(&self, _req: ChatRequest) -> StreamResult<ChatChunk, ProviderError> {
+            Err(ProviderError::new("no stream"))
+        }
+    }
+
+    let provider = Arc::new(CountingProvider {
+        responses: Mutex::new(vec![
+            support::tool_call_response("c1", "list_files", &serde_json::json!({"path": "."})),
+            support::tool_call_response("c2", "glob", &serde_json::json!({"pattern": "*.rs"})),
+            support::text_response("done"),
+        ]),
+        counts: counts.clone(),
+    }) as Arc<dyn LLMProvider>;
+
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+
+    let mut orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+    orch.set_max_iterations(3);
+
+    let _ = orch.run("go").expect("should finalize");
+
+    let captured = counts.lock().unwrap();
+    assert_eq!(
+        captured.len(),
+        3,
+        "expected exactly 3 provider calls, got {:?}",
+        *captured
+    );
+    // Turns 1 and 2 advertise the full builtin tool set (>0 tools).
+    assert!(*captured.first().unwrap() > 0, "turn 1 should offer tools");
+    assert!(*captured.get(1).unwrap() > 0, "turn 2 should offer tools");
+    // Finalization turn offers ZERO tools.
+    assert_eq!(
+        *captured.get(2).unwrap(),
+        0,
+        "finalization turn must strip tools, got {:?}",
+        *captured
     );
 }
 
@@ -114,7 +223,9 @@ fn loop_detection_aborts_on_repeated_tool() {
     orch.set_permission_mode(PermissionMode::Yolo);
     orch.set_max_iterations(10); // High limit, but loop detection should trigger first
 
-    let err = orch.run("write files forever").expect_err("should detect loop");
+    let err = orch
+        .run("write files forever")
+        .expect_err("should detect loop");
     let msg = err.to_string();
     assert!(
         msg.contains("Loop detected"),
@@ -162,19 +273,122 @@ fn approaching_limit_emits_warning_event() {
         }
     });
 
-    // The loop will hit max_iterations (5) before finishing all script items,
-    // but the warning should be emitted at iteration 4 (80% of 5).
-    let err = orch.run("go far").expect_err("should hit cap");
-    let msg = err.to_string();
-    assert!(msg.contains("max_iterations"), "expected max_iterations error");
+    // With graceful finalization the run no longer errors at the cap —
+    // it returns Ok on the finalization turn (iteration 5). The warning
+    // must still have fired at iteration 4 (80% of 5).
+    let result = orch
+        .run("go far")
+        .expect("graceful finalization returns Ok");
+    // The finalization turn consumes a scripted tool_call_response whose
+    // content is empty, so the returned answer is the empty string.
+    assert_eq!(result, "");
 
-    // Check that a warning event was emitted
     let captured = events.lock().unwrap();
     assert!(
-        captured.iter().any(|m| m.contains("Approaching iteration limit")),
-        "expected 'Approaching iteration limit' warning, got: {:?}",
+        captured
+            .iter()
+            .any(|m| m.contains("Approaching iteration limit")),
+        "expected 'Approaching iteration limit' warning, got {:?}",
         *captured
     );
+    assert!(
+        captured.iter().any(|m| m.contains("finalizing")),
+        "expected a 'finalizing' event at the cap, got {:?}",
+        *captured
+    );
+}
+
+/// Regression: the *same tool* called with **different arguments** must
+/// NOT trip loop detection. This is the bug reported in
+/// `logs/agentic-20260728-140637.log` — the model loaded a different
+/// skill each turn (`skill("brainstorming")`, `skill("debugging")`, …)
+/// but the old name-only signature flagged it as a loop after 3 turns.
+///
+/// Here we mirror that shape with `read_file` + different paths across
+/// turns (and multiple per turn) and assert the run completes normally.
+#[test]
+fn loop_detection_ignores_same_tool_different_args() {
+    let dir = support::tempdir();
+    // Six files so every call across the three scripted turns has a
+    // distinct argument signature.
+    let files: Vec<_> = (0..6)
+        .map(|i| {
+            let p = dir.join(format!("f{}.txt", i));
+            std::fs::write(&p, format!("body {}", i)).unwrap();
+            p
+        })
+        .collect();
+
+    let arg = |i: usize| serde_json::json!({ "path": files[i].to_string_lossy() });
+
+    let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
+        // Turn 1: three different files in one batch.
+        support::multi_tool_call_response(vec![
+            tool_call("c0", "read_file", &arg(0)),
+            tool_call("c1", "read_file", &arg(1)),
+            tool_call("c2", "read_file", &arg(2)),
+        ]),
+        // Turn 2: two more files.
+        support::multi_tool_call_response(vec![
+            tool_call("c3", "read_file", &arg(3)),
+            tool_call("c4", "read_file", &arg(4)),
+        ]),
+        // Turn 3: a third consecutive turn of `read_file`. Under the old
+        // name-only signature this is exactly where the false-positive
+        // abort fired. Different args => must not abort.
+        support::multi_tool_call_response(vec![tool_call("c5", "read_file", &arg(5))]),
+        support::text_response("done reading everything"),
+    ]));
+
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+
+    let mut orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+    orch.set_max_iterations(30);
+
+    let answer = orch
+        .run("read all the files")
+        .expect("different-argument calls to the same tool must not be treated as a loop");
+    assert_eq!(answer, "done reading everything");
+}
+
+/// A genuine loop — the **exact same** call (same tool, same arguments)
+/// repeated every turn — must still abort. This guards against the fix
+/// above being too lenient.
+#[test]
+fn loop_detection_still_aborts_on_identical_args() {
+    let dir = support::tempdir();
+    let path = dir.join("same.txt");
+    std::fs::write(&path, "x").unwrap();
+    let args = serde_json::json!({ "path": path.to_string_lossy() });
+
+    let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
+        support::tool_call_response("c0", "read_file", &args),
+        support::tool_call_response("c1", "read_file", &args),
+        support::tool_call_response("c2", "read_file", &args),
+        // Would only be reached if loop detection failed to fire.
+        support::text_response("should not get here"),
+    ]));
+
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+
+    let orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+
+    let err = orch
+        .run("read it again and again")
+        .expect_err("identical call must abort");
+    let msg = err.to_string();
+    assert!(msg.contains("Loop detected"), "got: {}", msg);
+    assert!(msg.contains("read_file"), "got: {}", msg);
+    // The new error includes the repeated arguments for diagnostics.
+    assert!(msg.contains("identical arguments"), "got: {}", msg);
 }
 
 /// Plan mode must deny state-changing tools. The model gets a "Blocked"
@@ -215,11 +429,7 @@ fn cancel_flag_aborts_loop_at_iteration_boundary() {
     let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
         // First turn: a tool call so we re-enter the loop. Cancel will
         // be flipped after this call lands.
-        support::tool_call_response(
-            "call-1",
-            "list_files",
-            &serde_json::json!({"path": "."}),
-        ),
+        support::tool_call_response("call-1", "list_files", &serde_json::json!({"path": "."})),
         // The orchestrator should never get this far.
         support::text_response("should never be returned"),
     ]));

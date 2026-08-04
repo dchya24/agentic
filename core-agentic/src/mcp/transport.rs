@@ -259,12 +259,10 @@ impl AsyncStdioTransport {
                 .take()
                 .ok_or_else(|| "Failed to get stdin after reconnect".to_string())?,
         );
-        self.stdout = Some(tokio::io::BufReader::new(
-            child
-                .stdout
-                .take()
-                .ok_or_else(|| "Failed to get stdout after reconnect".to_string())?,
-        ));
+        self.stdout =
+            Some(tokio::io::BufReader::new(child.stdout.take().ok_or_else(
+                || "Failed to get stdout after reconnect".to_string(),
+            )?));
         self.child = Some(child);
         Ok(())
     }
@@ -330,7 +328,7 @@ impl AsyncMcpTransport for AsyncStdioTransport {
         // Check if the child process is still running
         if let Some(ref mut child) = self.child {
             match child.try_wait() {
-                Ok(None) => Ok(true),           // Still running
+                Ok(None) => Ok(true), // Still running
                 Ok(Some(status)) => Err(format!("MCP server exited with status: {}", status)),
                 Err(e) => Err(format!("Failed to check MCP server status: {}", e)),
             }
@@ -530,7 +528,8 @@ mod tests {
     #[test]
     fn test_async_sse_transport_connect() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut transport = AsyncSseTransport::new("http://localhost:3001/mcp", HashMap::new()).unwrap();
+        let mut transport =
+            AsyncSseTransport::new("http://localhost:3001/mcp", HashMap::new()).unwrap();
         rt.block_on(transport.connect_sse()).unwrap();
         assert!(transport.connected);
     }

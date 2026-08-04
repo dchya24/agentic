@@ -97,11 +97,7 @@ fn session_path(id: &str) -> PathBuf {
 // ── Public API ──────────────────────────────────────────────
 
 /// Create a new empty session.
-pub fn create(
-    directory: &str,
-    provider: &str,
-    model: &str,
-) -> Session {
+pub fn create(directory: &str, provider: &str, model: &str) -> Session {
     let now = Local::now().to_rfc3339();
     Session {
         id: generate_id(),
@@ -126,7 +122,13 @@ fn auto_title(content: &str) -> String {
     let first_line = content.lines().next().unwrap_or(content);
     let title = first_line.trim();
     if title.len() > 60 {
-        format!("{}…", &title[..59])
+        // Truncate on a char boundary, leaving room for the 3-byte '…'
+        // so the total stays within 61 bytes (60 content + ellipsis).
+        let mut end = 58.min(title.len());
+        while end > 0 && !title.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &title[..end])
     } else {
         title.to_string()
     }
@@ -195,11 +197,7 @@ pub fn list() -> Result<Vec<SessionSummary>> {
 }
 
 /// Add a message to a session and auto-save.
-pub fn push_message(
-    session: &mut Session,
-    role: &str,
-    content: &str,
-) {
+pub fn push_message(session: &mut Session, role: &str, content: &str) {
     let msg = SessionMessage {
         role: role.to_string(),
         content: content.to_string(),
@@ -216,12 +214,7 @@ pub fn push_message(
 }
 
 /// Update cost/token counters.
-pub fn update_stats(
-    session: &mut Session,
-    cost: f64,
-    tokens_input: u32,
-    tokens_output: u32,
-) {
+pub fn update_stats(session: &mut Session, cost: f64, tokens_input: u32, tokens_output: u32) {
     session.cost += cost;
     session.tokens_input += tokens_input;
     session.tokens_output += tokens_output;

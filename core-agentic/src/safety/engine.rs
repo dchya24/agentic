@@ -107,10 +107,7 @@ impl Safety {
 
         // 2) Allowed commands allowlist check (if configured)
         if !self.config.allowed_commands.is_empty() {
-            let cmd_part = target_str
-                .split_whitespace()
-                .next()
-                .unwrap_or(target_str);
+            let cmd_part = target_str.split_whitespace().next().unwrap_or(target_str);
             let is_allowed = self
                 .config
                 .allowed_commands
@@ -129,10 +126,8 @@ impl Safety {
         // to avoid borrowing issues. The patterns are compiled once.
         let mut patterns = self.config.risk_patterns.clone();
         for pattern in &mut patterns {
-            if pattern.matches(&combined) {
-                if pattern.score > best_score {
-                    best_score = pattern.score;
-                }
+            if pattern.matches(&combined) && pattern.score > best_score {
+                best_score = pattern.score;
             }
         }
 
@@ -350,8 +345,9 @@ impl Safety {
                     score,
                     allowed: false,
                     needs_confirmation: false,
-                    reason: "Action blocked: critical risk level (yolo mode still blocks blocklist)"
-                        .into(),
+                    reason:
+                        "Action blocked: critical risk level (yolo mode still blocks blocklist)"
+                            .into(),
                 };
             }
             return SafetyDecision {
@@ -386,7 +382,10 @@ impl Safety {
         }
 
         // 3) Path sandboxing for file operations
-        if matches!(action, "write_file" | "edit_file" | "delete_file" | "read_file") {
+        if matches!(
+            action,
+            "write_file" | "edit_file" | "delete_file" | "read_file"
+        ) {
             if let Some(path) = target {
                 if !self.is_path_allowed(path) {
                     let file_score = RiskScore::new(0.9, RiskLevel::Critical);
@@ -432,11 +431,7 @@ impl Safety {
             description: description.to_string(),
             risk_level: score.level,
             risk_score: score.value,
-            reason: format!(
-                "Risk score: {:.2} ({})",
-                score.value,
-                score.level.as_str()
-            ),
+            reason: format!("Risk score: {:.2} ({})", score.value, score.level.as_str()),
             timestamp: Utc::now(),
             preview_diff: None,
         }
@@ -586,7 +581,10 @@ pub(crate) fn parse_host(url: &str) -> Option<String> {
     let authority = &after_scheme[..authority_end];
 
     // Strip optional userinfo (`user:pass@`).
-    let host_and_port = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    let host_and_port = authority
+        .rsplit_once('@')
+        .map(|(_, h)| h)
+        .unwrap_or(authority);
 
     if host_and_port.is_empty() {
         return None;

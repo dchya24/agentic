@@ -109,6 +109,7 @@ impl UrlPolicy {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -250,8 +251,7 @@ mod tests {
 
     #[test]
     fn test_allowed_commands_block_unknown() {
-        let s = safety()
-            .with_allowed_commands(vec!["ls".into(), "cat".into(), "git".into()]);
+        let s = safety().with_allowed_commands(vec!["ls".into(), "cat".into(), "git".into()]);
 
         let score = s.score_command("run_command", Some("ls -la"));
         assert_eq!(score.level, RiskLevel::Low);
@@ -351,7 +351,7 @@ mod tests {
 
         assert!(s.check_rate_limit("tool_a"));
         assert!(!s.check_rate_limit("tool_a")); // tool_a limited
-        assert!(s.check_rate_limit("tool_b"));   // tool_b unaffected
+        assert!(s.check_rate_limit("tool_b")); // tool_b unaffected
     }
 
     #[test]
@@ -540,10 +540,16 @@ mod tests {
 
     #[test]
     fn test_permission_mode_parse() {
-        assert_eq!(PermissionMode::parse("default"), Some(PermissionMode::Default));
+        assert_eq!(
+            PermissionMode::parse("default"),
+            Some(PermissionMode::Default)
+        );
         assert_eq!(PermissionMode::parse("PLAN"), Some(PermissionMode::Plan));
         assert_eq!(PermissionMode::parse("yolo"), Some(PermissionMode::Yolo));
-        assert_eq!(PermissionMode::parse("readonly"), Some(PermissionMode::Plan));
+        assert_eq!(
+            PermissionMode::parse("readonly"),
+            Some(PermissionMode::Plan)
+        );
         assert_eq!(PermissionMode::parse("trust"), Some(PermissionMode::Yolo));
         assert_eq!(PermissionMode::parse("bogus"), None);
     }
@@ -712,7 +718,10 @@ mod url_parser_tests {
 
     #[test]
     fn parse_host_basic() {
-        assert_eq!(parse_host("https://example.com"), Some("example.com".into()));
+        assert_eq!(
+            parse_host("https://example.com"),
+            Some("example.com".into())
+        );
         assert_eq!(
             parse_host("https://example.com/path"),
             Some("example.com".into())

@@ -16,19 +16,15 @@ use super::{Skill, SkillIndex, SkillMetadata};
 fn frontmatter_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| {
-        regex::Regex::new(
-            r"(?s)^---\n(.+?)\n---\n?(.*)",
-        )
-        .expect("invalid SKILL.md frontmatter regex")
+        regex::Regex::new(r"(?s)^---\n(.+?)\n---\n?(.*)")
+            .expect("invalid SKILL.md frontmatter regex")
     })
 }
 
 /// Name validation regex.
 fn name_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| {
-        regex::Regex::new(r"^[a-z0-9-]{1,64}$").expect("invalid name regex")
-    })
+    RE.get_or_init(|| regex::Regex::new(r"^[a-z0-9-]{1,64}$").expect("invalid name regex"))
 }
 
 /// Configuration for skill discovery.
@@ -78,14 +74,14 @@ fn discovery_directories(config: &DiscoveryConfig) -> Vec<PathBuf> {
     }
 
     // 3. Project: walk-up from cwd, .agents/skills/
-    if let Some(cwd) = std::env::current_dir().ok() {
+    if let Ok(cwd) = std::env::current_dir() {
         if let Some(agents_dir) = walk_up(&cwd, ".agents") {
             dirs.push(agents_dir.join("skills"));
         }
     }
 
     // 4. Project: walk-up from cwd, .agentic/skills/
-    if let Some(cwd) = std::env::current_dir().ok() {
+    if let Ok(cwd) = std::env::current_dir() {
         if let Some(agentic_dir) = walk_up(&cwd, ".agentic") {
             dirs.push(agentic_dir.join("skills"));
         }
@@ -157,9 +153,9 @@ pub fn scan_skill_dir(dir: &Path, config: &DiscoveryConfig, index: &mut SkillInd
 
 /// Parse a `SKILL.md` file and validate its metadata.
 fn parse_skill_md(content: &str, dir_name: &str, dir: &Path) -> Result<Skill, String> {
-    let caps = frontmatter_re()
-        .captures(content)
-        .ok_or_else(|| "Missing or invalid frontmatter block (must start with `---\\n`)".to_string())?;
+    let caps = frontmatter_re().captures(content).ok_or_else(|| {
+        "Missing or invalid frontmatter block (must start with `---\\n`)".to_string()
+    })?;
 
     let frontmatter_str = caps.get(1).unwrap().as_str();
     let body = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -225,8 +221,8 @@ fn parse_frontmatter(text: &str) -> Result<SkillMetadata, String> {
     }
 
     let name = name.ok_or_else(|| "Missing 'name' in frontmatter".to_string())?;
-    let description = description
-        .ok_or_else(|| "Missing 'description' in frontmatter".to_string())?;
+    let description =
+        description.ok_or_else(|| "Missing 'description' in frontmatter".to_string())?;
 
     Ok(SkillMetadata { name, description })
 }
@@ -513,7 +509,12 @@ description: Just enough
         // Create a project-level skill
         let project_skills = root.join(".agentic").join("skills");
         fs::create_dir_all(&project_skills).unwrap();
-        write_skill(&project_skills, "my-skill", "A project skill", "# My Skill\nDo stuff.");
+        write_skill(
+            &project_skills,
+            "my-skill",
+            "A project skill",
+            "# My Skill\nDo stuff.",
+        );
 
         // Discovery from inside root should find it
         let cwd = root.clone();
@@ -530,6 +531,6 @@ description: Just enough
         // Should find at least the project skill
         // (may also find global skills if user has them — we just check
         // that our project skill is there)
-        assert!(index.get("my-skill").is_some() || index.len() > 0);
+        assert!(index.get("my-skill").is_some() || !index.is_empty());
     }
 }

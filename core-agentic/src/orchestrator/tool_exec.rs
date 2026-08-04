@@ -26,23 +26,23 @@ impl Orchestrator {
 
     pub(super) fn execute_tool(&self, name: &str, args: &serde_json::Value) -> String {
         let raw = match self.tools.execute_by_name(name, args) {
-            Ok(result) => serde_json::to_string_pretty(&result)
-                .unwrap_or_else(|_| result.to_string()),
+            Ok(result) => {
+                serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
+            }
             Err(e) => format!("Tool error: {}", e),
         };
         truncate_tool_result(&raw, self.tool_result_max_chars)
     }
 
-    pub(super) fn handle_tool_calls(
-        &self,
-        content: &str,
-        tool_calls: &[(String, String, String)],
-    ) {
+    pub(super) fn handle_tool_calls(&self, content: &str, tool_calls: &[(String, String, String)]) {
         let tool_call_responses = build_tool_call_responses(tool_calls);
         self.memory
             .lock()
             .unwrap()
-            .add_message(Message::assistant_with_tool_calls(content, tool_call_responses));
+            .add_message(Message::assistant_with_tool_calls(
+                content,
+                tool_call_responses,
+            ));
 
         // Same Slot model as the async path: pre-pass for safety +
         // confirmation in the original tool-call order, then execute
@@ -96,9 +96,7 @@ impl Orchestrator {
             }
 
             if decision.needs_confirmation {
-                let mut request = self
-                    .safety
-                    .create_request(tc_name, &format!("{:?}", args));
+                let mut request = self.safety.create_request(tc_name, &format!("{:?}", args));
                 request.preview_diff = preview_diff_for_tool(tc_name, &args);
                 if !self.require_confirmation(request) {
                     println!("  -> [SKIPPED - Confirmation denied]");
@@ -143,7 +141,9 @@ impl Orchestrator {
                     i += 1;
                     continue;
                 }
-                Slot::Pending { read_only: false, .. } => {
+                Slot::Pending {
+                    read_only: false, ..
+                } => {
                     // State-changing: run alone, sequentially.
                     if let Slot::Pending { name, id, args, .. } = &slots[i] {
                         let result = self.execute_tool(name, args);
@@ -152,7 +152,9 @@ impl Orchestrator {
                     i += 1;
                     continue;
                 }
-                Slot::Pending { read_only: true, .. } => {}
+                Slot::Pending {
+                    read_only: true, ..
+                } => {}
             }
 
             // Grow a run of consecutive read-only Pending slots.
@@ -160,7 +162,9 @@ impl Orchestrator {
             let mut end = i + 1;
             while end < slots.len() {
                 match &slots[end] {
-                    Slot::Pending { read_only: true, .. } => end += 1,
+                    Slot::Pending {
+                        read_only: true, ..
+                    } => end += 1,
                     _ => break,
                 }
             }
@@ -215,8 +219,7 @@ impl Orchestrator {
                             // model still gets a response.
                             // We can't recover the slot identity from a
                             // join error, so fill the next missing one.
-                            for (local_idx, item) in batch_results.iter_mut().enumerate()
-                            {
+                            for (local_idx, item) in batch_results.iter_mut().enumerate() {
                                 if item.is_none() {
                                     if let Slot::Pending { name, id, .. } =
                                         &slots[start + local_idx]
@@ -278,7 +281,10 @@ impl Orchestrator {
         self.memory
             .lock()
             .unwrap()
-            .add_message(Message::assistant_with_tool_calls(content, tool_call_responses));
+            .add_message(Message::assistant_with_tool_calls(
+                content,
+                tool_call_responses,
+            ));
 
         // Outcome of the safety+confirmation pre-pass for a single call.
         enum Slot {
@@ -336,9 +342,7 @@ impl Orchestrator {
             }
 
             if decision.needs_confirmation {
-                let mut request = self
-                    .safety
-                    .create_request(tc_name, &format!("{:?}", args));
+                let mut request = self.safety.create_request(tc_name, &format!("{:?}", args));
                 request.preview_diff = preview_diff_for_tool(tc_name, &args);
                 if !self.require_confirmation(request) {
                     println!("  -> [SKIPPED - Confirmation denied]");
@@ -387,10 +391,15 @@ impl Orchestrator {
             //   Pending + !read_only    → batch of one.
             let start = i;
             let mut end = i + 1;
-            if let Slot::Pending { read_only: true, .. } = &slots[i] {
+            if let Slot::Pending {
+                read_only: true, ..
+            } = &slots[i]
+            {
                 while end < slots.len() {
                     match &slots[end] {
-                        Slot::Pending { read_only: true, .. } => end += 1,
+                        Slot::Pending {
+                            read_only: true, ..
+                        } => end += 1,
                         _ => break,
                     }
                 }
@@ -409,8 +418,9 @@ impl Orchestrator {
                     let args = args.clone();
                     let handle = tokio::task::spawn_blocking(move || {
                         let raw = match registry.execute_by_name(&name, &args) {
-                            Ok(v) => serde_json::to_string_pretty(&v)
-                                .unwrap_or_else(|_| v.to_string()),
+                            Ok(v) => {
+                                serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
+                            }
                             Err(e) => format!("Tool error: {}", e),
                         };
                         let truncated = truncate_tool_result(&raw, max_chars);
@@ -476,10 +486,7 @@ impl Orchestrator {
 ///   return on execution).
 /// - `apply_patch`: returns the patch text directly (it's already a
 ///   unified diff).
-pub(super) fn preview_diff_for_tool(
-    tool_name: &str,
-    args: &serde_json::Value,
-) -> Option<String> {
+pub(super) fn preview_diff_for_tool(tool_name: &str, args: &serde_json::Value) -> Option<String> {
     let obj = args.as_object()?;
     match tool_name {
         "write_file" => {
@@ -545,8 +552,7 @@ mod preview_diff_tests {
             .unwrap()
             .as_nanos();
         let pid = std::process::id();
-        let dir = std::env::temp_dir()
-            .join(format!("agentic-preview-{}-{}", pid, nanos));
+        let dir = std::env::temp_dir().join(format!("agentic-preview-{}-{}", pid, nanos));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).unwrap();
@@ -641,8 +647,8 @@ mod preview_diff_tests {
     fn apply_patch_returns_patch_text_directly() {
         let patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
         let args = serde_json::json!({"patch": patch});
-        let preview = preview_diff_for_tool("apply_patch", &args)
-            .expect("apply_patch should pass through");
+        let preview =
+            preview_diff_for_tool("apply_patch", &args).expect("apply_patch should pass through");
         assert_eq!(preview, patch);
     }
 

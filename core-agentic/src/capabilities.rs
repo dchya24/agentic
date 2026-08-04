@@ -69,7 +69,10 @@ fn capability_table() -> &'static [(&'static str, ModelCapabilities)] {
         ("o1", ModelCapabilities::new(false, true, false)), // o1 disables streaming
         ("o1-mini", ModelCapabilities::new(false, true, false)),
         // ── Anthropic — all claude-3* / claude-3-5* support vision ──
-        ("claude-3-5-sonnet", ModelCapabilities::new(true, true, true)),
+        (
+            "claude-3-5-sonnet",
+            ModelCapabilities::new(true, true, true),
+        ),
         ("claude-3-5-haiku", ModelCapabilities::new(true, true, true)),
         ("claude-3-opus", ModelCapabilities::new(true, true, true)),
         ("claude-3-sonnet", ModelCapabilities::new(true, true, true)),

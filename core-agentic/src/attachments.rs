@@ -41,12 +41,7 @@ pub const DEFAULT_MAX_PER_MESSAGE: usize = 10;
 
 /// Allowed MIME types for image attachments. Wire formats vary; the
 /// providers only accept these four.
-pub const ALLOWED_IMAGE_MIME: &[&str] = &[
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-];
+pub const ALLOWED_IMAGE_MIME: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /// Per-message constraints. Construct with [`AttachmentLimits::default`]
 /// and override fields as needed.
@@ -168,11 +163,10 @@ pub fn load_image_from_path(
         });
     }
 
-    let mime_type = detect_image_mime(&bytes).ok_or_else(|| {
-        AttachmentError::UnrecognizedFormat {
+    let mime_type =
+        detect_image_mime(&bytes).ok_or_else(|| AttachmentError::UnrecognizedFormat {
             path: path_str.clone(),
-        }
-    })?;
+        })?;
 
     if !ALLOWED_IMAGE_MIME.contains(&mime_type) {
         return Err(AttachmentError::UnsupportedMime {
@@ -223,11 +217,7 @@ pub fn load_image_from_url(
             size_bytes: 0,
         });
     }
-    let scheme = url
-        .split(':')
-        .next()
-        .unwrap_or(url)
-        .to_string();
+    let scheme = url.split(':').next().unwrap_or(url).to_string();
     Err(AttachmentError::InvalidUrlScheme { scheme })
 }
 
@@ -356,7 +346,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("agentic-attach-{}-{}", std::process::id(), nanos));
+        let dir =
+            std::env::temp_dir().join(format!("agentic-attach-{}-{}", std::process::id(), nanos));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();

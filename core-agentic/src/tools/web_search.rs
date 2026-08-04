@@ -51,9 +51,15 @@ enum Backend {
 
 impl Backend {
     fn detect() -> Self {
-        if std::env::var("TAVILY_API_KEY").map(|v| !v.is_empty()).unwrap_or(false) {
+        if std::env::var("TAVILY_API_KEY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
             Backend::Tavily
-        } else if std::env::var("BRAVE_SEARCH_API_KEY").map(|v| !v.is_empty()).unwrap_or(false) {
+        } else if std::env::var("BRAVE_SEARCH_API_KEY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
             Backend::Brave
         } else {
             Backend::DuckDuckGo
@@ -284,8 +290,8 @@ fn search_tavily(
     query: &str,
     max_results: usize,
 ) -> ToolResult<Vec<SearchHit>> {
-    let api_key = std::env::var("TAVILY_API_KEY")
-        .map_err(|_| ToolError::new("TAVILY_API_KEY missing"))?;
+    let api_key =
+        std::env::var("TAVILY_API_KEY").map_err(|_| ToolError::new("TAVILY_API_KEY missing"))?;
 
     let body = serde_json::json!({
         "api_key": api_key,
@@ -392,7 +398,9 @@ fn filter_hits_by_policy(hits: Vec<SearchHit>, policy: &UrlPolicy) -> Vec<Search
     if policy.is_unrestricted() {
         return hits;
     }
-    hits.into_iter().filter(|h| policy.is_allowed(&h.url)).collect()
+    hits.into_iter()
+        .filter(|h| policy.is_allowed(&h.url))
+        .collect()
 }
 
 fn search_duckduckgo(
@@ -444,12 +452,13 @@ fn parse_duckduckgo_html(html: &str, max_results: usize) -> Vec<SearchHit> {
 
     // (?is) = case-insensitive, dotall.
     let title_re = TITLE_RE.get_or_init(|| {
-        Regex::new(r#"(?is)<a[^>]*class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#)
-            .unwrap()
+        Regex::new(
+            r#"(?is)<a[^>]*class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
+        )
+        .unwrap()
     });
     let snippet_re = SNIPPET_RE.get_or_init(|| {
-        Regex::new(r#"(?is)<a[^>]*class="[^"]*\bresult__snippet\b[^"]*"[^>]*>(.*?)</a>"#)
-            .unwrap()
+        Regex::new(r#"(?is)<a[^>]*class="[^"]*\bresult__snippet\b[^"]*"[^>]*>(.*?)</a>"#).unwrap()
     });
 
     let mut titles: Vec<(String, String)> = title_re

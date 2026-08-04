@@ -66,7 +66,7 @@ pub enum BreakpointStrategy {
 }
 
 /// Skill system configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SkillsConfig {
     /// Skill names to exclude from the index.
     #[serde(default)]
@@ -75,15 +75,6 @@ pub struct SkillsConfig {
     /// Paths support `~` and `$ENV_VAR` expansion.
     #[serde(default)]
     pub compat_dirs: Vec<String>,
-}
-
-impl Default for SkillsConfig {
-    fn default() -> Self {
-        Self {
-            blocklist: Vec::new(),
-            compat_dirs: Vec::new(),
-        }
-    }
 }
 
 impl From<&SkillsConfig> for DiscoveryConfig {
@@ -139,8 +130,12 @@ pub struct PlannerLoopConfig {
     pub provider: Option<String>,
 }
 
-fn default_planner_max_steps() -> usize { 20 }
-fn default_planner_max_replan() -> usize { 3 }
+fn default_planner_max_steps() -> usize {
+    20
+}
+fn default_planner_max_replan() -> usize {
+    3
+}
 
 impl Default for PlannerLoopConfig {
     fn default() -> Self {
@@ -617,19 +612,13 @@ mod tests {
         }"#;
         let cfg: Config = serde_json::from_str(json).expect("parse");
         assert!(cfg.agent.auto_compact_with_llm);
-        assert_eq!(
-            cfg.agent.summarizer_model.as_deref(),
-            Some("gpt-4o-mini")
-        );
+        assert_eq!(cfg.agent.summarizer_model.as_deref(), Some("gpt-4o-mini"));
 
         // Re-serialize and re-parse to confirm the field round-trips.
         let out = serde_json::to_string(&cfg).expect("serialize");
         let cfg2: Config = serde_json::from_str(&out).expect("reparse");
         assert!(cfg2.agent.auto_compact_with_llm);
-        assert_eq!(
-            cfg2.agent.summarizer_model.as_deref(),
-            Some("gpt-4o-mini")
-        );
+        assert_eq!(cfg2.agent.summarizer_model.as_deref(), Some("gpt-4o-mini"));
     }
 
     #[test]
@@ -656,14 +645,8 @@ mod tests {
         assert_eq!(cfg.agent.planner.max_steps, 10);
         assert_eq!(cfg.agent.planner.max_replan_attempts, 5);
         assert!(!cfg.agent.planner.require_approval);
-        assert_eq!(
-            cfg.agent.planner.model.as_deref(),
-            Some("gpt-4o-mini")
-        );
-        assert_eq!(
-            cfg.agent.planner.provider.as_deref(),
-            Some("openai")
-        );
+        assert_eq!(cfg.agent.planner.model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(cfg.agent.planner.provider.as_deref(), Some("openai"));
 
         // Re-serialize and re-parse.
         let out = serde_json::to_string(&cfg).expect("serialize");

@@ -24,23 +24,27 @@ pub use git_query::{GitDiffTool, GitStatusTool};
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use list_files::ListFilesTool;
-pub use question::{QuestionTool, QuestionPrompt, QuestionAnswer, QuestionHandler,
-    set_question_handler, clear_question_handler};
+pub use question::{
+    clear_question_handler, set_question_handler, QuestionAnswer, QuestionHandler, QuestionPrompt,
+    QuestionTool,
+};
 pub use read_file::ReadFileTool;
 pub use run_command::RunCommandTool;
 pub use run_script::RunScriptTool;
 pub use run_tests::RunTestsTool;
 pub use search_files::SearchFilesTool;
 pub use spawn_subagent::{SpawnSubagentTool, DEFAULT_SUBAGENT_MAX_ITERATIONS};
-pub use todowrite::{TodowriteTool, TodoItem, TodoStatus, TodoPriority, TodoChangeHandler,
-    set_todo_change_handler, clear_todo_change_handler, current_todos, clear_todos};
+pub use todowrite::{
+    clear_todo_change_handler, clear_todos, current_todos, set_todo_change_handler,
+    TodoChangeHandler, TodoItem, TodoPriority, TodoStatus, TodowriteTool,
+};
 pub use update_memory::UpdateMemoryTool;
 pub use web_search::WebSearchTool;
 pub use write_file::WriteFileTool;
 
-use std::sync::Arc;
 use crate::file_tracker::FileTracker;
 use crate::safety::UrlPolicy;
+use std::sync::Arc;
 
 pub fn builtin_tools() -> Vec<Box<dyn crate::tool::Tool + Send + Sync>> {
     builtin_tools_with_tracker(Arc::new(FileTracker::new()))

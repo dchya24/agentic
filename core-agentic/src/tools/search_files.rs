@@ -9,6 +9,12 @@ use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 
 pub struct SearchFilesTool;
 
+impl Default for SearchFilesTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SearchFilesTool {
     pub fn new() -> Self {
         Self
@@ -81,10 +87,7 @@ impl Tool for SearchFilesTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("Missing required parameter: query"))?;
 
-        let search_path = args_obj
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
+        let search_path = args_obj.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
         let include_pattern = args_obj
             .get("include")
@@ -116,7 +119,10 @@ impl Tool for SearchFilesTool {
 
             // Skip binary-ish files and hidden dirs
             let path_str = path.to_string_lossy();
-            if path_str.contains("/.git/") || path_str.contains("/node_modules/") || path_str.contains("/target/") {
+            if path_str.contains("/.git/")
+                || path_str.contains("/node_modules/")
+                || path_str.contains("/target/")
+            {
                 continue;
             }
 
@@ -171,15 +177,16 @@ mod tests {
     #[test]
     fn test_search_files_in_current_dir() {
         let tool = SearchFilesTool::new();
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let result = tool.execute(serde_json::json!({
             "query": "search_files",
-            "path": "src/tools",
+            "path": format!("{manifest_dir}/src/tools"),
             "include": "*.rs",
             "max_results": 5,
         }));
         assert!(result.is_ok());
         let output = result.unwrap();
-        assert!(output["results"].as_array().unwrap().len() > 0);
+        assert!(!output["results"].as_array().unwrap().is_empty());
     }
 
     #[test]

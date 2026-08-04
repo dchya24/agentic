@@ -1,7 +1,9 @@
 use anyhow::Result;
-use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color as TColor, Table};
+use comfy_table::{
+    modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color as TColor, Table,
+};
 use core_agentic::{Config, Orchestrator, ToolRegistry};
-use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, MultiSelect, Select};
 use ratatui::style::{Color as RColor, Modifier as RModifier, Style as RStyle};
 use ratatui::text::{Line as RLine, Span as RSpan};
 use std::process::Command as ProcessCommand;
@@ -67,10 +69,8 @@ impl core_agentic::QuestionHandler for CliQuestionHandler {
 
                     match selection {
                         Ok(indices) => {
-                            let chosen: Vec<String> = indices
-                                .iter()
-                                .map(|&i| q.options[i].clone())
-                                .collect();
+                            let chosen: Vec<String> =
+                                indices.iter().map(|&i| q.options[i].clone()).collect();
 
                             if chosen.is_empty() && q.custom {
                                 // Nothing selected but custom allowed.
@@ -79,10 +79,7 @@ impl core_agentic::QuestionHandler for CliQuestionHandler {
                                 // Nothing selected and no custom — skip.
                                 skip_answer(&q.question)
                             } else {
-                                render_answer(&format!(
-                                    "{}",
-                                    chosen.join(", ")
-                                ));
+                                render_answer(&chosen.join(", ").to_string());
                                 vec![core_agentic::QuestionAnswer {
                                     question: q.question.clone(),
                                     answer: chosen,
@@ -213,10 +210,7 @@ impl core_agentic::TodoChangeHandler for CliTodoRenderer {
         // Build a compact status bar.
         //    📋 Tasks: 3/7 (43%)  ● 1 active  ○ 3 pending
         let mut spans: Vec<RSpan<'static>> = vec![
-            RSpan::styled(
-                "  📋 ",
-                RStyle::default(),
-            ),
+            RSpan::styled("  📋 ", RStyle::default()),
             RSpan::styled(
                 format!("Tasks: {}/{} ({}%)", completed, total, pct),
                 RStyle::default()
@@ -268,10 +262,7 @@ impl core_agentic::TodoChangeHandler for CliTodoRenderer {
                     format!("{} ", icon),
                     RStyle::default().fg(color).add_modifier(RModifier::BOLD),
                 ),
-                RSpan::styled(
-                    content,
-                    RStyle::default().fg(RColor::Rgb(200, 200, 210)),
-                ),
+                RSpan::styled(content, RStyle::default().fg(RColor::Rgb(200, 200, 210))),
                 RSpan::styled(
                     priority_marker.to_string(),
                     RStyle::default()
@@ -322,10 +313,7 @@ const PROVIDER_PRESETS: &[ProviderPreset] = &[
         name: "zai",
         provider_type: "openai-compatible",
         api_base: "https://api.z.ai/v1",
-        models: &[
-            ("glm-4.7", "GLM-4.7"),
-            ("glm-4", "GLM-4"),
-        ],
+        models: &[("glm-4.7", "GLM-4.7"), ("glm-4", "GLM-4")],
     },
     ProviderPreset {
         name: "custom",
@@ -384,7 +372,6 @@ impl Commands {
             interactive_mode: false,
             skill_index: None,
             mock_provider: None,
-
         }
     }
 
@@ -422,7 +409,6 @@ impl Commands {
 
     /// Attach the input watcher's shared state so the spinner ticker
     /// can render the live input buffer below the progress line.
-
 
     pub fn with_permission_mode(mut self, mode: core_agentic::PermissionMode) -> Self {
         self.permission_mode = mode;
@@ -630,10 +616,7 @@ impl Commands {
                 if !p.models.is_empty() {
                     println!("    Models:");
                     for m in &p.models {
-                        let display = m
-                            .display_name
-                            .as_deref()
-                            .unwrap_or(&m.model);
+                        let display = m.display_name.as_deref().unwrap_or(&m.model);
                         println!("      • {} ({})", display, m.model);
                     }
                 }
@@ -647,7 +630,8 @@ impl Commands {
 
     pub fn model_info(&self) -> (String, String, String) {
         if let Some(p) = self.config.active_provider() {
-            let model = p.models
+            let model = p
+                .models
                 .first()
                 .map(|m| m.display_name.as_deref().unwrap_or(&m.model))
                 .unwrap_or("unknown")
@@ -795,10 +779,7 @@ impl Commands {
             ));
             inline::print_line(&RLine::from(vec![
                 RSpan::raw("  Switch with "),
-                RSpan::styled(
-                    "/models",
-                    RStyle::default().add_modifier(RModifier::BOLD),
-                ),
+                RSpan::styled("/models", RStyle::default().add_modifier(RModifier::BOLD)),
                 RSpan::raw(" to a vision-capable model first."),
             ]));
             inline::print_blank();
@@ -826,7 +807,11 @@ impl Commands {
                     "Attached: {} ({} bytes, {})",
                     source,
                     bytes,
-                    if mime.is_empty() { "remote" } else { mime.as_str() }
+                    if mime.is_empty() {
+                        "remote"
+                    } else {
+                        mime.as_str()
+                    }
                 )));
                 inline::print_line(&RLine::from(vec![
                     RSpan::raw("  "),
@@ -904,16 +889,17 @@ impl Commands {
                             "{}{}{}",
                             p,
                             if is_required { "*" } else { "" },
-                            if is_required { " (required)" } else { " (optional)" }
+                            if is_required {
+                                " (required)"
+                            } else {
+                                " (optional)"
+                            }
                         )
                     })
                     .collect();
                 inline::print_line(&RLine::from(vec![
                     RSpan::raw("    "),
-                    RSpan::styled(
-                        "Params: ",
-                        RStyle::default().add_modifier(RModifier::DIM),
-                    ),
+                    RSpan::styled("Params: ", RStyle::default().add_modifier(RModifier::DIM)),
                     RSpan::raw(params.join(", ")),
                 ]));
             }
@@ -956,7 +942,9 @@ impl Commands {
         self.config.providers = providers;
 
         // Save config
-        self.config.save().map_err(|e| format!("Failed to save config: {}", e))?;
+        self.config
+            .save()
+            .map_err(|e| format!("Failed to save config: {}", e))?;
 
         // Reset orchestrator so it reinitializes with new model
         self.orchestrator = None;
@@ -1005,10 +993,7 @@ impl Commands {
                 let mut spans = vec![RSpan::raw("    ")];
 
                 if is_active {
-                    spans.push(RSpan::styled(
-                        "● ",
-                        RStyle::default().fg(RColor::Green),
-                    ));
+                    spans.push(RSpan::styled("● ", RStyle::default().fg(RColor::Green)));
                 } else {
                     spans.push(RSpan::raw("  "));
                 }
@@ -1027,7 +1012,9 @@ impl Commands {
 
                 spans.push(RSpan::styled(
                     format!("  ({})", model.model),
-                    RStyle::default().fg(RColor::Rgb(100, 100, 120)).add_modifier(RModifier::DIM),
+                    RStyle::default()
+                        .fg(RColor::Rgb(100, 100, 120))
+                        .add_modifier(RModifier::DIM),
                 ));
 
                 inline::print_line(&RLine::from(spans));
@@ -1041,17 +1028,18 @@ impl Commands {
             RSpan::raw("Use "),
             RSpan::styled(
                 "/models <name>",
-                RStyle::default().fg(RColor::Rgb(255, 215, 0)).add_modifier(RModifier::BOLD),
+                RStyle::default()
+                    .fg(RColor::Rgb(255, 215, 0))
+                    .add_modifier(RModifier::BOLD),
             ),
             RSpan::raw(" to switch. Type "),
-            RSpan::styled(
-                "/models ",
-                RStyle::default().fg(RColor::Rgb(255, 215, 0)),
-            ),
+            RSpan::styled("/models ", RStyle::default().fg(RColor::Rgb(255, 215, 0))),
             RSpan::raw("then press "),
             RSpan::styled(
                 "Tab",
-                RStyle::default().fg(RColor::Rgb(135, 206, 250)).add_modifier(RModifier::BOLD),
+                RStyle::default()
+                    .fg(RColor::Rgb(135, 206, 250))
+                    .add_modifier(RModifier::BOLD),
             ),
             RSpan::raw(" for completion"),
         ]));
@@ -1060,7 +1048,7 @@ impl Commands {
 
     /// Interactive model picker using dialoguer (fuzzy searchable).
     pub fn pick_model_interactive_inline(&mut self) -> Option<(String, String)> {
-        use dialoguer::{FuzzySelect, theme::ColorfulTheme};
+        use dialoguer::{theme::ColorfulTheme, FuzzySelect};
 
         let active_provider = self.config.active_provider().map(|p| p.name.clone());
         let active_model = self.config.active_model().map(|m| m.model.clone());
@@ -1104,7 +1092,9 @@ impl Commands {
         inline::print_blank();
 
         let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
-            .with_prompt("🤖 Select Model (type to filter, ↑↓ to navigate, Enter to select, Esc to cancel)")
+            .with_prompt(
+                "🤖 Select Model (type to filter, ↑↓ to navigate, Enter to select, Esc to cancel)",
+            )
             .items(&items.iter().map(|(d, _, _)| d.as_str()).collect::<Vec<_>>())
             .default(default_idx)
             .interact_opt();
@@ -1112,10 +1102,7 @@ impl Commands {
         match selection {
             Ok(Some(idx)) => {
                 let (_, _, model) = &items[idx];
-                match self.switch_model(model) {
-                    Ok(result) => Some(result),
-                    Err(_) => None,
-                }
+                self.switch_model(model).ok()
             }
             Ok(None) | Err(_) => None,
         }
@@ -1154,10 +1141,7 @@ impl Commands {
             }
             if let Some(args) = &srv.args {
                 if !args.is_empty() {
-                    inline::print_line(&RLine::from(format!(
-                        "    Args:    {}",
-                        args.join(" ")
-                    )));
+                    inline::print_line(&RLine::from(format!("    Args:    {}", args.join(" "))));
                 }
             }
             if let Some(url) = &srv.url {
@@ -1281,7 +1265,8 @@ impl Commands {
 
         self.ensure_orchestrator()?;
         // Use require_approval from config (default: true)
-        self.plan_and_execute(task, self.config.agent.planner.require_approval).await
+        self.plan_and_execute(task, self.config.agent.planner.require_approval)
+            .await
     }
 
     /// Shared planner logic: create a plan, optionally ask for approval,
@@ -1289,11 +1274,7 @@ impl Commands {
     ///
     /// `ask_approval`: when true, render the plan and prompt with
     /// dialoguer. When false, skip the prompt (auto-approve).
-    async fn plan_and_execute(
-        &mut self,
-        goal: &str,
-        ask_approval: bool,
-    ) -> anyhow::Result<()> {
+    async fn plan_and_execute(&mut self, goal: &str, ask_approval: bool) -> anyhow::Result<()> {
         // Build a fresh PlannerAgent against the same provider.
         let provider_config = self
             .config
@@ -1301,24 +1282,17 @@ impl Commands {
             .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
         let provider: std::sync::Arc<dyn core_agentic::LLMProvider> =
             std::sync::Arc::new(core_agentic::OpenAIProvider::new(provider_config));
-        let planner = core_agentic::PlannerAgent::from_config(
-            provider,
-            &self.config.agent.planner,
-        );
+        let planner = core_agentic::PlannerAgent::from_config(provider, &self.config.agent.planner);
 
         // Reuse the orchestrator's tool registry so steps see the same
         // tool surface (including allowlist + tracker).
         let tools = match self.orchestrator.as_ref() {
             Some(o) => o.tool_registry().clone(),
             None => {
-                let tracker = std::sync::Arc::new(
-                    core_agentic::file_tracker::FileTracker::new(),
-                );
+                let tracker = std::sync::Arc::new(core_agentic::file_tracker::FileTracker::new());
                 let registry = ToolRegistry::new();
-                for t in core_agentic::tools::builtin_tools_with(
-                    tracker,
-                    self.config.url_policy(),
-                ) {
+                for t in core_agentic::tools::builtin_tools_with(tracker, self.config.url_policy())
+                {
                     registry.register(t);
                 }
                 registry
@@ -1363,10 +1337,7 @@ impl Commands {
             if !step.depends_on.is_empty() {
                 inline::print_line(&RLine::from(vec![
                     RSpan::raw("      "),
-                    RSpan::styled(
-                        format!("depends on steps: {:?}", step.depends_on),
-                        dim,
-                    ),
+                    RSpan::styled(format!("depends on steps: {:?}", step.depends_on), dim),
                 ]));
             }
         }
@@ -1380,17 +1351,17 @@ impl Commands {
                 .interact()
                 .unwrap_or(false)
         } else {
-            inline::print_line(&RLine::from(vec![
-                RSpan::styled(
-                    "  Auto-approved (require_approval = false)\n".to_string(),
-                    RStyle::default().fg(RColor::DarkGray),
-                ),
-            ]));
+            inline::print_line(&RLine::from(vec![RSpan::styled(
+                "  Auto-approved (require_approval = false)\n".to_string(),
+                RStyle::default().fg(RColor::DarkGray),
+            )]));
             true
         };
 
         if !proceed {
-            inline::print_line(&components::warning_badge("Plan rejected. Nothing executed."));
+            inline::print_line(&components::warning_badge(
+                "Plan rejected. Nothing executed.",
+            ));
             inline::print_blank();
             return Ok(());
         }
@@ -1398,56 +1369,67 @@ impl Commands {
         // Execute with live progress updates via the planner's event bus.
         let mut plan = plan;
         planner.on({
-            move |event: core_agentic::Event| {
-                match event {
-                    core_agentic::Event::PlanProgress {
-                        step_description,
-                        step_status,
-                        steps_total,
-                        steps_completed,
-                        steps_failed,
-                        ..
-                    } => {
-                        let icon = match step_status.as_str() {
-                            "in_progress" => "▶",
-                            "completed" => "✅",
-                            "failed" => "❌",
-                            _ => "⏳",
-                        };
-                        let bar = components::labeled_bar(
-                            &format!("{}/{}", steps_completed, steps_total),
-                            if steps_total > 0 { steps_completed as f32 / steps_total as f32 } else { 0.0 },
-                            30,
-                            if steps_failed > 0 { RColor::Red } else { RColor::Green },
-                            RColor::DarkGray,
-                        );
-                        inline::print_line(&bar);
-                        inline::print_line(&RLine::from(vec![
-                            RSpan::raw(format!("       {}  {}", icon, step_description)),
-                        ]));
-                    }
-                    core_agentic::Event::PlanReplanned {
-                        reason,
-                        steps_carried_over,
-                        steps_total,
-                        ..
-                    } => {
-                        inline::print_blank();
-                        inline::print_line(&RLine::from(vec![
-                            RSpan::styled("       🔄 ".to_string(), RStyle::default().fg(RColor::Yellow)),
-                            RSpan::styled("Re-planning: ".to_string(), RStyle::default().add_modifier(RModifier::BOLD)),
-                            RSpan::styled(reason.clone(), RStyle::default().fg(RColor::Yellow)),
-                        ]));
-                        inline::print_line(&RLine::from(vec![
-                            RSpan::raw(format!(
-                                "          {} carried over, {} total revised steps",
-                                steps_carried_over, steps_total
-                            )),
-                        ]));
-                        inline::print_blank();
-                    }
-                    _ => {}
+            move |event: core_agentic::Event| match event {
+                core_agentic::Event::PlanProgress {
+                    step_description,
+                    step_status,
+                    steps_total,
+                    steps_completed,
+                    steps_failed,
+                    ..
+                } => {
+                    let icon = match step_status.as_str() {
+                        "in_progress" => "▶",
+                        "completed" => "✅",
+                        "failed" => "❌",
+                        _ => "⏳",
+                    };
+                    let bar = components::labeled_bar(
+                        &format!("{}/{}", steps_completed, steps_total),
+                        if steps_total > 0 {
+                            steps_completed as f32 / steps_total as f32
+                        } else {
+                            0.0
+                        },
+                        30,
+                        if steps_failed > 0 {
+                            RColor::Red
+                        } else {
+                            RColor::Green
+                        },
+                        RColor::DarkGray,
+                    );
+                    inline::print_line(&bar);
+                    inline::print_line(&RLine::from(vec![RSpan::raw(format!(
+                        "       {}  {}",
+                        icon, step_description
+                    ))]));
                 }
+                core_agentic::Event::PlanReplanned {
+                    reason,
+                    steps_carried_over,
+                    steps_total,
+                    ..
+                } => {
+                    inline::print_blank();
+                    inline::print_line(&RLine::from(vec![
+                        RSpan::styled(
+                            "       🔄 ".to_string(),
+                            RStyle::default().fg(RColor::Yellow),
+                        ),
+                        RSpan::styled(
+                            "Re-planning: ".to_string(),
+                            RStyle::default().add_modifier(RModifier::BOLD),
+                        ),
+                        RSpan::styled(reason.clone(), RStyle::default().fg(RColor::Yellow)),
+                    ]));
+                    inline::print_line(&RLine::from(vec![RSpan::raw(format!(
+                        "          {} carried over, {} total revised steps",
+                        steps_carried_over, steps_total
+                    ))]));
+                    inline::print_blank();
+                }
+                _ => {}
             }
         });
 
@@ -1498,10 +1480,7 @@ impl Commands {
                     "agentic run \"explain the codebase structure\"",
                 ],
             ),
-            (
-                "# Interactive mode",
-                &["agentic interactive", "agentic i"],
-            ),
+            ("# Interactive mode", &["agentic interactive", "agentic i"]),
             (
                 "# Config management",
                 &[
@@ -1516,10 +1495,7 @@ impl Commands {
                     "agentic config export                  # Masked secrets",
                 ],
             ),
-            (
-                "# Status & info",
-                &["agentic status", "agentic version"],
-            ),
+            ("# Status & info", &["agentic status", "agentic version"]),
         ];
 
         for (heading, lines) in groups {
@@ -1538,7 +1514,6 @@ impl Commands {
 
     pub async fn run(&mut self, task: &str) -> Result<()> {
         use crate::widgets::{components, inline, markdown as md_widget, progress, spinner};
-        use ratatui::style::Color as RColor;
 
         // When --mode plan is active, route through the planner agent
         // instead of the regular orchestrator loop. This creates a real
@@ -1561,15 +1536,12 @@ impl Commands {
             let caps = self.active_model_capabilities();
             if !caps.vision {
                 inline::print_blank();
-                inline::print_line(&components::error_badge(&format!(
-                    "Active model does not support image input."
-                )));
+                inline::print_line(&components::error_badge(
+                    "Active model does not support image input.",
+                ));
                 inline::print_line(&RLine::from(vec![
                     RSpan::raw("  Switch with "),
-                    RSpan::styled(
-                        "/models",
-                        RStyle::default().add_modifier(RModifier::BOLD),
-                    ),
+                    RSpan::styled("/models", RStyle::default().add_modifier(RModifier::BOLD)),
                     RSpan::raw(" to a vision-capable model (e.g. gpt-4o, claude-3-5-sonnet)."),
                 ]));
                 inline::print_blank();
@@ -1596,54 +1568,57 @@ impl Commands {
         // Verbose body for tool results piggybacks on `show_thoughts`:
         // it's the same intent (render the agent's internal trace, not
         // just the final answer).
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        if show_tool_calls {
-            let tx = event_tx.clone();
-            orchestrator.on_event(move |event| {
-                // Skip Thought events: the text was already streamed in
-                // real-time by the chunk callback. Re-rendering it here
-                // would duplicate the same content on screen.
-                if matches!(event, core_agentic::Event::Thought { .. }) {
-                    return;
-                }
-                // Best-effort send: if the receiver is dropped (run finished),
-                // silently ignore.
-                let _ = tx.send(event);
-            });
-        }
-        // Drop our local sender so the receiver shuts down once the
-        // orchestrator's handler is also gone (after `clear_event_handlers`).
-        drop(event_tx);
+        let (event_tx, event_rx) = std::sync::mpsc::channel::<core_agentic::Event>();
+        // Always forward runtime events (tool calls / outputs) to the
+        // renderer. We need them even when `show_tool_calls` is off: the
+        // renderer uses tool-boundary events to reset its streaming-text
+        // state between turns. The panel rendering itself is gated on
+        // `show_tool_calls` inside the renderer.
+        orchestrator.on_event(move |event| {
+            // Skip Thought events: their text is already streamed in
+            // real-time via the chunk callback, so surfacing them again
+            // would duplicate the content on screen.
+            if matches!(event, core_agentic::Event::Thought { .. }) {
+                return;
+            }
+            // Best-effort send: if the receiver is dropped (run finished),
+            // silently ignore.
+            let _ = event_tx.send(event);
+        });
 
-        // ── Live rendering strategy ────────────────────────────
+        // ── Live rendering strategy (single writer) ───────────
         //
-        // We render streaming text in real-time (like pi, codex, opencode)
-        // instead of batch-rendering at the end. The flow:
+        // ALL terminal output during the run flows through ONE task
+        // (the `renderer` below). This fixes two bugs the old two-writer
+        // design suffered from:
         //
-        //  1. Spinner ticks while the model is "thinking".
-        //  2. When text chunks arrive, stop spinner and print text directly.
-        //  3. When tool calls arrive (after text), render tool panels,
-        //     then restart the spinner for the next iteration.
-        //  4. For the final response (no tool calls), text is already
-        //     streamed — just print a completion marker.
+        //   1. Corruption during tool use: the spinner ticker and the
+        //      on_chunk callback wrote to stdout from different tasks and
+        //      raced on cursor position, so streamed-text fragments
+        //      (e.g. a command tail like `-maxdepth 4 …`) leaked into the
+        //      "Thinking…" spinner line.
+        //   2. Duplicate final text: the end-of-run markdown re-render
+        //      miscounted visual lines (it ignored line wrapping and the
+        //      tool-panel lines interleaved between streamed turns), so
+        //      streamed plaintext was left behind after the re-render.
         //
-        // Thought events from the orchestrator are suppressed because
-        // we already stream the text in real-time via on_chunk.
+        // Now chunks are forwarded to a channel and printed by the SAME
+        // task that ticks the spinner and renders events, so the three
+        // can never interleave. A state machine maintains the invariant
+        // "the spinner is always the last printed line, cursor directly
+        // below it"; streamed text replaces the spinner in place, and a
+        // tool panel always ends by re-arming a fresh spinner line.
+        //
+        // At the end of the run, the accumulated text block is rendered
+        // as styled markdown (instead of leaving raw plaintext on screen),
+        // giving the same polished output the old markdown re-render aimed
+        // for — but without line-counting bugs, because the renderer tracks
+        // visual lines accurately for the ONE block it replaces.
 
-        // Shared state between the chunk callback and the event ticker.
-        // When `true`, the ticker skips spinner ticks because the chunk
-        // callback is actively printing text.
-        let streaming_text_active = std::sync::Arc::new(AtomicBool::new(false));
-        let streaming_text_active_clone = streaming_text_active.clone();
-
-        // Collect the streamed text so we can re-render it as styled
-        // markdown once streaming completes.
-        let streamed_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let streamed_text_clone = streamed_text.clone();
-        // Track how many terminal lines were printed during streaming
-        // so we can MoveUp + replace them with styled markdown.
-        let streamed_lines = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let streamed_lines_clone = streamed_lines.clone();
+        // Chunk channel: on_chunk forwards deltas here instead of writing
+        // to stdout directly (keeps all writes in the renderer task).
+        // Chunk channel (std::sync::mpsc for cross-thread use).
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<String>();
 
         let progress = std::sync::Arc::new(std::sync::Mutex::new({
             let mut p = progress::ProgressState::new();
@@ -1653,178 +1628,181 @@ impl Commands {
         }));
         let stop_flag = std::sync::Arc::new(AtomicBool::new(false));
 
-        let tick_progress = progress.clone();
-        let tick_stop = stop_flag.clone();
-        let ticker = tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_millis(80));
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        if tick_stop.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        // Don't overwrite text that the chunk callback
-                        // is actively streaming.
-                        if streaming_text_active_clone.load(Ordering::Relaxed) {
-                            continue;
-                        }
-                        let line = {
-                            let mut p = tick_progress.lock().unwrap();
-                            p.tick();
-                            spinner::compact_progress_line(&p, 18)
-                        };
+        // Renderer state machine.
+        //
+        // Strategy: NEVER write streamed chunks to stdout.  Only the
+        // spinner line and tool panels touch the terminal.  At the end
+        // of the run, the spinner is cleared and the accumulated text
+        // is rendered as styled markdown in one shot.  This eliminates
+        // ALL cursor-position bugs (line-counting, MoveUp overshoot,
+        // trailing-newline ambiguity) because there is nothing to
+        // "replace" — the markdown is the first and only text output.
+        struct RenderFinal {
+            /// Accumulated text from all streaming blocks.
+            block_text: String,
+        }
 
-                        // Update the spinner line in-place by moving up 1
-                        // and overwriting it with the new frame.
-                        use crossterm::ExecutableCommand;
-                        use crossterm::cursor::MoveUp;
-                        {
-                            let mut s = std::io::stdout();
-                            let _ = s.execute(MoveUp(1));
-                            inline::print_line(&line);
+        let r_progress = progress.clone();
+        let r_stop = stop_flag.clone();
+        let render_panels = show_tool_calls;
+        let renderer = std::thread::Builder::new()
+            .name("agentic-renderer".into())
+            .spawn(move || {
+                use crossterm::cursor::{MoveToColumn, MoveUp};
+                use crossterm::terminal::{Clear, ClearType};
+                use crossterm::ExecutableCommand;
+
+                let block_text = std::sync::Mutex::new(String::new());
+
+                // ── spinner cursor helpers ─────────────────────────────
+                let commit_spinner = || {
+                    let line = {
+                        let mut p = r_progress.lock().unwrap();
+                        p.tick();
+                        spinner::compact_progress_line(&p, 18)
+                    };
+                    inline::print_line(&line);
+                };
+                let redraw_spinner = || {
+                    let line = {
+                        let mut p = r_progress.lock().unwrap();
+                        p.tick();
+                        spinner::compact_progress_line(&p, 18)
+                    };
+                    let mut s = std::io::stdout();
+                    let _ = s.execute(MoveUp(1));
+                    let _ = s.execute(MoveToColumn(0));
+                    let _ = s.execute(Clear(ClearType::CurrentLine));
+                    inline::print_line(&line);
+                };
+                let consume_spinner = || {
+                    let mut s = std::io::stdout();
+                    let _ = s.execute(MoveUp(1));
+                    let _ = s.execute(MoveToColumn(0));
+                    let _ = s.execute(Clear(ClearType::FromCursorDown));
+                };
+
+                // Print the initial spinner.
+                commit_spinner();
+
+                // Wrap the receivers in a Mutex so we can share them
+                // (they are !Sync but we only access from this thread).
+                let chunk_rx = std::sync::Mutex::new(chunk_rx);
+                let event_rx = std::sync::Mutex::new(event_rx);
+                let mut chunks_done = false;
+                let mut events_done = false;
+
+                loop {
+                    if chunks_done && events_done {
+                        break;
+                    }
+
+                    // Sleep 80ms between spinner ticks.
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+
+                    if !r_stop.load(Ordering::Relaxed) {
+                        redraw_spinner();
+                    }
+
+                    // Drain all available chunks (non-blocking).
+                    if !chunks_done {
+                        loop {
+                            match chunk_rx.lock().unwrap().try_recv() {
+                                Ok(chunk) => {
+                                    if !chunk.is_empty() {
+                                        block_text.lock().unwrap().push_str(&chunk);
+                                    }
+                                }
+                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    chunks_done = true;
+                                    break;
+                                }
+                            }
                         }
                     }
-                    maybe_event = event_rx.recv() => {
-                        match maybe_event {
-                            Some(event) => {
-                                // Pause the spinner, render the event, then
-                                // let the next tick redraw the spinner.
-                                inline::clear_transient();
-                                // Thought events are rendered with DIM styling
-                                // (the LLM's reasoning before tool execution).
-                                // They are NOT the streamed final text.
-                                streaming_text_active_clone.store(false, Ordering::Relaxed);
-                                render_event(&event);
-                            }
-                            None => {
-                                // Channel closed and drained. Keep ticking
-                                // (or break if stop is set) without panic.
-                                if tick_stop.load(Ordering::Relaxed) {
+
+                    // Drain all available events (non-blocking).
+                    if !events_done {
+                        loop {
+                            match event_rx.lock().unwrap().try_recv() {
+                                Ok(event) => {
+                                    consume_spinner();
+                                    if render_panels {
+                                        render_event(&event);
+                                    }
+                                    commit_spinner();
+                                }
+                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    events_done = true;
                                     break;
                                 }
                             }
                         }
                     }
                 }
-            }
-            // Drain anything still queued so we don't lose late events.
-            while let Ok(event) = event_rx.try_recv() {
-                inline::clear_transient();
-                render_event(&event);
-            }
-        });
 
-        // Print initial thinking indicator as a permanent line so the
-        // user always sees activity immediately. The ticker overwrites
-        // this same line on each tick by moving up 1 line, keeping the
-        // spinner character animated.
-        {
-            let p = progress.lock().unwrap();
-            let initial_line = spinner::compact_progress_line(&p, 18);
-            inline::print_line(&initial_line);
-        }
+                RenderFinal {
+                    block_text: block_text.into_inner().unwrap(),
+                }
+            })
+            .expect("failed to spawn renderer thread");
 
+        // Forward streaming deltas to the renderer (NO direct stdout write).
         let result = orchestrator
             .run_stream_with_attachments(task, attachments, |chunk| {
-                // Stream text in real-time. When the first chunk arrives,
-                // clear the spinner and start printing directly.
                 if !chunk.is_empty() {
-                    if !streaming_text_active.load(Ordering::Relaxed) {
-                        // First chunk — clear the thinking spinner line
-                        // and start streaming the response text.
-                        use crossterm::ExecutableCommand;
-                        use crossterm::cursor::MoveUp;
-                        use crossterm::terminal::{Clear, ClearType};
-                        let mut s = std::io::stdout();
-                        let _ = s.execute(MoveUp(1));
-                        let _ = s.execute(Clear(ClearType::CurrentLine));
-                        let _ = s.execute(Clear(ClearType::FromCursorDown));
-                        streaming_text_active.store(true, Ordering::Relaxed);
-                    }
-                    // Print the chunk directly to stdout.
-                    // Replace bare \n with \r\n for raw mode compatibility.
-                    // (In cooked mode the extra \r is harmlessly ignored.)
-                    let safe_chunk = chunk.replace("\n", "\r\n");
-                    use std::io::Write;
-                    let _ = std::io::stdout().write_all(safe_chunk.as_bytes());
-                    let _ = std::io::stdout().flush();
-                    streamed_text_clone
-                        .lock()
-                        .unwrap()
-                        .push_str(&chunk);
-                    // Count newlines for re-render tracking.
-                    let newlines = chunk.chars().filter(|&c| c == '\n').count() as u32;
-                    if newlines > 0 {
-                        streamed_lines_clone.fetch_add(newlines, Ordering::Relaxed);
-                    }
+                    let _ = chunk_tx.send(chunk);
                 }
             })
             .await;
 
-        // Streaming is done — reset the flag so the spinner can tick again
-        // if the ticker hasn't stopped yet.
-        streaming_text_active.store(false, Ordering::Relaxed);
-
-        // Stop ticker. Dropping orchestrator's handler is what eventually
-        // closes the receiver — do that by clearing handlers (the sender
-        // captured by the closure goes away with the closure).
+        // run_stream returned → its on_chunk closure is dropped, but the
+        // closure only captured chunk_tx BY REFERENCE (it's not a `move`
+        // closure), so the Sender itself is still owned by this function.
+        // The renderer only sees `Disconnected` once every Sender is gone;
+        // leaving chunk_tx alive means `chunk_rx.try_recv()` returns `Empty`
+        // forever, `chunks_done` never flips, and `renderer.join()` below
+        // deadlocks with the spinner frozen on screen. Drop it explicitly.
+        drop(chunk_tx);
+        // Drop the event handler so event_tx is dropped and event_rx gets
+        // Disconnected. The renderer thread exits once both are drained.
         orchestrator.clear_event_handlers();
         stop_flag.store(true, Ordering::Relaxed);
-        let _ = ticker.await;
+
+        let render_final = renderer.join().expect("renderer thread panicked");
         progress.lock().unwrap().stop();
 
-        // Clear any residual transient from the ticker's last tick so the
-        // cursor is positioned cleanly for the re-render logic below.
-        inline::clear_transient();
+        // Cursor cleanup + final result.  The renderer always runs in
+        // "spinner mode" (we never wrote chunks to stdout), so cleanup
+        // is the same in every case: erase the spinner line, then render
+        // the accumulated text as styled markdown.
+        let mut s = std::io::stdout();
+        {
+            use crossterm::cursor::{MoveToColumn, MoveUp};
+            use crossterm::terminal::{Clear, ClearType};
+            use crossterm::ExecutableCommand;
+            let _ = s.execute(MoveUp(1));
+            let _ = s.execute(MoveToColumn(0));
+            let _ = s.execute(Clear(ClearType::FromCursorDown));
+        }
+        drop(s); // release the stdout lock so inline::print_* can use it
 
         match result {
             Ok(final_result) => {
-                let already_streamed = streamed_text.lock().unwrap().clone();
-                let lines_printed = streamed_lines.load(Ordering::Relaxed);
-
-                if already_streamed.is_empty() {
-                    // No text was streamed (e.g. model returned empty
-                    // before tool calls, or only tool calls). Render the
-                    // final result in batch mode.
-                    inline::print_blank();
-                    inline::print_line(&components::section_header(
-                        "🤖",
-                        "Response",
-                        RColor::Rgb(64, 224, 208),
-                    ));
-                    inline::print_blank();
-                    let parsed = md_widget::MarkdownContent::parse(&final_result);
-                    inline::print_lines(&parsed.lines);
-                    inline::print_blank();
+                let source = if final_result.is_empty() {
+                    &render_final.block_text
                 } else {
-                    // Text was already streamed in real-time as plaintext.
-                    // Re-render with full markdown styling by replacing
-                    // the streamed lines in-place.
-                    let total_lines = if already_streamed.ends_with('\n') {
-                        lines_printed
-                    } else {
-                        lines_printed + 1
-                    };
-
-                    if total_lines > 0 && total_lines <= 500 && inline::is_stdout_tty() {
-                        let full_text = if final_result.len() > already_streamed.len() {
-                            final_result.clone()
-                        } else {
-                            already_streamed.clone()
-                        };
-                        let parsed = md_widget::MarkdownContent::parse(&full_text);
-                        inline::replace_lines(total_lines, &parsed.lines);
-                    } else {
-                        if !already_streamed.ends_with('\n') {
-                            println!();
-                        }
-                    }
-                    inline::print_blank();
+                    &final_result
+                };
+                if !source.is_empty() {
+                    let parsed = md_widget::MarkdownContent::parse(source);
+                    inline::print_lines(&parsed.lines);
                 }
+                inline::print_blank();
             }
             Err(e) => {
-                inline::print_blank();
                 inline::print_line(&components::error_badge(&e.to_string()));
                 inline::print_blank();
             }
@@ -1832,8 +1810,6 @@ impl Commands {
 
         Ok(())
     }
-
-
     /// Run task with separate callbacks for streaming chunks and runtime
     /// events (tool calls + results). Used by the TUI to surface tool
     /// activity in the message log alongside the streaming response.
@@ -1884,9 +1860,10 @@ impl Commands {
     pub fn config(&self, action: &ConfigAction) -> Result<()> {
         match action {
             ConfigAction::Show { format } => self.config_show(*format)?,
-            ConfigAction::Init { interactive, provider } => {
-                self.config_init(*interactive, provider.as_deref())?
-            }
+            ConfigAction::Init {
+                interactive,
+                provider,
+            } => self.config_init(*interactive, provider.as_deref())?,
             ConfigAction::Edit => self.config_edit()?,
             ConfigAction::Validate { verbose } => self.config_validate(*verbose)?,
             ConfigAction::Reset { force } => self.config_reset(*force)?,
@@ -1992,7 +1969,10 @@ impl Commands {
                 println!();
                 println!("  Referenced files:");
                 for f in &files {
-                    println!("     📄 {}", f.file_name().unwrap_or_default().to_string_lossy());
+                    println!(
+                        "     📄 {}",
+                        f.file_name().unwrap_or_default().to_string_lossy()
+                    );
                 }
             }
         }
@@ -2005,7 +1985,10 @@ impl Commands {
         // Validate name
         let name_re = regex::Regex::new(r"^[a-z0-9-]{1,64}$").unwrap();
         if !name_re.is_match(name) {
-            eprintln!("✗ Invalid skill name '{}': must be 1-64 chars, lowercase a-z, 0-9, hyphens only", name);
+            eprintln!(
+                "✗ Invalid skill name '{}': must be 1-64 chars, lowercase a-z, 0-9, hyphens only",
+                name
+            );
             std::process::exit(1);
         }
 
@@ -2025,7 +2008,11 @@ impl Commands {
 
         let skill_dir = base_dir.join(name);
         if skill_dir.exists() {
-            eprintln!("✗ Skill '{}' already exists at {}", name, skill_dir.display());
+            eprintln!(
+                "✗ Skill '{}' already exists at {}",
+                name,
+                skill_dir.display()
+            );
             std::process::exit(1);
         }
 
@@ -2060,6 +2047,57 @@ Instructions the agent follows when this skill is loaded.
         println!();
 
         Ok(())
+    }
+
+    /// Load a skill by name and inject its instructions into the orchestrator's
+    /// conversation context as a system message. The next LLM call will see the
+    /// skill instructions alongside the user's message.
+    ///
+    /// Returns the skill body content on success.
+    pub fn load_and_activate_skill(&mut self, name: &str) -> Result<String, String> {
+        let discovery_config: core_agentic::DiscoveryConfig =
+            core_agentic::DiscoveryConfig::from(&self.config.skills);
+        let index = core_agentic::discover_skills(&discovery_config);
+
+        let skill = index.get(name).ok_or_else(|| {
+            format!(
+                "Skill '{}' not found. Use /skills to list available skills.",
+                name
+            )
+        })?;
+
+        // Build the full skill instructions with referenced files
+        let mut content = skill.body.clone();
+        if let Ok(entries) = std::fs::read_dir(&skill.dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if fname == "SKILL.md" {
+                        continue;
+                    }
+                    if let Ok(file_content) = std::fs::read_to_string(&path) {
+                        content.push_str(&format!(
+                            "\n\n---\n# Referenced file: {}\n\n{}",
+                            fname, file_content
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Inject into orchestrator context as a system message
+        // so the next LLM call includes the skill instructions.
+        if let Some(orchestrator) = &self.orchestrator {
+            orchestrator.add_system_message(format!(
+                "---\n# Active Skill: {} — {}\n\n{}",
+                skill.name(),
+                skill.description(),
+                content
+            ));
+        }
+
+        Ok(content)
     }
 
     // ── Config show (json or table) ─────────────────────────
@@ -2100,17 +2138,18 @@ Instructions the agent follows when this skill is loaded.
             } else if p.api_key.starts_with('$') {
                 Cell::new(format!("env:{}", &p.api_key)).fg(TColor::Yellow)
             } else {
-                Cell::new(format!("{}...{}", &p.api_key[..4.min(p.api_key.len())], &p.api_key[p.api_key.len().saturating_sub(4)..])).fg(TColor::Green)
+                Cell::new(format!(
+                    "{}...{}",
+                    &p.api_key[..4.min(p.api_key.len())],
+                    &p.api_key[p.api_key.len().saturating_sub(4)..]
+                ))
+                .fg(TColor::Green)
             };
 
             let models: String = p
                 .models
                 .iter()
-                .map(|m| {
-                    m.display_name
-                        .as_deref()
-                        .unwrap_or(&m.model)
-                })
+                .map(|m| m.display_name.as_deref().unwrap_or(&m.model))
                 .collect::<Vec<_>>()
                 .join(", ");
 
@@ -2154,19 +2193,13 @@ Instructions the agent follows when this skill is loaded.
         let blocked = if self.config.safety.blocked_commands.is_empty() {
             "none".to_string()
         } else {
-            self.config
-                .safety
-                .blocked_commands
-                .join(", ")
+            self.config.safety.blocked_commands.join(", ")
         };
         safety_table.add_row(vec![Cell::new("Blocked commands"), Cell::new(blocked)]);
 
         inline::print_line(&RLine::from(vec![
             RSpan::raw("  "),
-            RSpan::styled(
-                "Safety:",
-                RStyle::default().add_modifier(RModifier::BOLD),
-            ),
+            RSpan::styled("Safety:", RStyle::default().add_modifier(RModifier::BOLD)),
         ]));
         println!("{safety_table}");
 
@@ -2182,7 +2215,11 @@ Instructions the agent follows when this skill is loaded.
 
         output_table.add_row(vec![
             Cell::new("Color"),
-            Cell::new(if self.config.output.color { "yes" } else { "no" }),
+            Cell::new(if self.config.output.color {
+                "yes"
+            } else {
+                "no"
+            }),
         ]);
         output_table.add_row(vec![
             Cell::new("Stream"),
@@ -2211,10 +2248,7 @@ Instructions the agent follows when this skill is loaded.
 
         inline::print_line(&RLine::from(vec![
             RSpan::raw("  "),
-            RSpan::styled(
-                "Output:",
-                RStyle::default().add_modifier(RModifier::BOLD),
-            ),
+            RSpan::styled("Output:", RStyle::default().add_modifier(RModifier::BOLD)),
         ]));
         println!("{output_table}");
 
@@ -2229,7 +2263,10 @@ Instructions the agent follows when this skill is loaded.
                     Cell::new("Command").fg(TColor::Cyan),
                 ]);
             for (name, srv) in &self.config.mcp_servers {
-                mcp_table.add_row(vec![Cell::new(name), Cell::new(srv.command.as_deref().unwrap_or(""))]);
+                mcp_table.add_row(vec![
+                    Cell::new(name),
+                    Cell::new(srv.command.as_deref().unwrap_or("")),
+                ]);
             }
             inline::print_line(&RLine::from(vec![
                 RSpan::raw("  "),
@@ -2276,17 +2313,15 @@ Instructions the agent follows when this skill is loaded.
 
         // Ensure directory exists
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                CommandError::Config(format!("Failed to create directory: {}", e))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CommandError::Config(format!("Failed to create directory: {}", e)))?;
         }
 
         let content = serde_json::to_string_pretty(&new_config)
             .map_err(|e| CommandError::Config(e.to_string()))?;
 
-        std::fs::write(&config_path, content).map_err(|e| {
-            CommandError::Config(format!("Failed to write config: {}", e))
-        })?;
+        std::fs::write(&config_path, content)
+            .map_err(|e| CommandError::Config(format!("Failed to write config: {}", e)))?;
 
         print_success(&format!(
             "Config file created at: {}",
@@ -2294,11 +2329,7 @@ Instructions the agent follows when this skill is loaded.
         ));
 
         // Next steps guidance
-        if new_config
-            .providers
-            .iter()
-            .any(|p| p.api_key.is_empty())
-        {
+        if new_config.providers.iter().any(|p| p.api_key.is_empty()) {
             println!();
             print_info("Next steps:");
             println!("  1. Set your API key:");
@@ -2388,7 +2419,7 @@ Instructions the agent follows when this skill is loaded.
                 display_name: None,
                 temperature: 0.7,
                 max_tokens: 8192,
-                    capabilities: None,
+                capabilities: None,
             }
         } else {
             let model_labels: Vec<String> = preset
@@ -2409,7 +2440,7 @@ Instructions the agent follows when this skill is loaded.
                 display_name: Some(preset.models[model_idx].1.to_string()),
                 temperature: 0.7,
                 max_tokens: 8192,
-                    capabilities: None,
+                capabilities: None,
             }
         };
 
@@ -2457,16 +2488,17 @@ Instructions the agent follows when this skill is loaded.
         print_success("Configuration summary:");
         println!("  Provider: {}", config.providers[0].name);
         println!("  API Base: {}", config.providers[0].api_base);
-        println!(
-            "  Model:    {}",
-            config.providers[0].models[0].model
-        );
+        println!("  Model:    {}", config.providers[0].models[0].model);
         println!(
             "  API Key:  {}",
             if resolved_key.is_empty() {
                 "(empty)".to_string()
             } else {
-                format!("{}...{}", &resolved_key[..4.min(resolved_key.len())], &resolved_key[resolved_key.len().saturating_sub(4)..])
+                format!(
+                    "{}...{}",
+                    &resolved_key[..4.min(resolved_key.len())],
+                    &resolved_key[resolved_key.len().saturating_sub(4)..]
+                )
             }
         );
 
@@ -2505,14 +2537,14 @@ Instructions the agent follows when this skill is loaded.
                 display_name: Some(display.to_string()),
                 temperature: 0.7,
                 max_tokens: 8192,
-                    capabilities: None,
+                capabilities: None,
             })
             .unwrap_or(core_agentic::ModelConfig {
                 model: "gpt-4o".to_string(),
                 display_name: Some("GPT-4o".to_string()),
                 temperature: 0.7,
                 max_tokens: 8192,
-                    capabilities: None,
+                capabilities: None,
             });
 
         print_info(&format!(
@@ -2712,33 +2744,28 @@ Instructions the agent follows when this skill is loaded.
                 }
             }
 
-            std::fs::remove_file(&config_path).map_err(|e| {
-                CommandError::Config(format!("Failed to remove config: {}", e))
-            })?;
+            std::fs::remove_file(&config_path)
+                .map_err(|e| CommandError::Config(format!("Failed to remove config: {}", e)))?;
         }
 
         let default_config = Config::fallback();
 
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                CommandError::Config(format!("Failed to create directory: {}", e))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CommandError::Config(format!("Failed to create directory: {}", e)))?;
         }
 
         let content = serde_json::to_string_pretty(&default_config)
             .map_err(|e| CommandError::Config(e.to_string()))?;
 
-        std::fs::write(&config_path, content).map_err(|e| {
-            CommandError::Config(format!("Failed to write config: {}", e))
-        })?;
+        std::fs::write(&config_path, content)
+            .map_err(|e| CommandError::Config(format!("Failed to write config: {}", e)))?;
 
         print_success(&format!(
             "Default config created at: {}",
             config_path.display()
         ));
-        print_info(
-            "Remember to set your API key in the config file or via environment variables.",
-        );
+        print_info("Remember to set your API key in the config file or via environment variables.");
         Ok(())
     }
 
@@ -2766,16 +2793,14 @@ Instructions the agent follows when this skill is loaded.
             .unwrap_or(std::path::Path::new("."))
             .join("backups");
 
-        std::fs::create_dir_all(&backup_dir).map_err(|e| {
-            CommandError::Config(format!("Failed to create backup dir: {}", e))
-        })?;
+        std::fs::create_dir_all(&backup_dir)
+            .map_err(|e| CommandError::Config(format!("Failed to create backup dir: {}", e)))?;
 
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
         let backup_file = backup_dir.join(format!("config_{}.json", timestamp));
 
-        std::fs::copy(&config_path, &backup_file).map_err(|e| {
-            CommandError::Config(format!("Failed to create backup: {}", e))
-        })?;
+        std::fs::copy(&config_path, &backup_file)
+            .map_err(|e| CommandError::Config(format!("Failed to create backup: {}", e)))?;
 
         print_success(&format!("Backup created at: {}", backup_file.display()));
         Ok(())
@@ -2807,9 +2832,8 @@ Instructions the agent follows when this skill is loaded.
             ));
         }
 
-        std::fs::copy(&source, &config_path).map_err(|e| {
-            CommandError::Config(format!("Failed to restore config: {}", e))
-        })?;
+        std::fs::copy(&source, &config_path)
+            .map_err(|e| CommandError::Config(format!("Failed to restore config: {}", e)))?;
 
         print_success(&format!("Config restored from: {}", file));
         Ok(())
@@ -2850,8 +2874,8 @@ Instructions the agent follows when this skill is loaded.
             }
         }
 
-        let exported = serde_json::to_string_pretty(&json)
-            .map_err(|e| CommandError::Config(e.to_string()))?;
+        let exported =
+            serde_json::to_string_pretty(&json).map_err(|e| CommandError::Config(e.to_string()))?;
 
         println!("{}", exported);
         print_info("API keys have been masked for safe sharing.");
@@ -2870,9 +2894,8 @@ Instructions the agent follows when this skill is loaded.
         let content = std::fs::read_to_string(&source)
             .map_err(|e| CommandError::Config(format!("Failed to read import file: {}", e)))?;
 
-        let _: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
-            CommandError::Config(format!("Invalid JSON in import file: {}", e))
-        })?;
+        let _: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| CommandError::Config(format!("Invalid JSON in import file: {}", e)))?;
 
         let config_path = Config::config_path();
 
@@ -2892,14 +2915,12 @@ Instructions the agent follows when this skill is loaded.
         }
 
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                CommandError::Config(format!("Failed to create directory: {}", e))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CommandError::Config(format!("Failed to create directory: {}", e)))?;
         }
 
-        std::fs::write(&config_path, &content).map_err(|e| {
-            CommandError::Config(format!("Failed to write config: {}", e))
-        })?;
+        std::fs::write(&config_path, &content)
+            .map_err(|e| CommandError::Config(format!("Failed to write config: {}", e)))?;
 
         print_success(&format!("Config imported from: {}", file));
         print_info("Run 'agentic config validate' to verify the imported config.");
@@ -2915,7 +2936,6 @@ Instructions the agent follows when this skill is loaded.
 /// Render a two-line transient area:
 ///   Line 1: spinner progress
 
-
 fn render_event(event: &core_agentic::Event) {
     use crate::widgets::{components, diff as diff_widget, inline, tool_call};
 
@@ -2930,7 +2950,10 @@ fn render_event(event: &core_agentic::Event) {
     // colored diff inline instead of the raw JSON blob.
     const MAX_TOOL_OUTPUT_LINES: usize = 12;
     match event {
-        core_agentic::Event::ToolCall { tool_name, arguments } => {
+        core_agentic::Event::ToolCall {
+            tool_name,
+            arguments,
+        } => {
             inline::print_line(&tool_call::render_call_compact(tool_name, arguments));
         }
         core_agentic::Event::ToolOutput { tool_name, output } => {
@@ -2974,23 +2997,21 @@ fn render_event(event: &core_agentic::Event) {
                 if diff_lines.len() > max_diff_lines {
                     inline::print_lines(&diff_lines[..max_diff_lines]);
                     let remaining = diff_lines.len() - max_diff_lines;
-                    inline::print_line(&ratatui::text::Line::from(
-                        ratatui::text::Span::styled(
-                            format!("    … {} more diff line(s) hidden", remaining),
-                            ratatui::style::Style::default()
-                                .add_modifier(ratatui::style::Modifier::DIM),
-                        ),
-                    ));
+                    inline::print_line(&ratatui::text::Line::from(ratatui::text::Span::styled(
+                        format!("    … {} more diff line(s) hidden", remaining),
+                        ratatui::style::Style::default()
+                            .add_modifier(ratatui::style::Modifier::DIM),
+                    )));
                 } else {
                     inline::print_lines(&diff_lines);
                 }
             }
             let _ = tool_name;
         }
-        core_agentic::Event::Thought { content } => {
+        core_agentic::Event::Thought { content }
             // Display the LLM's thinking/reasoning before tool execution
             // with DIM styling so it's visually distinct from the final response.
-            if !content.is_empty() {
+            if !content.is_empty() => {
                 inline::print_line(&components::thinking_header(true));
                 // Print thinking content with DIM style
                 for line in content.lines() {
@@ -3003,7 +3024,6 @@ fn render_event(event: &core_agentic::Event) {
                 }
                 inline::print_line(&components::thinking_header(false));
             }
-        }
         core_agentic::Event::Error { message } => {
             inline::print_line(&components::error_badge(message));
         }
@@ -3088,7 +3108,7 @@ fn extract_match_snippets(
         let end = ceil_char_boundary(content, (match_end + context).min(content.len()));
         let mut snippet = String::new();
         if start > 0 {
-            snippet.push_str("…");
+            snippet.push('…');
         }
         snippet.push_str(content[start..end].replace('\n', " ").trim());
         if end < content.len() {
@@ -3212,9 +3232,8 @@ mod search_snippet_tests {
 mod e2e_tests {
     use super::*;
     use core_agentic::providers::{
-        ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, LLMProvider,
-        ProviderError, ProviderResult, StreamResult, ToolCallDelta, ToolCallFunction,
-        ToolCallResponse,
+        ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, LLMProvider, ProviderError,
+        ProviderResult, StreamResult, ToolCallDelta, ToolCallFunction, ToolCallResponse,
     };
     use futures::stream;
     use std::sync::Mutex;
@@ -3286,21 +3305,14 @@ mod e2e_tests {
         fn chat(&self, _req: ChatRequest) -> ProviderResult<ChatResponse> {
             let mut q = self.responses.lock().unwrap();
             if q.is_empty() {
-                return Err(ProviderError::new(
-                    "ScriptedProvider: no more responses",
-                ));
+                return Err(ProviderError::new("ScriptedProvider: no more responses"));
             }
             Ok(q.remove(0))
         }
-        fn chat_stream(
-            &self,
-            _req: ChatRequest,
-        ) -> StreamResult<ChatChunk, ProviderError> {
+        fn chat_stream(&self, _req: ChatRequest) -> StreamResult<ChatChunk, ProviderError> {
             let mut q = self.responses.lock().unwrap();
             if q.is_empty() {
-                return Err(ProviderError::new(
-                    "ScriptedProvider: no more responses",
-                ));
+                return Err(ProviderError::new("ScriptedProvider: no more responses"));
             }
             let response = q.remove(0);
             let chunks = Self::response_to_chunks(response);
@@ -3335,9 +3347,7 @@ mod e2e_tests {
                 model: "test".into(),
                 message: ChatMessageResponse {
                     role: "assistant".into(),
-                    content: Some(
-                        "Here are the files I found.".into(),
-                    ),
+                    content: Some("Here are the files I found.".into()),
                     tool_calls: vec![],
                 },
                 finish_reason: Some("stop".into()),
@@ -3424,5 +3434,43 @@ mod e2e_tests {
             all.contains("ToolOutput"),
             "Expected tool-output events, got: {all}"
         );
+    }
+
+    /// Regression test for the frozen-"Thinking…" deadlock: `Commands::run`
+    /// (the inline renderer-thread path) used to leave `chunk_tx` alive in
+    /// its own stack frame while blocking on `renderer.join()`. The renderer
+    /// waits for `Disconnected` on the chunk channel, which only happens when
+    /// *every* `Sender` is dropped — so it never exited and the spinner
+    /// stayed on screen forever.
+    ///
+    /// Multi-thread runtime + timeout: without the fix this test fails with
+    /// a timeout instead of hanging the whole test binary.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn smoke_run_plain_text_response_does_not_deadlock() {
+        let provider = Arc::new(ScriptedProvider::new(vec![ChatResponse {
+            id: "resp-1".into(),
+            model: "test".into(),
+            message: ChatMessageResponse {
+                role: "assistant".into(),
+                content: Some("Hello! I am agentic.".into()),
+                tool_calls: vec![],
+            },
+            finish_reason: Some("stop".into()),
+            usage: None,
+        }]));
+
+        let config = Config::fallback();
+        let mut commands = Commands::new(config)
+            .with_mock_provider(provider)
+            .with_permission_mode(core_agentic::PermissionMode::Yolo);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            commands.run("who are you?"),
+        )
+        .await
+        .expect("Commands::run deadlocked: renderer.join() never returned");
+
+        assert!(result.is_ok(), "run should succeed: {:?}", result.err());
     }
 }

@@ -19,6 +19,8 @@ pub enum DropdownType {
     File,
     /// Model names (gpt-4o, claude-sonnet-4, etc.)
     Model,
+    /// Skill names (loaded via `/skill`)
+    Skill,
 }
 
 /// Dropdown state
@@ -41,6 +43,7 @@ const SLASH_COMMANDS: &[(&str, &[&str], &str)] = &[
     ("provider", &[], "Switch provider"),
     ("search", &["s"], "Search conversation history"),
     ("image", &["img"], "Attach image"),
+    ("skill", &["sk"], "Select and load a skill"),
     ("mcp", &[], "Show MCP server status"),
     ("plan", &["p"], "Generate a structured plan"),
     ("config", &["cfg"], "Show configuration"),
@@ -56,6 +59,7 @@ impl Dropdown {
             DropdownType::Command => Self::filter_commands(&query),
             DropdownType::File => Self::filter_files(&query),
             DropdownType::Model => Self::filter_models(&query),
+            DropdownType::Skill => vec![], // use new_skill() instead
         };
 
         Self {
@@ -65,6 +69,55 @@ impl Dropdown {
             visible_count: 8,
             query,
         }
+    }
+
+    /// Create a skill selection dropdown with discovered skills.
+    /// Descriptions are truncated to 60 chars so each item fits on one terminal line.
+    pub fn new_skill(query: String, skills: Vec<(String, String)>) -> Self {
+        let trunc_desc = |desc: &str| -> String {
+            // Truncate at char boundary to avoid panics on multi-byte UTF-8
+            let max = 60;
+            if desc.len() <= max {
+                return desc.to_string();
+            }
+            let mut end = max;
+            while end > 0 && !desc.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}…", &desc[..end])
+        };
+        let query_lower = query.to_lowercase();
+        let items: Vec<String> = if query.is_empty() {
+            skills
+                .iter()
+                .map(|(name, desc)| format!("{} — {}", name, trunc_desc(desc)))
+                .collect()
+        } else {
+            skills
+                .iter()
+                .filter(|(name, desc)| {
+                    name.to_lowercase().contains(&query_lower)
+                        || desc.to_lowercase().contains(&query_lower)
+                })
+                .map(|(name, desc)| format!("{} — {}", name, trunc_desc(desc)))
+                .collect()
+        };
+
+        Self {
+            dropdown_type: DropdownType::Skill,
+            items,
+            selected: 0,
+            visible_count: 8,
+            query,
+        }
+    }
+
+    /// Extract skill name from display string ("my-skill — Does X" → "my-skill")
+    pub fn get_skill_name(&self, display: &str) -> Option<String> {
+        if self.dropdown_type != DropdownType::Skill {
+            return None;
+        }
+        display.split(" — ").next().map(|s| s.to_string())
     }
 
     /// Create a model dropdown with pre-fetched model list
@@ -99,8 +152,7 @@ impl Dropdown {
         SLASH_COMMANDS
             .iter()
             .filter(|(cmd, aliases, _)| {
-                cmd.starts_with(&query_lower)
-                    || aliases.iter().any(|a| a.starts_with(&query_lower))
+                cmd.starts_with(&query_lower) || aliases.iter().any(|a| a.starts_with(&query_lower))
             })
             .map(|(cmd, _, _)| cmd.to_string())
             .collect()
@@ -109,7 +161,7 @@ impl Dropdown {
     /// Filter model names by query
     fn filter_models(query: &str) -> Vec<String> {
         let query_lower = query.to_lowercase();
-        
+
         // Load config to get all available models
         let config = match core_agentic::Config::load() {
             Some(c) => c,
@@ -125,7 +177,7 @@ impl Dropdown {
                 let display_name = model.display_name.as_deref().unwrap_or(&model.model);
                 let is_active = active_provider.as_deref() == Some(&provider.name)
                     && active_model.as_deref() == Some(&model.model);
-                
+
                 let caps = model.effective_capabilities();
                 let vision_icon = if caps.vision { " 👁" } else { "" };
                 let active_marker = if is_active { " ●" } else { "" };
@@ -227,7 +279,9 @@ impl Dropdown {
             // If a path prefix was given, only include files under that prefix
             if !path_prefix.is_empty() {
                 // Normalize: ensure prefix comparison works
-                if !clean.starts_with(&path_prefix) && !clean.starts_with(&path_prefix.trim_end_matches('/')) {
+                if !clean.starts_with(&path_prefix)
+                    && !clean.starts_with(path_prefix.trim_end_matches('/'))
+                {
                     continue;
                 }
             }
@@ -335,6 +389,7 @@ impl Dropdown {
             DropdownType::Command => "⌘",
             DropdownType::File => "📁",
             DropdownType::Model => "🤖",
+            DropdownType::Skill => "⚡",
         }
     }
 
@@ -344,6 +399,7 @@ impl Dropdown {
             DropdownType::Command => "Commands",
             DropdownType::File => "Files",
             DropdownType::Model => "Models",
+            DropdownType::Skill => "Skills",
         }
     }
 
@@ -407,7 +463,11 @@ mod tests {
                 .items
                 .iter()
                 .any(|i| i.matches('/').count() >= 2 && !i.ends_with('/'));
-            assert!(has_nested, "expected nested file paths in results, got: {:?}", dropdown.items);
+            assert!(
+                has_nested,
+                "expected nested file paths in results, got: {:?}",
+                dropdown.items
+            );
         }
     }
 

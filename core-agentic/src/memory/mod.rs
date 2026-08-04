@@ -30,6 +30,7 @@ pub use types::{
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -69,7 +70,11 @@ mod tests {
     fn test_message_tool() {
         let msg = Message::tool("read_file", "call-123", "file contents");
         assert!(matches!(msg.role, MessageRole::Tool { .. }));
-        if let MessageRole::Tool { tool_name, tool_call_id } = &msg.role {
+        if let MessageRole::Tool {
+            tool_name,
+            tool_call_id,
+        } = &msg.role
+        {
             assert_eq!(tool_name, "read_file");
             assert_eq!(tool_call_id, "call-123");
         }
@@ -291,13 +296,25 @@ mod tests {
         }
 
         let tokens_before = m.token_count();
-        assert!(tokens_before > 1000, "should have substantial tokens: {}", tokens_before);
+        assert!(
+            tokens_before > 1000,
+            "should have substantial tokens: {}",
+            tokens_before
+        );
 
         let result = m.compact();
         let tokens_after = m.token_count();
 
-        assert!(result.summarized_count > 0, "should have compacted some messages");
-        assert!(tokens_after < tokens_before, "tokens should decrease: {} -> {}", tokens_before, tokens_after);
+        assert!(
+            result.summarized_count > 0,
+            "should have compacted some messages"
+        );
+        assert!(
+            tokens_after < tokens_before,
+            "tokens should decrease: {} -> {}",
+            tokens_before,
+            tokens_after
+        );
     }
 
     #[test]
@@ -315,7 +332,12 @@ mod tests {
         let messages = m.get_messages();
         assert!(messages.len() >= 3);
         // Last 3 messages should be present
-        let last_content: Vec<&str> = messages.iter().rev().take(3).map(|m| m.content.as_str()).collect();
+        let last_content: Vec<&str> = messages
+            .iter()
+            .rev()
+            .take(3)
+            .map(|m| m.content.as_str())
+            .collect();
         assert!(last_content[0].contains("msg 19"));
         assert!(last_content[1].contains("msg 18"));
         assert!(last_content[2].contains("msg 17"));
@@ -588,7 +610,9 @@ mod tests {
         let loaded = Memory::load_from_dir(&session_id, Some(&dir)).unwrap();
         assert_eq!(loaded.get_messages().len(), 2);
         assert_eq!(loaded.session().id, session_id);
-        assert!(loaded.get_messages()[0].content.contains("hello from persist test"));
+        assert!(loaded.get_messages()[0]
+            .content
+            .contains("hello from persist test"));
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -694,7 +718,9 @@ mod tests {
 
     #[test]
     fn test_message_serialization_roundtrip() {
-        let msg = Message::user("hello").with_model("gpt-4o").with_duration(500);
+        let msg = Message::user("hello")
+            .with_model("gpt-4o")
+            .with_duration(500);
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.content, "hello");
@@ -734,7 +760,7 @@ mod tests {
         m.add_message(Message::user("original prompt"));
         for i in 0..30 {
             m.add_message(Message::assistant(format!("thinking {}", i)));
-            m.add_message(Message::tool("read_file", &format!("call-{}", i), "result"));
+            m.add_message(Message::tool("read_file", format!("call-{}", i), "result"));
         }
 
         let ctx = m.get_context_with_user_anchor(20, None);
@@ -812,7 +838,7 @@ mod tests {
         m.add_message(Message::user("second"));
         for i in 0..50 {
             m.add_message(Message::assistant(format!("t{}", i)));
-            m.add_message(Message::tool("read_file", &format!("c-{}", i), "r"));
+            m.add_message(Message::tool("read_file", format!("c-{}", i), "r"));
         }
 
         let ctx = m.get_context_for_request(100_000);

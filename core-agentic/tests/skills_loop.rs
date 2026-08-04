@@ -2,15 +2,14 @@
 //!
 //! Tests end-to-end: directory setup → discovery → tool execution.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::fs;
 
-use core_agentic::{
-    Skill, SkillIndex, SkillTool, SkillMetadata,
-    DiscoveryConfig, discover_skills, Tool,
-};
 use core_agentic::skills::discovery::scan_skill_dir;
+use core_agentic::{
+    discover_skills, DiscoveryConfig, Skill, SkillIndex, SkillMetadata, SkillTool, Tool,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -33,7 +32,13 @@ fn write_skill(dir: &Path, name: &str, description: &str, body: &str) {
     fs::write(skill_dir.join("SKILL.md"), content).unwrap();
 }
 
-fn write_skill_with_refs(dir: &Path, name: &str, description: &str, body: &str, refs: &[(&str, &str)]) {
+fn write_skill_with_refs(
+    dir: &Path,
+    name: &str,
+    description: &str,
+    body: &str,
+    refs: &[(&str, &str)],
+) {
     let skill_dir = dir.join(name);
     fs::create_dir_all(&skill_dir).unwrap();
     let content = format!(
@@ -117,8 +122,12 @@ fn index_remove_and_blocked() {
 fn skill_tool_e2e() {
     // Set up a real skill directory
     let dir = tmp_dir("tool_e2e");
-    write_skill(&dir, "e2e-skill", "End-to-end test skill",
-        "# E2E Skill\n\n## Usage\nRun the e2e tests with `cargo test`.");
+    write_skill(
+        &dir,
+        "e2e-skill",
+        "End-to-end test skill",
+        "# E2E Skill\n\n## Usage\nRun the e2e tests with `cargo test`.",
+    );
 
     // Build index from just this directory
     let mut index = SkillIndex::new();
@@ -135,10 +144,16 @@ fn skill_tool_e2e() {
 #[test]
 fn skill_tool_with_referenced_files() {
     let dir = tmp_dir("tool_refs");
-    write_skill_with_refs(&dir, "config-skill", "Skill with config files",
+    write_skill_with_refs(
+        &dir,
+        "config-skill",
+        "Skill with config files",
         "# Config Skill\nLoad configs.",
-        &[("settings.json", r#"{"debug": true}"#),
-          ("rules.yaml", "allow: all")]);
+        &[
+            ("settings.json", r#"{"debug": true}"#),
+            ("rules.yaml", "allow: all"),
+        ],
+    );
 
     let mut index = SkillIndex::new();
     let config = DiscoveryConfig::default();
@@ -156,12 +171,22 @@ fn skill_tool_with_referenced_files() {
         "name": "config-skill",
         "activate": false
     }));
-    assert!(result.is_ok(), "skill tool should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "skill tool should succeed: {:?}",
+        result.err()
+    );
     let val = result.unwrap();
     assert_eq!(val["skill"], "config-skill");
     let content = val["content"].as_str().unwrap();
-    assert!(content.contains("settings.json"), "should include referenced file");
-    assert!(content.contains(r#""debug": true"#), "should include settings content");
+    assert!(
+        content.contains("settings.json"),
+        "should include referenced file"
+    );
+    assert!(
+        content.contains(r#""debug": true"#),
+        "should include settings content"
+    );
 }
 
 #[test]
@@ -240,7 +265,11 @@ fn skills_system_prompt_section() {
     index.insert(s1);
     index.insert(s2);
 
-    let pairs: Vec<(&str, &str)> = index.all().iter().map(|s| (s.name(), s.description())).collect();
+    let pairs: Vec<(&str, &str)> = index
+        .all()
+        .iter()
+        .map(|s| (s.name(), s.description()))
+        .collect();
     let section = core_agentic::skills_system_section(&pairs).unwrap();
 
     assert!(section.contains("📦 alpha — First skill"));
@@ -255,8 +284,12 @@ fn integration_discovery_from_temp_dir() {
     let skills_dir = root.join(".agentic").join("skills");
     fs::create_dir_all(&skills_dir).unwrap();
 
-    write_skill(&skills_dir, "project-skill", "A project skill",
-        "# Project Skill\nDo project-specific things.");
+    write_skill(
+        &skills_dir,
+        "project-skill",
+        "A project skill",
+        "# Project Skill\nDo project-specific things.",
+    );
 
     // Set cwd to root and discover
     let prev = std::env::current_dir().ok();
@@ -270,8 +303,10 @@ fn integration_discovery_from_temp_dir() {
     }
 
     // Should find our project skill (and possibly global skills)
-    assert!(index.get("project-skill").is_some(),
-        "discover_skills should find project-skill in .agentic/skills/");
+    assert!(
+        index.get("project-skill").is_some(),
+        "discover_skills should find project-skill in .agentic/skills/"
+    );
 }
 
 #[test]

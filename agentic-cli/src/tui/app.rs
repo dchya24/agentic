@@ -8,6 +8,12 @@
 //! - Tab/Enter to accept, Esc to dismiss
 //! - History navigation with ↑/↓
 
+/// If the agent runs longer than this without sending any message back
+/// through the channel, `process_messages` auto-resets the loading state
+/// and surfaces a warning. Prevents permanent "stuck on thinking" when
+/// the spawned task panics or the channel silently drops.
+const LOADING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
@@ -17,14 +23,15 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
+use super::dropdown::{Dropdown, DropdownType};
+use super::ui;
 use crate::commands::Commands;
 use crate::session::{self, Session, SessionSummary};
 use crate::widgets::progress::ProgressState;
-use super::dropdown::{Dropdown, DropdownType};
-use super::ui;
 
 /// Messages from async tasks to the UI
 pub enum AppMessage {
@@ -82,8 +89,8 @@ pub struct App {
     pub scroll_offset: usize,
     /// Should quit
     pub should_quit: bool,
-    /// Commands handler
-    commands: Option<Commands>,
+    /// Commands handler (shared with spawned tasks via Arc<Mutex>)
+    commands: Option<Arc<Mutex<Commands>>>,
     /// Message channel receiver
     rx: Option<mpsc::UnboundedReceiver<AppMessage>>,
     /// Message channel sender (for async tasks)
@@ -105,6 +112,9 @@ pub struct App {
     pub stats: SessionStats,
     /// Image attachment display name (for status bar indicator)
     pub image_attachment: Option<String>,
+    /// When the current loading state started (None when not loading).
+    /// Used by the watchdog to auto-reset if the agent hangs silently.
+    loading_started: Option<Instant>,
 }
 
 /// Session statistics for status display
@@ -164,13 +174,18 @@ pub enum MessageRole {
 }
 
 impl App {
-    pub fn new(commands: Commands) -> Self {
+    pub fn new(commands: Arc<Mutex<Commands>>) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let cwd = std::env::current_dir()
             .unwrap_or_default()
             .display()
             .to_string();
-        let (provider, model, _) = commands.model_info();
+        let (provider, model, _) = {
+            let cmds = commands
+                .try_lock()
+                .expect("Commands lock not available at init");
+            cmds.model_info()
+        };
         let session = session::create(&cwd, &provider, &model);
         Self {
             input: String::new(),
@@ -197,13 +212,20 @@ impl App {
             session_view: None,
             stats: SessionStats::default(),
             image_attachment: None,
+            loading_started: None,
         }
     }
 
     /// Get model info from commands
     pub fn model_info(&self) -> (String, String, String) {
         match &self.commands {
-            Some(cmds) => cmds.model_info(),
+            Some(cmds_arc) => {
+                if let Ok(cmds) = cmds_arc.try_lock() {
+                    cmds.model_info()
+                } else {
+                    ("none".into(), "none".into(), "-".into())
+                }
+            }
             None => ("none".into(), "none".into(), "-".into()),
         }
     }
@@ -266,8 +288,10 @@ impl App {
         self.image_attachment = None;
 
         // Restart orchestrator if commands are available
-        if let Some(ref mut cmds) = self.commands {
-            cmds.restart_session();
+        if let Some(cmds_arc) = &self.commands {
+            if let Ok(mut cmds) = cmds_arc.try_lock() {
+                cmds.restart_session();
+            }
         }
     }
 
@@ -314,8 +338,10 @@ impl App {
                 });
 
                 // Restart orchestrator
-                if let Some(ref mut cmds) = self.commands {
-                    cmds.restart_session();
+                if let Some(cmds_arc) = &self.commands {
+                    if let Ok(mut cmds) = cmds_arc.try_lock() {
+                        cmds.restart_session();
+                    }
                 }
             }
             Err(e) => {
@@ -329,24 +355,29 @@ impl App {
     }
 
     /// Switch model by name (partial match)
-    fn switch_model(&mut self, name: &str) {
-        match self.commands.as_mut().map(|c| c.switch_model(name)) {
-            Some(Ok((provider, model))) => {
-                // Update session with new model
-                self.session.provider = provider.clone();
-                self.session.model = model.clone();
-                self.messages.push(Message {
-                    role: MessageRole::System,
-                    content: format!("Switched to {} / {}", provider, model),
-                    timestamp: chrono::Local::now(),
-                });
-            }
-            Some(Err(e)) => {
-                self.messages.push(Message {
-                    role: MessageRole::Error,
-                    content: format!("Failed to switch model: {}", e),
-                    timestamp: chrono::Local::now(),
-                });
+    async fn switch_model(&mut self, name: &str) {
+        match &self.commands {
+            Some(cmds_arc) => {
+                let mut cmds = cmds_arc.lock().await;
+                match cmds.switch_model(name) {
+                    Ok((provider, model)) => {
+                        // Update session with new model
+                        self.session.provider = provider.clone();
+                        self.session.model = model.clone();
+                        self.messages.push(Message {
+                            role: MessageRole::System,
+                            content: format!("Switched to {} / {}", provider, model),
+                            timestamp: chrono::Local::now(),
+                        });
+                    }
+                    Err(e) => {
+                        self.messages.push(Message {
+                            role: MessageRole::Error,
+                            content: format!("Failed to switch model: {}", e),
+                            timestamp: chrono::Local::now(),
+                        });
+                    }
+                }
             }
             None => {
                 self.messages.push(Message {
@@ -401,18 +432,24 @@ impl App {
         }
 
         // Format top results (max 5) with surrounding context
-        let mut result_text = format!("**Search Results for \"{}\"** — {} match(es)\n\n", query, hits.len());
+        let mut result_text = format!(
+            "**Search Results for \"{}\"** — {} match(es)\n\n",
+            query,
+            hits.len()
+        );
         for (idx, (turn, role, content)) in hits.iter().take(5).enumerate() {
             // Extract a snippet around the match
             let content_lower = content.to_lowercase();
             let match_pos = content_lower.find(&query_lower).unwrap_or(0);
-            let start = content.char_indices()
+            let start = content
+                .char_indices()
                 .take_while(|(i, _)| *i < match_pos.saturating_sub(60))
                 .last()
                 .map(|(i, _)| i)
                 .unwrap_or(0);
             let end_pos = match_pos + query.len() + 80;
-            let end = content.char_indices()
+            let end = content
+                .char_indices()
                 .take_while(|(i, _)| *i < end_pos)
                 .last()
                 .map(|(i, c)| i + c.len_utf8())
@@ -423,7 +460,12 @@ impl App {
 
             result_text.push_str(&format!(
                 "{}. **Turn {}** ({})\n   `{}{}{}`\n\n",
-                idx + 1, turn + 1, role, prefix, snippet.trim(), suffix
+                idx + 1,
+                turn + 1,
+                role,
+                prefix,
+                snippet.trim(),
+                suffix
             ));
         }
 
@@ -441,11 +483,12 @@ impl App {
     // ── G-07: /image <path> ────────────────────────────────────
 
     /// Attach an image for the next message (vision models)
-    fn handle_image(&mut self, path: &str) {
+    async fn handle_image(&mut self, path: &str) {
         let path = path.trim();
         if path.is_empty() {
             // Clear any pending attachment
-            if let Some(ref mut cmds) = self.commands {
+            if let Some(cmds_arc) = &self.commands {
+                let mut cmds = cmds_arc.lock().await;
                 let count = cmds.pending_attachment_count();
                 if count > 0 {
                     cmds.drain_pending_attachments();
@@ -458,7 +501,8 @@ impl App {
                 } else {
                     self.messages.push(Message {
                         role: MessageRole::System,
-                        content: "Usage: `/image <path>` — Attach an image (for vision models).".into(),
+                        content: "Usage: `/image <path>` — Attach an image (for vision models)."
+                            .into(),
                         timestamp: chrono::Local::now(),
                     });
                 }
@@ -467,7 +511,8 @@ impl App {
         }
 
         // Use commands to validate and queue the image
-        if let Some(ref mut cmds) = self.commands {
+        if let Some(cmds_arc) = &self.commands {
+            let mut cmds = cmds_arc.lock().await;
             // Check vision capability first
             let caps = cmds.active_model_capabilities();
             if !caps.vision {
@@ -481,7 +526,10 @@ impl App {
 
             // Load the image
             let limits = core_agentic::AttachmentLimits::default();
-            let result = if path.starts_with("http://") || path.starts_with("https://") || path.starts_with("data:") {
+            let result = if path.starts_with("http://")
+                || path.starts_with("https://")
+                || path.starts_with("data:")
+            {
                 core_agentic::attachments::load_image_from_url(path, limits)
             } else {
                 core_agentic::attachments::load_image_from_path(path, limits)
@@ -530,9 +578,10 @@ impl App {
     // ── G-08: /provider <name> ─────────────────────────────────
 
     /// List available providers
-    fn handle_provider_list(&mut self) {
+    async fn handle_provider_list(&mut self) {
         let providers_text = match &self.commands {
-            Some(cmds) => {
+            Some(cmds_arc) => {
+                let cmds = cmds_arc.lock().await;
                 let config = &cmds.config_ref();
                 let mut lines = String::from("**Providers:**\n\n");
                 let active = config.active_provider().map(|p| p.name.clone());
@@ -558,40 +607,45 @@ impl App {
     }
 
     /// Switch to a different provider
-    fn handle_provider_switch(&mut self, name: &str) {
+    async fn handle_provider_switch(&mut self, name: &str) {
         // Find the default model of the target provider and switch to it
         let result = match &self.commands {
-            Some(cmds) => {
-                let config = cmds.config_ref();
-                let provider = config
-                    .providers
-                    .iter()
-                    .find(|p| p.name.to_lowercase() == name.to_lowercase());
-                match provider {
-                    Some(p) => {
-                        // Get the first model of the provider as default
-                        let default_model = p
-                            .models
-                            .first()
-                            .map(|m| m.display_name.as_deref().unwrap_or(&m.model))
-                            .unwrap_or(name)
-                            .to_string();
-                        Some(default_model)
+            Some(cmds_arc) => match cmds_arc.try_lock() {
+                Ok(cmds) => {
+                    let config = cmds.config_ref();
+                    let provider = config
+                        .providers
+                        .iter()
+                        .find(|p| p.name.to_lowercase() == name.to_lowercase());
+                    match provider {
+                        Some(p) => {
+                            let default_model = p
+                                .models
+                                .first()
+                                .map(|m| m.display_name.as_deref().unwrap_or(&m.model))
+                                .unwrap_or(name)
+                                .to_string();
+                            Some(default_model)
+                        }
+                        None => None,
                     }
-                    None => None,
                 }
-            }
+                Err(_) => None,
+            },
             None => None,
         };
 
         match result {
             Some(model_name) => {
-                self.switch_model(&model_name);
+                self.switch_model(&model_name).await;
             }
             None => {
                 self.messages.push(Message {
                     role: MessageRole::Error,
-                    content: format!("Provider '{}' not found. Use `/provider` to see available providers.", name),
+                    content: format!(
+                        "Provider '{}' not found. Use `/provider` to see available providers.",
+                        name
+                    ),
                     timestamp: chrono::Local::now(),
                 });
             }
@@ -601,9 +655,10 @@ impl App {
     // ── G-09: /mcp ─────────────────────────────────────────────
 
     /// Show MCP server status
-    fn handle_mcp_status(&mut self) {
+    async fn handle_mcp_status(&mut self) {
         let status_text = match &self.commands {
-            Some(cmds) => {
+            Some(cmds_arc) => {
+                let cmds = cmds_arc.lock().await;
                 let config = cmds.config_ref();
                 if config.mcp_servers.is_empty() {
                     "No MCP servers configured.\nAdd servers in your config file.".to_string()
@@ -612,7 +667,11 @@ impl App {
                     for (name, srv) in &config.mcp_servers {
                         let has_command = srv.command.is_some();
                         let has_url = srv.url.is_some();
-                        let status = if has_command || has_url { "✓ configured" } else { "✗ incomplete" };
+                        let status = if has_command || has_url {
+                            "✓ configured"
+                        } else {
+                            "✗ incomplete"
+                        };
                         lines.push_str(&format!("- **{}** — {}", name, status));
                         if let Some(ref cmd) = srv.command {
                             lines.push_str(&format!("\n  Command: `{}`", cmd));
@@ -642,10 +701,10 @@ impl App {
     // ── Skills ─────────────────────────────────────────────────
 
     /// List all indexed skills
-    fn handle_skill_list(&mut self) {
-        use crate::cli::SkillAction;
+    async fn handle_skill_list(&mut self) {
         match &self.commands {
-            Some(cmds) => {
+            Some(cmds_arc) => {
+                let cmds = cmds_arc.lock().await;
                 let discovery_config: core_agentic::DiscoveryConfig =
                     core_agentic::DiscoveryConfig::from(&cmds.get_config().skills);
                 let index = core_agentic::discover_skills(&discovery_config);
@@ -653,7 +712,8 @@ impl App {
                 if index.is_empty() {
                     self.messages.push(Message {
                         role: MessageRole::System,
-                        content: "No skills found.\n\nCreate one: `agentic skill create <name>`".into(),
+                        content: "No skills found.\n\nCreate one: `agentic skill create <name>`"
+                            .into(),
                         timestamp: chrono::Local::now(),
                     });
                     return;
@@ -664,7 +724,11 @@ impl App {
 
                 let mut lines = format!("**Indexed Skills ({})**\n\n", skills.len());
                 for skill in &skills {
-                    lines.push_str(&format!("- **{}** — {}\n", skill.name(), skill.description()));
+                    lines.push_str(&format!(
+                        "- **{}** — {}\n",
+                        skill.name(),
+                        skill.description()
+                    ));
                     lines.push_str(&format!("  *Path: `{}`*\n", skill.dir.display()));
                 }
 
@@ -691,31 +755,29 @@ impl App {
         }
     }
 
-    /// Load and display a skill
-    fn handle_skill_load(&mut self, name: &str) {
+    /// Load, display, and activate a skill
+    async fn handle_skill_load(&mut self, name: &str) {
         match &self.commands {
-            Some(cmds) => {
-                let discovery_config: core_agentic::DiscoveryConfig =
-                    core_agentic::DiscoveryConfig::from(&cmds.get_config().skills);
-                let index = core_agentic::discover_skills(&discovery_config);
-
-                match index.get(name) {
-                    Some(skill) => {
-                        let mut lines = format!(
-                            "**📦 {}** — {}\n\n",
-                            skill.name(),
-                            skill.description()
-                        );
-                        lines.push_str(&format!("Path: `{}`\n\n", skill.dir.display()));
+            Some(cmds_arc) => {
+                let mut cmds = cmds_arc.lock().await;
+                match cmds.load_and_activate_skill(name) {
+                    Ok(body) => {
+                        let mut lines = format!("✅ **Skill '{}' activated** — instructions injected into agent context.\n\n", name);
 
                         // Preview first 10 lines
-                        let preview: Vec<&str> = skill.body.lines().take(10).collect();
+                        lines.push_str("📖 Preview:\n\n");
+                        let preview: Vec<&str> = body.lines().take(10).collect();
                         for line in &preview {
                             lines.push_str(&format!("{}\n", line));
                         }
-                        if skill.body.lines().count() > 10 {
-                            lines.push_str(&format!("... ({} more lines)\n", skill.body.lines().count() - 10));
+                        if body.lines().count() > 10 {
+                            lines.push_str(&format!(
+                                "... ({} more lines)\n",
+                                body.lines().count() - 10
+                            ));
                         }
+
+                        lines.push_str("\n💡 *Now send a message — the skill instructions will be included as context.*");
 
                         self.messages.push(Message {
                             role: MessageRole::System,
@@ -723,10 +785,10 @@ impl App {
                             timestamp: chrono::Local::now(),
                         });
                     }
-                    None => {
+                    Err(e) => {
                         self.messages.push(Message {
                             role: MessageRole::Error,
-                            content: format!("Skill '{}' not found. Use `/skills` to list available skills.", name),
+                            content: format!("Failed to activate skill '{}': {}", name, e),
                             timestamp: chrono::Local::now(),
                         });
                     }
@@ -769,11 +831,12 @@ impl App {
         // Start loading
         self.is_loading = true;
         self.progress.start();
+        self.loading_started = Some(Instant::now());
         self.current_response.clear();
 
-        // Take ownership of commands for the async task
-        let mut commands = match self.commands.take() {
-            Some(c) => c,
+        // Clone Arc<Mutex<Commands>> for the spawned task
+        let commands_arc = match &self.commands {
+            Some(c) => c.clone(),
             None => {
                 self.is_loading = false;
                 self.messages.push(Message {
@@ -803,23 +866,24 @@ impl App {
             );
 
             let event_tx = tx.clone();
-            match commands
+            let mut commands = commands_arc.lock().await;
+            let result = commands
                 .run_with_callbacks(
                     &plan_prompt,
                     |chunk| {
                         let _ = tx.send(AppMessage::StreamChunk(chunk.to_string()));
                     },
                     move |event| match event {
-                        core_agentic::Event::ToolCall { tool_name, arguments } => {
+                        core_agentic::Event::ToolCall {
+                            tool_name,
+                            arguments,
+                        } => {
                             let _ = event_tx.send(AppMessage::ToolCall {
                                 name: tool_name,
                                 arguments,
                             });
                         }
-                        core_agentic::Event::ToolOutput {
-                            tool_name,
-                            output,
-                        } => {
+                        core_agentic::Event::ToolOutput { tool_name, output } => {
                             let body = match &output {
                                 serde_json::Value::String(s) => s.clone(),
                                 other => other.to_string(),
@@ -843,16 +907,26 @@ impl App {
                         _ => {}
                     },
                 )
-                .await
-            {
-                Ok(result) => {
-                    let _ = tx.send(AppMessage::TaskComplete(result));
+                .await;
+            tracing::debug!(
+                ok = result.is_ok(),
+                "handle_plan: run_with_callbacks completed"
+            );
+            match result {
+                Ok(response) => {
+                    tracing::debug!(len = response.len(), "handle_plan: sending TaskComplete");
+                    if let Err(e) = tx.send(AppMessage::TaskComplete(response)) {
+                        tracing::warn!(error = %e, "handle_plan: failed to send TaskComplete");
+                    }
                 }
                 Err(e) => {
-                    let _ = tx.send(AppMessage::Error(e.to_string()));
+                    tracing::debug!(error = %e, "handle_plan: sending Error");
+                    if let Err(send_err) = tx.send(AppMessage::Error(e.to_string())) {
+                        tracing::warn!(error = %send_err, "handle_plan: failed to send Error");
+                    }
                 }
             }
-            let _ = commands;
+            // Lock is dropped here; commands_arc stays alive for future use.
         });
     }
 
@@ -863,12 +937,14 @@ impl App {
     pub fn context_indicators(&self) -> String {
         let mut indicators = Vec::new();
 
-        if let Some(ref cmds) = self.commands {
-            if cmds.agent_md_path().is_some() {
-                indicators.push("📄 AGENT.md");
-            }
-            if cmds.memory_md_loaded() {
-                indicators.push("🧠 memory.md");
+        if let Some(cmds_arc) = &self.commands {
+            if let Ok(cmds) = cmds_arc.try_lock() {
+                if cmds.agent_md_path().is_some() {
+                    indicators.push("📄 AGENT.md");
+                }
+                if cmds.memory_md_loaded() {
+                    indicators.push("🧠 memory.md");
+                }
             }
         }
 
@@ -907,15 +983,11 @@ impl App {
         };
 
         match key.code {
-            KeyCode::Up => {
-                if view.selected > 0 {
-                    view.selected -= 1;
-                }
+            KeyCode::Up if view.selected > 0 => {
+                view.selected -= 1;
             }
-            KeyCode::Down => {
-                if view.selected + 1 < view.summaries.len() {
-                    view.selected += 1;
-                }
+            KeyCode::Down if view.selected + 1 < view.summaries.len() => {
+                view.selected += 1;
             }
             KeyCode::Enter => {
                 if let Some(summary) = view.summaries.get(view.selected) {
@@ -1092,6 +1164,12 @@ impl App {
             if let Some(dropdown) = &self.dropdown {
                 match dropdown.dropdown_type {
                     DropdownType::Command => {
+                        // Check if user selected a skill command → open skills dropdown
+                        let cmd = text.trim_start_matches('/');
+                        if cmd == "skill" || cmd == "sk" {
+                            self.open_skill_dropdown();
+                            return;
+                        }
                         // Replace entire input with /command
                         self.input = format!("/{} ", text);
                         self.cursor_pos = self.input.len();
@@ -1101,7 +1179,7 @@ impl App {
                         if let Some(at_pos) = self.find_at_trigger() {
                             let before_at = &self.input[..at_pos];
                             let after_cursor = &self.input[self.cursor_pos..];
-                            
+
                             // Add trailing space for files, keep slash for dirs
                             let suffix = if is_dir {
                                 // Directory — keep it for further navigation
@@ -1110,10 +1188,21 @@ impl App {
                                 // File — add space after
                                 " "
                             };
-                            
-                            self.input = format!("{}@{}{}{}", before_at, text, suffix, after_cursor);
+
+                            self.input =
+                                format!("{}@{}{}{}", before_at, text, suffix, after_cursor);
                             self.cursor_pos = at_pos + 1 + text.len() + suffix.len();
                         }
+                    }
+                    DropdownType::Skill => {
+                        // Extract skill name from display and set input
+                        let skill_name = self
+                            .dropdown
+                            .as_ref()
+                            .and_then(|d| d.get_skill_name(&text))
+                            .unwrap_or_else(|| text.clone());
+                        self.input = format!("/skill {}", skill_name);
+                        self.cursor_pos = self.input.len();
                     }
                     DropdownType::Model => {
                         // Extract model ID from display string (e.g. "gpt-4o 👁 [openai]" → "gpt-4o")
@@ -1160,6 +1249,28 @@ impl App {
     /// Close dropdown
     pub fn close_dropdown(&mut self) {
         self.dropdown = None;
+    }
+
+    /// Open a skill selection dropdown populated from the discovery index.
+    fn open_skill_dropdown(&mut self) {
+        let discovery_config = self
+            .commands
+            .as_ref()
+            .and_then(|cmds_arc| cmds_arc.try_lock().ok())
+            .map(|cmds| core_agentic::DiscoveryConfig::from(&cmds.get_config().skills))
+            .unwrap_or_default();
+        let index = core_agentic::discover_skills(&discovery_config);
+
+        let skill_pairs: Vec<(String, String)> = {
+            let mut skills: Vec<_> = index.all().into_iter().collect();
+            skills.sort_by(|a, b| a.name().cmp(b.name()));
+            skills
+                .into_iter()
+                .map(|s| (s.name().to_string(), s.description().to_string()))
+                .collect()
+        };
+
+        self.dropdown = Some(Dropdown::new_skill(String::new(), skill_pairs));
     }
 
     // ── History navigation ──────────────────────────────────
@@ -1249,78 +1360,96 @@ impl App {
         // Start loading
         self.is_loading = true;
         self.progress.start();
+        self.loading_started = Some(Instant::now());
         self.current_response.clear();
 
-        // Run task in background
+        // Run task in background (clone Arc<Mutex<Commands>>, never take)
         let tx = self.tx.clone();
         let task = input.clone();
 
-        if let Some(mut commands) = self.commands.take() {
-            tokio::spawn(async move {
-                let _ = tx.send(AppMessage::Progress("Thinking...".into()));
+        let commands_arc = match &self.commands {
+            Some(c) => c.clone(),
+            None => {
+                self.is_loading = false;
+                self.messages.push(Message {
+                    role: MessageRole::Error,
+                    content: "Commands not initialized.".into(),
+                    timestamp: chrono::Local::now(),
+                });
+                return;
+            }
+        };
 
-                // Pipe orchestrator events to the same channel so the
-                // message log shows tool calls / results inline. Cloning
-                // the sender into the closure is cheap (Arc internally).
-                let event_tx = tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(AppMessage::Progress("Thinking...".into()));
 
-                match commands
-                    .run_with_callbacks(
-                        &task,
-                        |chunk| {
-                            let _ = tx.send(AppMessage::StreamChunk(chunk.to_string()));
-                        },
-                        move |event| match event {
-                            core_agentic::Event::ToolCall { tool_name, arguments } => {
-                                let _ = event_tx.send(AppMessage::ToolCall {
-                                    name: tool_name,
-                                    arguments,
-                                });
-                            }
-                            core_agentic::Event::ToolOutput { tool_name, output } => {
-                                // Heuristic matching the inline mode: orchestrator
-                                // records denied/skipped/errored outcomes as plain
-                                // strings with these prefixes. Surface them as errors
-                                // so the UI uses the red accent.
-                                let body = match &output {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    other => other.to_string(),
-                                };
-                                let is_error = body.starts_with("Tool error")
-                                    || body.starts_with("Blocked:")
-                                    || body.starts_with("Skipped:");
-                                let _ = event_tx.send(AppMessage::ToolResult {
-                                    name: tool_name,
-                                    output,
-                                    is_error,
-                                });
-                            }
-                            core_agentic::Event::Error { message } => {
-                                let _ = event_tx.send(AppMessage::Error(message));
-                            }
-                            core_agentic::Event::Thought { .. } => {
-                                // Skip — text was already streamed via on_chunk.
-                                // A separate Thought message would duplicate content.
-                            }
-                            // Other event types aren't surfaced in TUI for now.
-                            _ => {}
-                        },
-                    )
-                    .await
-                {
-                    Ok(result) => {
-                        let _ = tx.send(AppMessage::TaskComplete(result));
-                    }
-                    Err(e) => {
-                        let _ = tx.send(AppMessage::Error(e.to_string()));
+            // Pipe orchestrator events to the same channel so the
+            // message log shows tool calls / results inline. Cloning
+            // the sender into the closure is cheap (Arc internally).
+            let event_tx = tx.clone();
+
+            let mut commands = commands_arc.lock().await;
+            let result = commands
+                .run_with_callbacks(
+                    &task,
+                    |chunk| {
+                        let _ = tx.send(AppMessage::StreamChunk(chunk.to_string()));
+                    },
+                    move |event| match event {
+                        core_agentic::Event::ToolCall {
+                            tool_name,
+                            arguments,
+                        } => {
+                            let _ = event_tx.send(AppMessage::ToolCall {
+                                name: tool_name,
+                                arguments,
+                            });
+                        }
+                        core_agentic::Event::ToolOutput { tool_name, output } => {
+                            let body = match &output {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            };
+                            let is_error = body.starts_with("Tool error")
+                                || body.starts_with("Blocked:")
+                                || body.starts_with("Skipped:");
+                            let _ = event_tx.send(AppMessage::ToolResult {
+                                name: tool_name,
+                                output,
+                                is_error,
+                            });
+                        }
+                        core_agentic::Event::Error { message } => {
+                            let _ = event_tx.send(AppMessage::Error(message));
+                        }
+                        core_agentic::Event::Thought { .. } => {
+                            // Skip — text was already streamed via on_chunk.
+                            // A separate Thought message would duplicate content.
+                        }
+                        _ => {}
+                    },
+                )
+                .await;
+            tracing::debug!(
+                ok = result.is_ok(),
+                "spawned task: run_with_callbacks completed"
+            );
+            match result {
+                Ok(response) => {
+                    tracing::debug!(len = response.len(), "spawned task: sending TaskComplete");
+                    if let Err(e) = tx.send(AppMessage::TaskComplete(response)) {
+                        tracing::warn!(error = %e, "spawned task: failed to send TaskComplete");
                     }
                 }
-
-                // We can't put commands back via channel easily, so we leak it.
-                // In a real implementation, use Arc<Mutex<Commands>> or similar.
-                let _ = commands;
-            });
-        }
+                Err(e) => {
+                    tracing::debug!(error = %e, "spawned task: sending Error");
+                    if let Err(send_err) = tx.send(AppMessage::Error(e.to_string())) {
+                        tracing::warn!(error = %send_err, "spawned task: failed to send Error");
+                    }
+                }
+            }
+            // Lock is dropped here; commands_arc stays alive for future use.
+        });
     }
 
     /// Handle slash commands
@@ -1345,8 +1474,10 @@ impl App {
 | `/provider` | | Switch provider |
 | `/search` | `/s`, `/find` | Search conversation history |
 | `/image` | `/img` | Attach image |
-| `/skills` | | List indexed skills |
-| `/skills <name>` | | Load and display a skill |
+| `/skills` | `/sk` | List indexed skills |
+| `/skills <name>` | `/sk <name>` | Load and display a skill |
+| `/skill` | | Open skill selection dropdown |
+| `/skill <name>` | | Load and activate a skill |
 | `/plan` | `/p` | Generate a structured plan |
 | `/config` | `/cfg` | Show configuration |
 | `/tools` | `/t` | List available tools |
@@ -1360,7 +1491,8 @@ impl App {
 - Type `@` anywhere to browse files
 - Use ↑/↓ to navigate history
 - Use PageUp/PageDown to scroll
-- Press Ctrl+C / Esc to cancel"#.into(),
+- Press Ctrl+C / Esc to cancel"#
+                        .into(),
                     timestamp: chrono::Local::now(),
                 });
             }
@@ -1378,14 +1510,21 @@ impl App {
                 self.open_sessions();
             }
             "/models" | "/m" if !arg.is_empty() => {
-                self.switch_model(arg);
+                self.switch_model(arg).await;
             }
             "/models" | "/m" => {
                 // Show models list - open a message with available models
                 let models_text = match &self.commands {
-                    Some(cmds) => {
-                        let (provider, model, _) = cmds.model_info();
-                        format!("**Current Model:** {} / {}\n\nUse `/models <name>` to switch.", provider, model)
+                    Some(cmds_arc) => {
+                        if let Ok(cmds) = cmds_arc.try_lock() {
+                            let (provider, model, _) = cmds.model_info();
+                            format!(
+                                "**Current Model:** {} / {}\n\nUse `/models <name>` to switch.",
+                                provider, model
+                            )
+                        } else {
+                            "**(busy)**".into()
+                        }
                     }
                     None => "Commands not initialized.".into(),
                 };
@@ -1399,22 +1538,25 @@ impl App {
                 self.handle_search(arg);
             }
             "/image" | "/img" => {
-                self.handle_image(arg);
+                self.handle_image(arg).await;
             }
             "/provider" if !arg.is_empty() => {
-                self.handle_provider_switch(arg);
+                self.handle_provider_switch(arg).await;
             }
             "/provider" => {
-                self.handle_provider_list();
+                self.handle_provider_list().await;
             }
             "/mcp" => {
-                self.handle_mcp_status();
+                self.handle_mcp_status().await;
             }
-            "/skills" | "/sk" if !arg.is_empty() => {
-                self.handle_skill_load(arg);
+            "/skills" | "/sk" | "/skill" if !arg.is_empty() => {
+                self.handle_skill_load(arg).await;
             }
             "/skills" | "/sk" => {
-                self.handle_skill_list();
+                self.handle_skill_list().await;
+            }
+            "/skill" => {
+                self.open_skill_dropdown();
             }
             "/plan" | "/p" if !arg.is_empty() => {
                 self.handle_plan(arg).await;
@@ -1431,34 +1573,40 @@ impl App {
             }
             "/config" | "/cfg" => {
                 let config_text = match &self.commands {
-                    Some(cmds) => {
-                        let cfg = cmds.config_ref();
-                        let mut lines = String::from("**Configuration:**\n\n");
-                        lines.push_str(&format!("- Config path: `{}`\n", core_agentic::Config::config_path().display()));
-                        if let Some(p) = cfg.active_provider() {
-                            lines.push_str(&format!("- Provider: **{}**\n", p.name));
-                            lines.push_str(&format!("- API Base: `{}`\n", p.api_base));
-                            if p.api_key.is_empty() {
-                                lines.push_str("- API Key: ✗ not set\n");
+                    Some(cmds_arc) => match cmds_arc.try_lock() {
+                        Ok(cmds) => {
+                            let cfg = cmds.config_ref();
+                            let mut lines = String::from("**Configuration:**\n\n");
+                            lines.push_str(&format!(
+                                "- Config path: `{}`\n",
+                                core_agentic::Config::config_path().display()
+                            ));
+                            if let Some(p) = cfg.active_provider() {
+                                lines.push_str(&format!("- Provider: **{}**\n", p.name));
+                                lines.push_str(&format!("- API Base: `{}`\n", p.api_base));
+                                if p.api_key.is_empty() {
+                                    lines.push_str("- API Key: ✗ not set\n");
+                                } else {
+                                    let masked = format!(
+                                        "{}...{}",
+                                        &p.api_key[..4.min(p.api_key.len())],
+                                        &p.api_key[p.api_key.len().saturating_sub(4)..]
+                                    );
+                                    lines.push_str(&format!("- API Key: `{}`\n", masked));
+                                }
+                                if let Some(m) = p.models.first() {
+                                    lines.push_str(&format!(
+                                        "- Model: `{}` (temp: {}, max_tokens: {})\n",
+                                        m.model, m.temperature, m.max_tokens
+                                    ));
+                                }
                             } else {
-                                let masked = format!(
-                                    "{}...{}",
-                                    &p.api_key[..4.min(p.api_key.len())],
-                                    &p.api_key[p.api_key.len().saturating_sub(4)..]
-                                );
-                                lines.push_str(&format!("- API Key: `{}`\n", masked));
+                                lines.push_str("- No provider configured.\n");
                             }
-                            if let Some(m) = p.models.first() {
-                                lines.push_str(&format!(
-                                    "- Model: `{}` (temp: {}, max_tokens: {})\n",
-                                    m.model, m.temperature, m.max_tokens
-                                ));
-                            }
-                        } else {
-                            lines.push_str("- No provider configured.\n");
+                            lines
                         }
-                        lines
-                    }
+                        Err(_) => "**(busy)**".into(),
+                    },
                     None => "Commands not initialized.".into(),
                 };
                 self.messages.push(Message {
@@ -1543,6 +1691,31 @@ impl App {
 
     /// Process pending messages from async tasks
     pub fn process_messages(&mut self) {
+        // ── Watchdog: auto-reset loading if the agent hangs silently ──
+        if self.is_loading {
+            if let Some(started) = self.loading_started {
+                if started.elapsed() > LOADING_TIMEOUT {
+                    tracing::warn!(
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "Loading watchdog triggered — no response in {}s",
+                        LOADING_TIMEOUT.as_secs()
+                    );
+                    self.is_loading = false;
+                    self.loading_started = None;
+                    self.progress.stop();
+                    self.messages.push(Message {
+                        role: MessageRole::Error,
+                        content: format!(
+                            "⚠ Agent did not respond within {} seconds. \
+                             Try again or use Ctrl+C to cancel.",
+                            LOADING_TIMEOUT.as_secs()
+                        ),
+                        timestamp: chrono::Local::now(),
+                    });
+                }
+            }
+        }
+
         if let Some(rx) = &mut self.rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
@@ -1551,6 +1724,7 @@ impl App {
                     }
                     AppMessage::TaskComplete(result) => {
                         self.is_loading = false;
+                        self.loading_started = None;
                         self.progress.stop();
                         self.stats.messages_sent += 1;
 
@@ -1568,6 +1742,7 @@ impl App {
                     }
                     AppMessage::Error(err) => {
                         self.is_loading = false;
+                        self.loading_started = None;
                         self.progress.stop();
                         self.current_response.clear();
 
@@ -1596,7 +1771,11 @@ impl App {
                             timestamp: chrono::Local::now(),
                         });
                     }
-                    AppMessage::ToolResult { name, output, is_error } => {
+                    AppMessage::ToolResult {
+                        name,
+                        output,
+                        is_error,
+                    } => {
                         let payload = serde_json::json!({
                             "name": name,
                             "output": output,
@@ -1630,10 +1809,8 @@ impl App {
                         failed: _,
                         pending: _,
                     } => {
-                        self.progress.set_message(format!(
-                            "Plan: {} — {}",
-                            current_step, step_status,
-                        ));
+                        self.progress
+                            .set_message(format!("Plan: {} — {}", current_step, step_status,));
                     }
                 }
             }
@@ -1652,7 +1829,7 @@ impl App {
 // ── Main TUI event loop ──────────────────────────────────────
 
 /// Run the TUI application
-pub async fn run_tui(commands: Commands) -> Result<()> {
+pub async fn run_tui(commands: Arc<tokio::sync::Mutex<Commands>>) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1761,25 +1938,17 @@ async fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
-        KeyCode::Enter => {
-            if !app.is_loading {
-                app.submit().await;
-            }
+        KeyCode::Enter if !app.is_loading => {
+            app.submit().await;
         }
-        KeyCode::Char(c) => {
-            if !app.is_loading {
-                app.insert_char(c);
-            }
+        KeyCode::Char(c) if !app.is_loading => {
+            app.insert_char(c);
         }
-        KeyCode::Backspace => {
-            if !app.is_loading {
-                app.delete_char();
-            }
+        KeyCode::Backspace if !app.is_loading => {
+            app.delete_char();
         }
-        KeyCode::Delete => {
-            if !app.is_loading {
-                app.delete_char_forward();
-            }
+        KeyCode::Delete if !app.is_loading => {
+            app.delete_char_forward();
         }
         KeyCode::Left => {
             // If Shift is held, scroll instead of moving cursor
@@ -1814,10 +1983,8 @@ async fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) {
         }
         KeyCode::PageUp => app.scroll_up(),
         KeyCode::PageDown => app.scroll_down(),
-        KeyCode::Esc => {
-            if app.dropdown.is_some() {
-                app.close_dropdown();
-            }
+        KeyCode::Esc if app.dropdown.is_some() => {
+            app.close_dropdown();
         }
         _ => {}
     }

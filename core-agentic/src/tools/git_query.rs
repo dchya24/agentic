@@ -105,9 +105,7 @@ impl Tool for GitStatusTool {
         let cwd = resolve_cwd(workdir.as_deref())?;
 
         let mut cmd = Command::new("git");
-        cmd.current_dir(&cwd)
-            .arg("status")
-            .arg("--porcelain=v1");
+        cmd.current_dir(&cwd).arg("status").arg("--porcelain=v1");
         if include_branch {
             cmd.arg("--branch");
         }
@@ -391,8 +389,9 @@ impl Tool for GitDiffTool {
 fn resolve_cwd(workdir: Option<&std::path::Path>) -> ToolResult<PathBuf> {
     match workdir {
         Some(p) => Ok(p.to_path_buf()),
-        None => std::env::current_dir()
-            .map_err(|e| ToolError::new(format!("cwd unavailable: {}", e))),
+        None => {
+            std::env::current_dir().map_err(|e| ToolError::new(format!("cwd unavailable: {}", e)))
+        }
     }
 }
 

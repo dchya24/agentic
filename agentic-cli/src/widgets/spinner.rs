@@ -83,10 +83,7 @@ pub fn compact_progress_line(progress: &ProgressState, bar_width: usize) -> Line
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled(
-            message,
-            Style::default().fg(Color::Rgb(180, 180, 180)),
-        ),
+        Span::styled(message, Style::default().fg(Color::Rgb(180, 180, 180))),
         Span::raw("  "),
         Span::styled(bar, Style::default().fg(Color::Rgb(52, 152, 219))),
     ])

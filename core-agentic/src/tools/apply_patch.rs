@@ -122,8 +122,7 @@ impl Tool for ApplyPatchTool {
 
         ToolSchema {
             name: "apply_patch".to_string(),
-            description: "Apply a unified-diff patch to one or more files."
-                .to_string(),
+            description: "Apply a unified-diff patch to one or more files.".to_string(),
             parameters: params,
             required: vec!["patch".to_string()],
         }
@@ -183,9 +182,8 @@ impl Tool for ApplyPatchTool {
                             })?;
                         }
                     }
-                    std::fs::write(&path, &new_content).map_err(|e| {
-                        ToolError::new(format!("Failed to write {}: {}", path, e))
-                    })?;
+                    std::fs::write(&path, &new_content)
+                        .map_err(|e| ToolError::new(format!("Failed to write {}: {}", path, e)))?;
                     if let Some(t) = &self.tracker {
                         t.mark_written(Path::new(&path));
                     }
@@ -287,10 +285,7 @@ fn parse_patch(text: &str) -> Result<Vec<FilePatch>, String> {
                             }
                             _ => {
                                 if consumed_old < old_count || consumed_new < new_count {
-                                    return Err(format!(
-                                        "unexpected line inside hunk: {:?}",
-                                        body
-                                    ));
+                                    return Err(format!("unexpected line inside hunk: {:?}", body));
                                 }
                                 break;
                             }
@@ -403,8 +398,8 @@ fn stage_file_patch(fp: &FilePatch) -> Result<(String, Option<String>), String> 
     }
 
     let path = &fp.old_path;
-    let original = std::fs::read_to_string(path)
-        .map_err(|e| format!("failed to read {}: {}", path, e))?;
+    let original =
+        std::fs::read_to_string(path).map_err(|e| format!("failed to read {}: {}", path, e))?;
 
     let new_content = apply_hunks(path, &original, &fp.hunks)?;
     Ok((fp.new_path.clone(), Some(new_content)))
@@ -627,10 +622,7 @@ mod tests {
             old_count: 1,
             new_start: 1,
             new_count: 1,
-            lines: vec![
-                HunkLine::Context("WRONG".into()),
-                HunkLine::Add("X".into()),
-            ],
+            lines: vec![HunkLine::Context("WRONG".into()), HunkLine::Add("X".into())],
         }];
         let err = apply_hunks("f", original, &hunks).expect_err("context mismatch");
         assert!(err.contains("context mismatch"));
@@ -645,10 +637,7 @@ mod tests {
                 old_count: 2,
                 new_start: 1,
                 new_count: 1,
-                lines: vec![
-                    HunkLine::Context("a".into()),
-                    HunkLine::Remove("b".into()),
-                ],
+                lines: vec![HunkLine::Context("a".into()), HunkLine::Remove("b".into())],
             },
             Hunk {
                 old_start: 2,
@@ -670,10 +659,7 @@ mod tests {
             old_count: 1,
             new_start: 2,
             new_count: 1,
-            lines: vec![
-                HunkLine::Remove("b".into()),
-                HunkLine::Add("B".into()),
-            ],
+            lines: vec![HunkLine::Remove("b".into()), HunkLine::Add("B".into())],
         }];
         let out = apply_hunks("f", original, &hunks).expect("applied");
         assert_eq!(out, "a\nB");

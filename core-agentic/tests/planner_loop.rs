@@ -9,9 +9,7 @@
 //! unit tests: the tests exercise filesystem operations through builtin
 //! tools, matching Cargo's integration-test boundary.
 
-use core_agentic::{
-    planner::*, tools::RunCommandTool, Event, ToolRegistry, LLMProvider,
-};
+use core_agentic::{planner::*, tools::RunCommandTool, Event, LLMProvider, ToolRegistry};
 use std::sync::Arc;
 
 mod support;
@@ -20,19 +18,17 @@ use support::{text_response, ScriptedProvider};
 /// Build a minimal `PlannerAgent` wired to a `ScriptedProvider` whose
 /// first response is a plan-JSON array.
 fn planner_for_steps(steps_json: &str) -> (PlannerAgent, ToolRegistry) {
-    let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
-        text_response(steps_json),
-    ]));
+    let provider: Arc<dyn LLMProvider> =
+        Arc::new(ScriptedProvider::new(vec![text_response(steps_json)]));
 
     let tools = ToolRegistry::new();
     tools.register(Box::new(RunCommandTool::new()));
 
-    let planner = PlannerAgent::new(provider)
-        .with_config(PlannerConfig {
-            require_approval: false,
-            max_replan_attempts: 0,
-            ..Default::default()
-        });
+    let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
+        require_approval: false,
+        max_replan_attempts: 0,
+        ..Default::default()
+    });
 
     (planner, tools)
 }
@@ -52,10 +48,7 @@ fn planner_manual_executes_simple_tool_steps() {
 
     let mut plan = planner.create_plan_manual(
         "Echo test",
-        vec![
-            "First echo".to_string(),
-            "Second echo".to_string(),
-        ],
+        vec!["First echo".to_string(), "Second echo".to_string()],
     );
     // Assign tools to steps
     plan.steps[0].tool = Some("run_command".to_string());
@@ -110,10 +103,7 @@ fn planner_manual_fails_on_missing_tool() {
 
     let tools = ToolRegistry::new();
 
-    let mut plan = planner.create_plan_manual(
-        "Fail",
-        vec!["Missing tool step".to_string()],
-    );
+    let mut plan = planner.create_plan_manual("Fail", vec!["Missing tool step".to_string()]);
     plan.steps[0].tool = Some("nonexistent_tool".to_string());
     plan.steps[0].args = Some(serde_json::json!({}));
     plan.status = PlanStatus::Draft;
@@ -134,10 +124,7 @@ fn planner_manual_cancels_on_approval_reject() {
 
     let tools = ToolRegistry::new();
 
-    let mut plan = planner.create_plan_manual(
-        "Cancelled plan",
-        vec!["Step 1".to_string()],
-    );
+    let mut plan = planner.create_plan_manual("Cancelled plan", vec!["Step 1".to_string()]);
     plan.status = PlanStatus::PendingApproval;
 
     let result = planner.execute_plan(&mut plan, &tools).unwrap();
@@ -207,11 +194,18 @@ fn planner_emits_plan_progress_events() {
         .collect();
 
     // We expect at least 2 PlanProgress events: one "in_progress" + one "completed" per step
-    assert!(progress_events.len() >= 2, "Expected at least 2 PlanProgress events, got {}", progress_events.len());
+    assert!(
+        progress_events.len() >= 2,
+        "Expected at least 2 PlanProgress events, got {}",
+        progress_events.len()
+    );
 
     // Check the first event is "in_progress" and last is "completed" or "failed"
     if let Event::PlanProgress { step_status, .. } = progress_events[0] {
-        assert_eq!(step_status, "in_progress", "First event should be in_progress");
+        assert_eq!(
+            step_status, "in_progress",
+            "First event should be in_progress"
+        );
     }
 }
 
@@ -224,10 +218,14 @@ fn planner_emits_plan_replanned_event_on_failure_with_replan() {
     // First response: plan with a failing tool step.
     // Second response: revised plan with a working step.
     let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
-        text_response(r#"[{"description": "Fail step", "tool": "nonexistent", "args": {}}]
-"#),
-        text_response(r#"[{"description": "Recovery step", "tool": "run_command", "args": {"command": "echo recovered"}}]
-"#),
+        text_response(
+            r#"[{"description": "Fail step", "tool": "nonexistent", "args": {}}]
+"#,
+        ),
+        text_response(
+            r#"[{"description": "Recovery step", "tool": "run_command", "args": {"command": "echo recovered"}}]
+"#,
+        ),
     ]));
 
     let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
@@ -260,7 +258,12 @@ fn planner_emits_plan_replanned_event_on_failure_with_replan() {
 
     // A PlanReplanned event should have been emitted
     let replanned = replanned_events.lock().unwrap();
-    assert_eq!(replanned.len(), 1, "Expected exactly 1 PlanReplanned event, got {}", replanned.len());
+    assert_eq!(
+        replanned.len(),
+        1,
+        "Expected exactly 1 PlanReplanned event, got {}",
+        replanned.len()
+    );
 
     if let Event::PlanReplanned {
         reason,
@@ -270,8 +273,15 @@ fn planner_emits_plan_replanned_event_on_failure_with_replan() {
         ..
     } = &replanned[0]
     {
-        assert!(reason.contains("Fail step"), "Reason should mention failed step: {}", reason);
-        assert_eq!(*steps_carried_over, 0, "No steps were completed before replan");
+        assert!(
+            reason.contains("Fail step"),
+            "Reason should mention failed step: {}",
+            reason
+        );
+        assert_eq!(
+            *steps_carried_over, 0,
+            "No steps were completed before replan"
+        );
         assert_eq!(*steps_total, 1, "Revised plan should have 1 step");
         assert_eq!(plan_goal, "Fail then recover");
     } else {
@@ -291,10 +301,8 @@ fn planner_result_summary() {
         ..Default::default()
     });
 
-    let mut plan = planner.create_plan_manual(
-        "Mixed results",
-        vec!["Ok".to_string(), "Fail".to_string()],
-    );
+    let mut plan =
+        planner.create_plan_manual("Mixed results", vec!["Ok".to_string(), "Fail".to_string()]);
     plan.steps[0].tool = Some("run_command".to_string());
     plan.steps[0].args = Some(serde_json::json!({"command": "echo ok"}));
     plan.steps[1].tool = Some("nonexistent".to_string());

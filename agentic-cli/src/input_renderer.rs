@@ -59,7 +59,11 @@ impl PromptMetadata {
 /// Returns the number of terminal lines rendered (including continuation
 /// lines and footer for multi-line mode).  The cursor is left on a NEW
 /// line below the prompt so the REPL loop can MoveUp(N) correctly.
-pub fn render_prompt_line(meta: &PromptMetadata, buffer: &InputBuffer, _has_dropdown: bool) -> usize {
+pub fn render_prompt_line(
+    meta: &PromptMetadata,
+    buffer: &InputBuffer,
+    _has_dropdown: bool,
+) -> usize {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let _cyan = Style::default().fg(Color::Cyan);
 
@@ -71,13 +75,13 @@ pub fn render_prompt_line(meta: &PromptMetadata, buffer: &InputBuffer, _has_drop
         // Render multi-line input
         let lines = buffer.lines();
         let current_line = buffer.current_line();
-        
+
         for (i, line) in lines.iter().enumerate() {
             if i == 0 {
                 // First line with prompt
                 let input_line = render_input(line, buffer.cursor().min(line.len()));
                 let mut spans: Vec<Span<'static>> = vec![Span::styled(prompt_prefix.clone(), dim)];
-                spans.extend(input_line.spans.into_iter());
+                spans.extend(input_line.spans);
                 inline::print_line(&Line::from(spans));
             } else {
                 // Continuation lines with indent
@@ -93,23 +97,31 @@ pub fn render_prompt_line(meta: &PromptMetadata, buffer: &InputBuffer, _has_drop
                 } else {
                     0
                 };
-                
+
                 let input_line = render_input(line, line_cursor.min(line.len()));
                 let mut spans: Vec<Span<'static>> = vec![
                     Span::styled(indent.to_string(), dim),
-                    Span::styled("│ ".to_string(), Style::default().fg(Color::Rgb(100, 100, 120))),
+                    Span::styled(
+                        "│ ".to_string(),
+                        Style::default().fg(Color::Rgb(100, 100, 120)),
+                    ),
                 ];
-                spans.extend(input_line.spans.into_iter());
+                spans.extend(input_line.spans);
                 inline::print_line(&Line::from(spans));
             }
         }
-        
+
         // Show multi-line indicator
         inline::print_line(&Line::from(vec![
             Span::styled("  ", dim),
             Span::styled(
-                format!("[{} lines] Shift+Enter: new line, Enter: submit", lines.len()),
-                Style::default().fg(Color::Rgb(100, 100, 120)).add_modifier(Modifier::DIM),
+                format!(
+                    "[{} lines] Shift+Enter: new line, Enter: submit",
+                    lines.len()
+                ),
+                Style::default()
+                    .fg(Color::Rgb(100, 100, 120))
+                    .add_modifier(Modifier::DIM),
             ),
         ]));
 
@@ -128,8 +140,8 @@ pub fn render_prompt_line(meta: &PromptMetadata, buffer: &InputBuffer, _has_drop
         };
 
         // Combine: prompt prefix + input content
-        let mut spans: Vec<Span<'static>> = vec![Span::styled(prompt_prefix, dim.clone())];
-        spans.extend(input_line.spans.into_iter());
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(prompt_prefix, dim)];
+        spans.extend(input_line.spans);
 
         inline::print_line(&Line::from(spans));
         1 // single-line input
@@ -149,15 +161,17 @@ pub fn render_dropdown_lines(dropdown: &Dropdown) -> usize {
         DropdownType::Command => "⌘",
         DropdownType::File => "📁",
         DropdownType::Model => "🤖",
+        DropdownType::Skill => "⚡",
     };
 
     // Title line
     let title_style = Style::default()
         .fg(Color::Rgb(241, 196, 15))
         .add_modifier(Modifier::BOLD);
-    inline::print_line(&Line::from(vec![
-        Span::styled(format!("  {} {} ", icon, dropdown.title()), title_style),
-    ]));
+    inline::print_line(&Line::from(vec![Span::styled(
+        format!("  {} {} ", icon, dropdown.title()),
+        title_style,
+    )]));
 
     let mut count = 1;
 
@@ -184,10 +198,10 @@ pub fn render_dropdown_lines(dropdown: &Dropdown) -> usize {
 
         // Build item text with fuzzy highlighting
         let mut spans = vec![Span::styled(format!("  {}", item_icon), base_style)];
-        
+
         if !query.is_empty() {
             // Apply fuzzy match highlighting
-            spans.extend(fuzzy_match_highlight(item, &query, *selected));
+            spans.extend(fuzzy_match_highlight(item, query, *selected));
         } else {
             spans.push(Span::styled(item.to_string(), base_style));
         }

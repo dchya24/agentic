@@ -32,7 +32,17 @@ pub enum BoxStyle {
 }
 
 impl BoxStyle {
-    fn chars(&self) -> (&'static str, &'static str, &'static str, &'static str, &'static str, &'static str, &'static str) {
+    fn chars(
+        &self,
+    ) -> (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    ) {
         match self {
             // (tl, tr, bl, br, h, v, cross)
             BoxStyle::Single => ("┌", "┐", "└", "┘", "─", "│", "┼"),
@@ -53,7 +63,12 @@ impl BoxStyle {
 /// │  content line 2              │
 /// ╰──────────────────────────────╯
 /// ```
-pub fn panel(title: &str, content: &[Line<'static>], style: BoxStyle, border_color: Color) -> Vec<Line<'static>> {
+pub fn panel(
+    title: &str,
+    content: &[Line<'static>],
+    style: BoxStyle,
+    border_color: Color,
+) -> Vec<Line<'static>> {
     let width = terminal_width().saturating_sub(2).max(40).min(100);
     let (tl, tr, bl, br, h, v, _) = style.chars();
     let border_style = Style::default().fg(border_color);
@@ -74,7 +89,9 @@ pub fn panel(title: &str, content: &[Line<'static>], style: BoxStyle, border_col
         Span::styled(format!("{}{}", tl, h), border_style),
         Span::styled(
             title_display,
-            Style::default().fg(border_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(h.repeat(remaining), border_style),
         Span::styled(tr.to_string(), border_style),
@@ -86,9 +103,7 @@ pub fn panel(title: &str, content: &[Line<'static>], style: BoxStyle, border_col
         let content_len = content_str.chars().count();
         let padding = inner_width.saturating_sub(content_len);
 
-        let mut spans = vec![
-            Span::styled(format!("{} ", v), border_style),
-        ];
+        let mut spans = vec![Span::styled(format!("{} ", v), border_style)];
         spans.extend(line.spans.iter().cloned());
         spans.push(Span::raw(" ".repeat(padding)));
         spans.push(Span::styled(format!(" {}", v), border_style));
@@ -97,16 +112,21 @@ pub fn panel(title: &str, content: &[Line<'static>], style: BoxStyle, border_col
     }
 
     // Bottom border
-    lines.push(Line::from(vec![
-        Span::styled(format!("{}{}{}", bl, h.repeat(inner_width + 2), br), border_style),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        format!("{}{}{}", bl, h.repeat(inner_width + 2), br),
+        border_style,
+    )]));
 
     lines
 }
 
 /// Render a compact panel with no title.
 #[allow(dead_code)]
-pub fn box_content(content: &[Line<'static>], style: BoxStyle, border_color: Color) -> Vec<Line<'static>> {
+pub fn box_content(
+    content: &[Line<'static>],
+    style: BoxStyle,
+    border_color: Color,
+) -> Vec<Line<'static>> {
     panel("", content, style, border_color)
 }
 
@@ -137,12 +157,10 @@ pub fn section_header(icon: &str, title: &str, color: Color) -> Line<'static> {
 
 /// Render a sub-section header (lighter weight).
 pub fn subsection_header(title: &str, color: Color) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            format!("  {} ", title),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-    ])
+    Line::from(vec![Span::styled(
+        format!("  {} ", title),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )])
 }
 
 // ── Key-Value Display ───────────────────────────────────────
@@ -162,7 +180,13 @@ pub fn kv_line(key: &str, value: &str, key_width: usize, value_color: Color) -> 
 }
 
 /// Render a key-value pair with a badge-style value.
-pub fn kv_badge(key: &str, value: &str, key_width: usize, badge_fg: Color, badge_bg: Color) -> Line<'static> {
+pub fn kv_badge(
+    key: &str,
+    value: &str,
+    key_width: usize,
+    badge_fg: Color,
+    badge_bg: Color,
+) -> Line<'static> {
     let padded_key = format!("  {:width$}", format!("{}:", key), width = key_width + 1);
     Line::from(vec![
         Span::styled(padded_key, Style::default().add_modifier(Modifier::DIM)),
@@ -245,10 +269,7 @@ pub fn gradient_text(text: &str, from: Color, to: Color) -> Line<'static> {
             let r = lerp(r1, r2, t);
             let g = lerp(g1, g2, t);
             let b = lerp(b1, b2, t);
-            Span::styled(
-                c.to_string(),
-                Style::default().fg(Color::Rgb(r, g, b)),
-            )
+            Span::styled(c.to_string(), Style::default().fg(Color::Rgb(r, g, b)))
         })
         .collect();
 
@@ -318,7 +339,11 @@ pub fn rounded_dashed_separator(color: Color) -> Line<'static> {
 /// Uses DIM styling to visually distinguish from final response.
 pub fn thinking_header(active: bool) -> Line<'static> {
     let width = terminal_width().saturating_sub(2).max(40).min(100);
-    let label = if active { " thinking... " } else { " done thinking " };
+    let label = if active {
+        " thinking... "
+    } else {
+        " done thinking "
+    };
     let label_len = label.chars().count() + 6; // "─ ─ " + label + " ─"
     let remaining = width.saturating_sub(label_len);
     let dim = Style::default()
@@ -328,9 +353,9 @@ pub fn thinking_header(active: bool) -> Line<'static> {
         .fg(Color::Indexed(242))
         .add_modifier(Modifier::DIM | Modifier::BOLD);
     Line::from(vec![
-        Span::styled("─ ─", dim.clone()),
+        Span::styled("─ ─", dim),
         Span::styled(label.to_string(), dim_bold),
-        Span::styled(format!("{}", "─".repeat(remaining)), dim),
+        Span::styled("─".repeat(remaining).to_string(), dim),
     ])
 }
 
@@ -349,7 +374,13 @@ pub fn double_separator(color: Color) -> Line<'static> {
 /// ```text
 ///   Input:  ████████████░░░░░░░░  60%
 /// ```
-pub fn labeled_bar(label: &str, value: f32, width: usize, filled_color: Color, empty_color: Color) -> Line<'static> {
+pub fn labeled_bar(
+    label: &str,
+    value: f32,
+    width: usize,
+    filled_color: Color,
+    empty_color: Color,
+) -> Line<'static> {
     let filled = (width as f32 * value.clamp(0.0, 1.0)) as usize;
     let empty = width.saturating_sub(filled);
     let pct = (value * 100.0) as u8;
@@ -391,7 +422,12 @@ pub fn sparkline(values: &[f32], color: Color) -> Line<'static> {
 
 /// Render a simple table with headers and rows.
 #[allow(dead_code)]
-pub fn table(headers: &[&str], rows: &[Vec<String>], header_color: Color, border_color: Color) -> Vec<Line<'static>> {
+pub fn table(
+    headers: &[&str],
+    rows: &[Vec<String>],
+    header_color: Color,
+    border_color: Color,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let col_widths: Vec<usize> = headers
         .iter()
@@ -407,7 +443,9 @@ pub fn table(headers: &[&str], rows: &[Vec<String>], header_color: Color, border
         .collect();
 
     let border_style = Style::default().fg(border_color);
-    let header_style = Style::default().fg(header_color).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(header_color)
+        .add_modifier(Modifier::BOLD);
 
     // Header
     let mut header_spans = vec![Span::styled("  ", border_style)];
@@ -420,7 +458,11 @@ pub fn table(headers: &[&str], rows: &[Vec<String>], header_color: Color, border
     lines.push(Line::from(header_spans));
 
     // Separator
-    let sep: String = col_widths.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("─");
+    let sep: String = col_widths
+        .iter()
+        .map(|w| "─".repeat(*w))
+        .collect::<Vec<_>>()
+        .join("─");
     lines.push(Line::from(Span::styled(format!("  {}", sep), border_style)));
 
     // Rows
@@ -445,7 +487,12 @@ pub fn table(headers: &[&str], rows: &[Vec<String>], header_color: Color, border
 /// ```
 pub fn notification(icon: &str, message: &str, accent_color: Color) -> Line<'static> {
     Line::from(vec![
-        Span::styled("  ┃ ", Style::default().fg(accent_color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "  ┃ ",
+            Style::default()
+                .fg(accent_color)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!("{} ", icon), Style::default().fg(accent_color)),
         Span::raw(message.to_string()),
     ])
@@ -478,10 +525,7 @@ mod tests {
 
     #[test]
     fn test_panel_basic() {
-        let content = vec![
-            Line::from("Hello world"),
-            Line::from("Second line"),
-        ];
+        let content = vec![Line::from("Hello world"), Line::from("Second line")];
         let result = panel("Test", &content, BoxStyle::Rounded, Color::Cyan);
         assert_eq!(result.len(), 4); // top + 2 content + bottom
     }
@@ -585,7 +629,7 @@ mod tests {
         // should be at least `key_width + 1` chars (key + colon).
         let line = kv_line("Provider", "openai", 12, Color::Yellow);
         let key_span = &line.spans[0];
-        assert!(key_span.content.len() >= 12 + 1);
+        assert!(key_span.content.len() > 12);
         assert!(key_span.style.add_modifier.contains(Modifier::DIM));
     }
 

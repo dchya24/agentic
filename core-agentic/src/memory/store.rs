@@ -11,8 +11,8 @@ use std::collections::HashSet;
 use crate::tool::{ToolCall, ToolResultValue};
 
 use super::types::{
-    config_default_max_tokens, estimate_tokens, ContextWindow, Message, MessageMetadata,
-    MessageRole, MemoryConfig, SessionInfo,
+    config_default_max_tokens, estimate_tokens, ContextWindow, MemoryConfig, Message,
+    MessageMetadata, MessageRole, SessionInfo,
 };
 
 // ---------------------------------------------------------------------------
@@ -206,12 +206,7 @@ impl Memory {
         }
 
         // Walk messages from newest to oldest
-        let recent_slice: Vec<&Message> = self
-            .messages
-            .iter()
-            .rev()
-            .take(limit)
-            .collect();
+        let recent_slice: Vec<&Message> = self.messages.iter().rev().take(limit).collect();
 
         for msg in &recent_slice {
             let msg_tokens = if msg.metadata.token_count > 0 {
@@ -367,11 +362,7 @@ impl Memory {
         let mut earliest_kept: usize = turns.last().map(|(s, _)| *s).unwrap_or(0);
         let mut used: u32 = 0;
         // Reserve space for an optional summary at the head.
-        let summary_tokens: u32 = self
-            .summary
-            .as_deref()
-            .map(estimate_tokens)
-            .unwrap_or(0);
+        let summary_tokens: u32 = self.summary.as_deref().map(estimate_tokens).unwrap_or(0);
         let effective_budget = token_budget.saturating_sub(summary_tokens);
 
         for (start, end) in turns.iter().rev() {

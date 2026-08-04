@@ -90,9 +90,7 @@ impl Tool for FetchTool {
             "max_chars".to_string(),
             ToolParam {
                 param_type: "number".to_string(),
-                description: Some(
-                    "Maximum characters returned. Defaults to 25000.".to_string(),
-                ),
+                description: Some("Maximum characters returned. Defaults to 25000.".to_string()),
                 default: Some(serde_json::json!(DEFAULT_MAX_CHARS)),
             },
         );
@@ -187,7 +185,10 @@ impl Tool for FetchTool {
                     raw
                 };
 
-                cache().lock().unwrap().insert(url.to_string(), cleaned.clone());
+                cache()
+                    .lock()
+                    .unwrap()
+                    .insert(url.to_string(), cleaned.clone());
                 cleaned
             }
         };
@@ -285,7 +286,8 @@ fn html_to_text(html: &str) -> String {
     // tag block with its own pattern.
     let script = SCRIPT.get_or_init(|| Regex::new(r"(?is)<script[^>]*>.*?</script>").unwrap());
     let style = STYLE.get_or_init(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap());
-    let noscript = NOSCRIPT.get_or_init(|| Regex::new(r"(?is)<noscript[^>]*>.*?</noscript>").unwrap());
+    let noscript =
+        NOSCRIPT.get_or_init(|| Regex::new(r"(?is)<noscript[^>]*>.*?</noscript>").unwrap());
     let block_breaks = BLOCK_BREAKS.get_or_init(|| {
         Regex::new(r"(?i)<\s*(br\s*/?|/p|/div|/li|/h[1-6]|/tr|/article|/section)\s*>").unwrap()
     });

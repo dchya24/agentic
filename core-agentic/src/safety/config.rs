@@ -113,7 +113,7 @@ fn default_blocked_commands() -> Vec<String> {
         "mkfs".into(),
         "dd if=/dev/zero".into(),
         "dd if=/dev/random".into(),
-        ":(){ :|:& };:".into(),          // fork bomb
+        ":(){ :|:& };:".into(), // fork bomb
         "chmod -R 777 /".into(),
         "chown -R".into(),
         "> /dev/sda".into(),
@@ -123,21 +123,36 @@ fn default_blocked_commands() -> Vec<String> {
 fn default_risk_patterns() -> Vec<RiskPattern> {
     vec![
         // --- Critical (≥0.8) ---
-        RiskPattern::new("rm_recursive_root", r"(?i)\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?(/[^\s]*|\*|~)", 0.95)
-            .with_reason("Recursive deletion of root/home/wildcard"),
+        RiskPattern::new(
+            "rm_recursive_root",
+            r"(?i)\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?(/[^\s]*|\*|~)",
+            0.95,
+        )
+        .with_reason("Recursive deletion of root/home/wildcard"),
         RiskPattern::new("format_disk", r"(?i)\b(mkfs|format)\b", 0.9)
             .with_reason("Disk formatting"),
-        RiskPattern::new("dd_disk", r"(?i)\bdd\s+if=", 0.9)
-            .with_reason("Raw disk write with dd"),
+        RiskPattern::new("dd_disk", r"(?i)\bdd\s+if=", 0.9).with_reason("Raw disk write with dd"),
         RiskPattern::new("fork_bomb", r":\(\)\{\s*:\|:&\s*\};:", 0.95)
             .with_reason("Fork bomb detected"),
-        RiskPattern::new("chmod_777_recursive", r"(?i)\bchmod\s+(-R\s+)?777\s+/", 0.85)
-            .with_reason("Recursive 777 permission change on root"),
+        RiskPattern::new(
+            "chmod_777_recursive",
+            r"(?i)\bchmod\s+(-R\s+)?777\s+/",
+            0.85,
+        )
+        .with_reason("Recursive 777 permission change on root"),
         // --- High (≥0.6) ---
-        RiskPattern::new("force_delete", r"(?i)\brm\s+(-[a-zA-Z]*f[a-zA-Z]*|-r[a-zA-Z]*\s)", 0.7)
-            .with_reason("Force/recursive delete"),
-        RiskPattern::new("overwrite_device", r"(?i)>\s*/dev/(sd|hd|nvme|vd|loop)", 0.85)
-            .with_reason("Writing directly to block device"),
+        RiskPattern::new(
+            "force_delete",
+            r"(?i)\brm\s+(-[a-zA-Z]*f[a-zA-Z]*|-r[a-zA-Z]*\s)",
+            0.7,
+        )
+        .with_reason("Force/recursive delete"),
+        RiskPattern::new(
+            "overwrite_device",
+            r"(?i)>\s*/dev/(sd|hd|nvme|vd|loop)",
+            0.85,
+        )
+        .with_reason("Writing directly to block device"),
         RiskPattern::new("kill_all", r"(?i)\bkillall?\s+(-9\s+)?(\*|\d+)", 0.65)
             .with_reason("Kill all processes"),
         RiskPattern::new("iptables_flush", r"(?i)\biptables\s+-F", 0.7)
@@ -145,31 +160,39 @@ fn default_risk_patterns() -> Vec<RiskPattern> {
         RiskPattern::new("git_reset_hard", r"(?i)\bgit\s+reset\s+--hard", 0.65)
             .with_reason("Hard git reset (uncommitted changes lost)"),
         // --- Medium (≥0.3) ---
-        RiskPattern::new("sudo", r"(?i)\bsudo\b", 0.5)
-            .with_reason("Elevated privileges via sudo"),
-        RiskPattern::new("su_switch", r"(?i)\bsu\s+(-|\w)", 0.55)
-            .with_reason("Switching user"),
+        RiskPattern::new("sudo", r"(?i)\bsudo\b", 0.5).with_reason("Elevated privileges via sudo"),
+        RiskPattern::new("su_switch", r"(?i)\bsu\s+(-|\w)", 0.55).with_reason("Switching user"),
         RiskPattern::new("network_download", r"(?i)\b(curl|wget)\s+", 0.35)
             .with_reason("Network download"),
-        RiskPattern::new("network_upload", r"(?i)\b(curl|wget|scp|rsync)\b.*(-T|--upload-file)", 0.5)
-            .with_reason("Network upload"),
+        RiskPattern::new(
+            "network_upload",
+            r"(?i)\b(curl|wget|scp|rsync)\b.*(-T|--upload-file)",
+            0.5,
+        )
+        .with_reason("Network upload"),
         RiskPattern::new("pip_install", r"(?i)\bpip\s+install\b", 0.35)
             .with_reason("Installing Python packages"),
         RiskPattern::new("npm_global", r"(?i)\bnpm\s+install\s+-g\b", 0.35)
             .with_reason("Global npm install"),
-        RiskPattern::new("move_rename", r"(?i)\bmv\s+", 0.3)
-            .with_reason("Moving/renaming files"),
-        RiskPattern::new("delete_file", r"(?i)\b(rm\s+|del\s+)", 0.4)
-            .with_reason("Deleting files"),
+        RiskPattern::new("move_rename", r"(?i)\bmv\s+", 0.3).with_reason("Moving/renaming files"),
+        RiskPattern::new("delete_file", r"(?i)\b(rm\s+|del\s+)", 0.4).with_reason("Deleting files"),
         RiskPattern::new("git_clean", r"(?i)\bgit\s+clean\s+", 0.45)
             .with_reason("Git clean removes untracked files"),
         RiskPattern::new("docker_rm", r"(?i)\bdocker\s+(rm|rmi)\b", 0.35)
             .with_reason("Removing docker containers/images"),
         // --- Low (<0.3) ---
-        RiskPattern::new("read_only", r"(?i)\b(ls|cat|head|tail|less|more|find|grep|wc|file|stat)\b", 0.05)
-            .with_reason("Read-only command"),
-        RiskPattern::new("git_read", r"(?i)\bgit\s+(log|status|diff|show|branch|tag)\b", 0.05)
-            .with_reason("Read-only git command"),
+        RiskPattern::new(
+            "read_only",
+            r"(?i)\b(ls|cat|head|tail|less|more|find|grep|wc|file|stat)\b",
+            0.05,
+        )
+        .with_reason("Read-only command"),
+        RiskPattern::new(
+            "git_read",
+            r"(?i)\bgit\s+(log|status|diff|show|branch|tag)\b",
+            0.05,
+        )
+        .with_reason("Read-only git command"),
     ]
 }
 

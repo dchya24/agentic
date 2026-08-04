@@ -6,7 +6,10 @@
 #[derive(Debug)]
 pub enum CommandError {
     Config(String),
-    NotFound { what: String, suggestion: Option<String> },
+    NotFound {
+        what: String,
+        suggestion: Option<String>,
+    },
 }
 
 impl std::fmt::Display for CommandError {

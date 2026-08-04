@@ -57,11 +57,7 @@ impl std::fmt::Display for PermissionMode {
 pub(super) fn is_state_changing_action(action: &str) -> bool {
     matches!(
         action,
-        "write_file"
-            | "edit_file"
-            | "delete_file"
-            | "run_command"
-            | "run_script"
+        "write_file" | "edit_file" | "delete_file" | "run_command" | "run_script"
     )
 }
 

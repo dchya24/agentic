@@ -1,34 +1,20 @@
 //! LLM Provider trait and implementations
 
-pub mod openai;
 pub mod anthropic;
+pub mod openai;
 
-pub use openai::{OpenAIProvider, OpenAIProviderConfig};
 pub use anthropic::{
-    AnthropicProvider,
-    AnthropicProviderConfig,
-    RetryConfig,
-    AnthropicResponse,
-    AnthropicContentBlockResponse,
-    AnthropicError,
-    AnthropicErrorDetail,
-    AnthropicStreamEvent,
-    AnthropicStreamMessage,
-    AnthropicStreamDelta,
-    AnthropicUsage,
+    AnthropicContentBlockResponse, AnthropicError, AnthropicErrorDetail, AnthropicProvider,
+    AnthropicProviderConfig, AnthropicResponse, AnthropicStreamDelta, AnthropicStreamEvent,
+    AnthropicStreamMessage, AnthropicUsage, RetryConfig,
 };
+pub use openai::{OpenAIProvider, OpenAIProviderConfig};
 
 use serde::{Deserialize, Serialize};
 
-/// Default system prompt used when no custom prompt is provided.
-///
-/// This prompt establishes the assistant's role as a coding-focused AI
-/// with guidelines for clarity, best practices, and honest communication.
-pub const DEFAULT_SYSTEM_PROMPT: &str = "\
-You are an intelligent coding assistant. You help users with software \
-development tasks including writing, reviewing, refactoring, and debugging \
-code. You provide clear explanations, follow best practices, and write clean, \
-maintainable code. When uncertain, you ask for clarification rather than guessing.";
+/// Baseline system prompt, re-exported from the canonical definition in
+/// [`crate::prompts::DEFAULT_SYSTEM_PROMPT`].
+pub use crate::prompts::DEFAULT_SYSTEM_PROMPT;
 
 pub type ProviderResult<T> = std::result::Result<T, ProviderError>;
 
@@ -142,10 +128,7 @@ impl ChatMessageRequest {
 
     /// Builder helper: attach one or more images to this message.
     /// Replaces any previously-set attachments.
-    pub fn with_attachments(
-        mut self,
-        attachments: Vec<crate::attachments::Attachment>,
-    ) -> Self {
+    pub fn with_attachments(mut self, attachments: Vec<crate::attachments::Attachment>) -> Self {
         self.attachments = attachments;
         self
     }
@@ -387,7 +370,10 @@ mod tests {
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["role"], "assistant");
-        assert!(json["content"].is_null(), "content should serialize as null");
+        assert!(
+            json["content"].is_null(),
+            "content should serialize as null"
+        );
         assert!(json["tool_calls"].is_array());
     }
 

@@ -7,6 +7,12 @@ use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 
 pub struct WriteFileTool;
 
+impl Default for WriteFileTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WriteFileTool {
     pub fn new() -> Self {
         Self

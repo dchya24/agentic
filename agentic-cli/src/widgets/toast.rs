@@ -69,7 +69,11 @@ impl Toast {
     }
 
     /// Create a toast with custom duration
-    pub fn with_duration(message: impl Into<String>, level: ToastLevel, duration: Duration) -> Self {
+    pub fn with_duration(
+        message: impl Into<String>,
+        level: ToastLevel,
+        duration: Duration,
+    ) -> Self {
         Self {
             message: message.into(),
             level,
@@ -120,18 +124,13 @@ impl Toast {
 
         // Calculate fade effect based on remaining time
         let _fraction = self.remaining_fraction();
-        
+
         Line::from(vec![
             Span::raw("  "),
-            Span::styled(
-                format!("{} ", icon),
-                Style::default(),
-            ),
+            Span::styled(format!("{} ", icon), Style::default()),
             Span::styled(
                 self.message.clone(),
-                Style::default()
-                    .fg(color)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
         ])
     }
@@ -221,11 +220,7 @@ mod tests {
 
     #[test]
     fn test_toast_expiration() {
-        let toast = Toast::with_duration(
-            "test",
-            ToastLevel::Info,
-            Duration::from_millis(50),
-        );
+        let toast = Toast::with_duration("test", ToastLevel::Info, Duration::from_millis(50));
         assert!(!toast.is_expired());
 
         sleep(Duration::from_millis(100));
@@ -263,10 +258,10 @@ mod tests {
     fn test_toast_render() {
         let toast = Toast::info("Test message");
         let line = toast.render();
-        
+
         // Should have spans
         assert!(!line.spans.is_empty());
-        
+
         // Check that message is included
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
         assert!(text.contains("Test message"));
@@ -275,26 +270,26 @@ mod tests {
     #[test]
     fn test_toast_manager_cleanup() {
         let mut manager = ToastManager::new();
-        
+
         // Add a toast with short duration
         manager.add(Toast::with_duration(
             "short",
             ToastLevel::Info,
             Duration::from_millis(50),
         ));
-        
+
         // Add a toast with longer duration
         manager.add(Toast::with_duration(
             "long",
             ToastLevel::Success,
             Duration::from_secs(10),
         ));
-        
+
         assert_eq!(manager.toasts.len(), 2);
-        
+
         // Wait for short toast to expire
         sleep(Duration::from_millis(100));
-        
+
         // Cleanup should remove expired toast
         manager.cleanup();
         assert_eq!(manager.toasts.len(), 1);

@@ -1,6 +1,6 @@
 # Agentic CLI
 
-AI agent orchestration command-line interface using [core-agentic](https://github.com/nutec/termul/tree/main/core-agentic).
+AI agent orchestration command-line interface using [core-agentic](https://github.com/nutec/agentic/tree/main/agentic-cli).
 
 ## Installation
 

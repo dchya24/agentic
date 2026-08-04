@@ -10,6 +10,12 @@ use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 
 pub struct UpdateMemoryTool;
 
+impl Default for UpdateMemoryTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UpdateMemoryTool {
     pub fn new() -> Self {
         Self
@@ -86,9 +92,8 @@ impl Tool for UpdateMemoryTool {
             "project" | "local" => {
                 let cwd = std::env::current_dir()
                     .map_err(|e| ToolError::new(format!("Failed to read cwd: {}", e)))?;
-                append_project_memory(&cwd, content).map_err(|e| {
-                    ToolError::new(format!("Failed to write project memory: {}", e))
-                })?
+                append_project_memory(&cwd, content)
+                    .map_err(|e| ToolError::new(format!("Failed to write project memory: {}", e)))?
             }
             other => {
                 return Err(ToolError::new(format!(

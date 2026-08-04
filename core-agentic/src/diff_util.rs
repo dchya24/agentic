@@ -31,7 +31,11 @@ pub fn unified_diff(path: &str, before: &str, after: &str, context_lines: usize)
         out.push_str(&format!("+++ b/{}\n", path));
     }
 
-    for hunk in diff.unified_diff().context_radius(context_lines).iter_hunks() {
+    for hunk in diff
+        .unified_diff()
+        .context_radius(context_lines)
+        .iter_hunks()
+    {
         out.push_str(&format!("{}\n", hunk.header()));
         for change in hunk.iter_changes() {
             let prefix = match change.tag() {
@@ -57,7 +61,10 @@ pub fn unified_diff(path: &str, before: &str, after: &str, context_lines: usize)
 /// noisy and the caller only wants a headline number.
 pub fn change_summary(before: &str, after: &str) -> ChangeStats {
     if before == after {
-        return ChangeStats { added: 0, removed: 0 };
+        return ChangeStats {
+            added: 0,
+            removed: 0,
+        };
     }
     let diff = TextDiff::from_lines(before, after);
     let mut added = 0usize;
@@ -122,6 +129,12 @@ mod tests {
     #[test]
     fn change_summary_zero_when_unchanged() {
         let stats = change_summary("same\n", "same\n");
-        assert_eq!(stats, ChangeStats { added: 0, removed: 0 });
+        assert_eq!(
+            stats,
+            ChangeStats {
+                added: 0,
+                removed: 0
+            }
+        );
     }
 }

@@ -16,7 +16,7 @@ mod widgets;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, ColorChoice, Command, ConfigAction, SkillAction};
+use cli::{Cli, ColorChoice, Command, ConfigAction};
 use commands::Commands;
 use core_agentic::Config;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,22 +40,86 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // ── Logging setup ─────────────────────────────────────
-    let log_level = match cli.verbose {
+    // Two layers with independent filters:
+    //   console  → respects RUST_LOG / -v / --debug
+    //   file     → always TRACE for our crates, regardless of console
+    //              verbosity, so every LLM call + loop iteration is
+    //              captured for post-hoc debugging.
+    let console_level = match cli.verbose {
         0 => "warn",
         1 => "info",
         2 => "debug",
         _ => "trace",
     };
-    let filter = if cli.debug {
+    let console_filter = if cli.debug {
         EnvFilter::new("debug")
     } else {
-        EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(log_level))
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(console_level))
+    };
+
+    // Resolve the file-log destination.
+    //   --log-file <PATH>   → use exactly that path
+    //   --no-log-file       → disable
+    //   debug build, else   → default to ./logs/agentic-<ts>.log
+    //   release build       → disabled unless --log-file given
+    let log_file_path: Option<std::path::PathBuf> = if cli.no_log_file {
+        None
+    } else if let Some(p) = &cli.log_file {
+        Some(std::path::PathBuf::from(p))
+    } else if cfg!(debug_assertions) {
+        let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        Some(std::path::PathBuf::from(format!("logs/agentic-{}.log", ts)))
+    } else {
+        None
+    };
+
+    // WorkerGuard keeps the background writer thread alive until main
+    // returns; dropping it flushes. Must live as long as we log.
+    let mut _log_guard: Option<tracing_appender::non_blocking::WorkerGuard> = None;
+
+    let console_layer = fmt::layer()
+        .with_target(cli.debug)
+        .with_filter(console_filter);
+
+    let file_layer = match &log_file_path {
+        Some(path) => {
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to open log file {}: {}", path.display(), e)
+                })?;
+            let (writer, guard) = tracing_appender::non_blocking(file);
+            _log_guard = Some(guard);
+
+            // File captures our crates at TRACE plus dep warnings,
+            // tunable via the RUST_LOG_FILE env var.
+            let file_filter = EnvFilter::try_from_env("RUST_LOG_FILE").unwrap_or_else(|_| {
+                EnvFilter::new("core_agentic=trace,agentic_cli=trace,agentic=trace,warn")
+            });
+
+            eprintln!("📝 agentic log → {}", path.display());
+
+            Some(
+                fmt::layer()
+                    .with_writer(writer)
+                    .with_ansi(false)
+                    .with_target(true)
+                    .with_filter(file_filter),
+            )
+        }
+        None => None,
     };
 
     tracing_subscriber::registry()
-        .with(fmt::layer().with_target(cli.debug))
-        .with(filter)
+        .with(console_layer)
+        .with(file_layer)
         .init();
 
     if cli.verbose > 0 || cli.debug {
@@ -106,7 +170,10 @@ async fn main() -> Result<()> {
             return Ok(());
         }
 
-        if matches!(action, ConfigAction::Init { .. } | ConfigAction::Reset { .. }) {
+        if matches!(
+            action,
+            ConfigAction::Init { .. } | ConfigAction::Reset { .. }
+        ) {
             let fallback_config = Config::fallback();
             let commands = Commands::new(fallback_config)
                 .with_color(color_enabled)
@@ -114,11 +181,9 @@ async fn main() -> Result<()> {
             return commands.config(action).map_err(|e| anyhow::anyhow!(e));
         }
 
-        if matches!(action, ConfigAction::Validate { .. }) {
-            if !Config::config_exists() {
-                eprintln!("✗ Config file not found. Run 'agentic config init' to create one.");
-                std::process::exit(1);
-            }
+        if matches!(action, ConfigAction::Validate { .. }) && !Config::config_exists() {
+            eprintln!("✗ Config file not found. Run 'agentic config init' to create one.");
+            std::process::exit(1);
         }
     }
 
@@ -190,9 +255,9 @@ async fn main() -> Result<()> {
     match &cli.command {
         Some(Command::Run { task, plan }) => {
             if *plan {
-                commands.plan_run(&task).await?;
+                commands.plan_run(task).await?;
             } else {
-                commands.run(&task).await?;
+                commands.run(task).await?;
             }
         }
         Some(Command::Interactive) => {
@@ -201,7 +266,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Tui) => {
             commands = commands.with_interactive_mode(true);
-            tui::run_tui(commands).await?;
+            tui::run_tui(std::sync::Arc::new(tokio::sync::Mutex::new(commands))).await?;
         }
         Some(Command::Config(action)) => {
             commands.config(action)?;

@@ -17,8 +17,7 @@ use clap::{Parser, Subcommand};
           agentic init                          # Interactive setup wizard\n  \
           agentic run \"list files\"              # Run a single task\n  \
           agentic interactive                   # Start REPL\n\
-        \n\
-        Documentation: https://github.com/nutec/termul"
+        "
 )]
 pub struct Cli {
     /// Set a custom config file path
@@ -44,6 +43,16 @@ pub struct Cli {
     /// - yolo:    auto-approve everything except hard-blocked patterns
     #[arg(long, global = true, value_name = "MODE", default_value = "default")]
     pub mode: PermissionModeArg,
+
+    /// Write all tracing logs (incl. every LLM request/response and agent
+    /// loop iteration) to a file. In debug builds this defaults to
+    /// `./logs/agentic-<timestamp>.log`; in release it is off unless given.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub log_file: Option<String>,
+
+    /// Disable automatic file logging (overrides the debug-build default).
+    #[arg(long, global = true)]
+    pub no_log_file: bool,
 
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -107,12 +116,15 @@ pub enum Command {
     },
 
     /// Start interactive mode (REPL)
-    #[command(alias = "i", long_about = "Start an interactive REPL session.\n\
+    #[command(
+        alias = "i",
+        long_about = "Start an interactive REPL session.\n\
         \n\
         Enter a persistent chat session where you can send multiple\n\
         messages, switch providers, manage config, and more.\n\
         \n\
-        Slash commands: /help, /config, /provider, /model, /clear, /save, /tools, /quit")]
+        Slash commands: /help, /config, /provider, /model, /clear, /save, /tools, /quit"
+    )]
     Interactive,
 
     /// Start TUI mode (full-screen interactive)

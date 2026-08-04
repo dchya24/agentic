@@ -104,7 +104,9 @@ fn append_to(path: &Path, note: &str) -> std::io::Result<()> {
         .create(true)
         .append(true)
         .open(path)?;
-    let header = chrono::Utc::now().format("## %Y-%m-%d %H:%M UTC").to_string();
+    let header = chrono::Utc::now()
+        .format("## %Y-%m-%d %H:%M UTC")
+        .to_string();
     writeln!(f, "\n{}\n\n{}", header, note.trim_end())?;
     Ok(())
 }

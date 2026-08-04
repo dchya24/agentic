@@ -14,17 +14,14 @@ use ratatui::{
 /// Render input with syntax highlighting and cursor
 pub fn render_input(input: &str, cursor_pos: usize) -> Line<'static> {
     if input.is_empty() {
-        return Line::from(vec![Span::styled(
-            " ",
-            Style::default().bg(Color::White),
-        )]);
+        return Line::from(vec![Span::styled(" ", Style::default().bg(Color::White))]);
     }
 
     let mut spans = Vec::new();
     let chars: Vec<(usize, char)> = input.char_indices().collect();
 
     // Build style regions
-    for (_idx, (byte_pos, c)) in chars.iter().enumerate() {
+    for (byte_pos, c) in chars.iter() {
         let style = get_char_style(*c, input, *byte_pos);
         let is_cursor = *byte_pos == cursor_pos;
 
@@ -39,10 +36,7 @@ pub fn render_input(input: &str, cursor_pos: usize) -> Line<'static> {
 
     // If cursor is at the very end (after last char), add a cursor block
     if cursor_pos >= input.len() {
-        spans.push(Span::styled(
-            " ",
-            Style::default().bg(Color::White),
-        ));
+        spans.push(Span::styled(" ", Style::default().bg(Color::White)));
     }
 
     Line::from(spans)
@@ -94,30 +88,21 @@ fn get_char_style(c: char, input: &str, pos: usize) -> Style {
 /// Render placeholder text when input is empty
 pub fn render_placeholder() -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            "Type a message, ",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("Type a message, ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             "/",
             Style::default()
                 .fg(Color::Rgb(241, 196, 15))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            " for commands, ",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(" for commands, ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             "@",
             Style::default()
                 .fg(Color::Rgb(52, 152, 219))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            " for files",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(" for files", Style::default().fg(Color::DarkGray)),
     ])
 }
 

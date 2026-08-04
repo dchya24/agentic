@@ -195,10 +195,26 @@ impl Plan {
 
     /// Return a summary of step statuses: (pending, completed, failed, skipped).
     pub fn step_summary(&self) -> (usize, usize, usize, usize) {
-        let pending = self.steps.iter().filter(|s| s.status == StepStatus::Pending).count();
-        let completed = self.steps.iter().filter(|s| s.status == StepStatus::Completed).count();
-        let failed = self.steps.iter().filter(|s| s.status == StepStatus::Failed).count();
-        let skipped = self.steps.iter().filter(|s| s.status == StepStatus::Skipped).count();
+        let pending = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Pending)
+            .count();
+        let completed = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Completed)
+            .count();
+        let failed = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Failed)
+            .count();
+        let skipped = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Skipped)
+            .count();
         (pending, completed, failed, skipped)
     }
 
@@ -224,7 +240,10 @@ impl PlanResult {
     pub fn from_plan(plan: &Plan) -> Self {
         let (pending, completed, failed, skipped) = plan.step_summary();
         let output = match plan.status {
-            PlanStatus::Completed => format!("Plan completed: {} step(s) executed successfully.", completed),
+            PlanStatus::Completed => format!(
+                "Plan completed: {} step(s) executed successfully.",
+                completed
+            ),
             PlanStatus::Failed => format!(
                 "Plan failed: {} completed, {} failed, {} skipped.",
                 completed, failed, skipped
@@ -332,11 +351,7 @@ impl PlannerAgent {
     // ---- Plan creation via LLM ----
 
     /// Ask the LLM to create a plan for the given goal, given the available tools.
-    pub fn create_plan(
-        &self,
-        goal: &str,
-        tools: &ToolRegistry,
-    ) -> Result<Plan, AgenticError> {
+    pub fn create_plan(&self, goal: &str, tools: &ToolRegistry) -> Result<Plan, AgenticError> {
         let tool_defs = tools.tool_definitions();
         let tool_descriptions: Vec<String> = tool_defs
             .iter()
@@ -363,10 +378,13 @@ impl PlannerAgent {
             tool_descriptions.join("\n")
         );
 
-        let request = ChatRequest::new("planner", vec![
-            ChatMessageRequest::system(&system_prompt),
-            ChatMessageRequest::user(goal),
-        ]);
+        let request = ChatRequest::new(
+            "planner",
+            vec![
+                ChatMessageRequest::system(&system_prompt),
+                ChatMessageRequest::user(goal),
+            ],
+        );
 
         let response = self
             .provider
@@ -393,7 +411,11 @@ impl PlannerAgent {
         };
 
         self.events.emit(crate::events::Event::System {
-            message: format!("Plan created with {} step(s) for goal: {}", plan.steps.len(), goal),
+            message: format!(
+                "Plan created with {} step(s) for goal: {}",
+                plan.steps.len(),
+                goal
+            ),
         });
 
         Ok(plan)
@@ -401,10 +423,7 @@ impl PlannerAgent {
 
     /// Create a plan manually (without LLM) from a list of step descriptions.
     pub fn create_plan_manual(&self, goal: &str, step_descriptions: Vec<String>) -> Plan {
-        let steps: Vec<Step> = step_descriptions
-            .into_iter()
-            .map(|desc| Step::new(desc))
-            .collect();
+        let steps: Vec<Step> = step_descriptions.into_iter().map(Step::new).collect();
 
         let mut plan = Plan::new(goal).with_steps(steps);
         plan.status = if self.config.require_approval {
@@ -616,9 +635,7 @@ impl PlannerAgent {
             self.emit_plan_progress(plan, &step_id, &step_desc, "in_progress");
 
             self.events.emit(crate::events::Event::ToolCall {
-                tool_name: step_tool
-                    .clone()
-                    .unwrap_or_else(|| "none".to_string()),
+                tool_name: step_tool.clone().unwrap_or_else(|| "none".to_string()),
                 arguments: step_args.clone().unwrap_or(serde_json::json!(null)),
             });
 
@@ -638,16 +655,23 @@ impl PlannerAgent {
                     match subagent.execute(sub_args) {
                         Ok(output) => (
                             StepStatus::Completed,
-                            Some(serde_json::to_string(&output).unwrap_or_else(|_| output.to_string())),
+                            Some(
+                                serde_json::to_string(&output)
+                                    .unwrap_or_else(|_| output.to_string()),
+                            ),
                         ),
                         Err(e) => (StepStatus::Failed, Some(format!("Subagent error: {}", e))),
                     }
                 } else {
-                    let args = step_args
-                        .clone()
-                        .unwrap_or(serde_json::json!({}));
+                    let args = step_args.clone().unwrap_or(serde_json::json!({}));
                     match tools.execute_by_name(tool_name, &args) {
-                        Ok(output) => (StepStatus::Completed, Some(serde_json::to_string(&output).unwrap_or_else(|_| output.to_string()))),
+                        Ok(output) => (
+                            StepStatus::Completed,
+                            Some(
+                                serde_json::to_string(&output)
+                                    .unwrap_or_else(|_| output.to_string()),
+                            ),
+                        ),
                         Err(e) => (StepStatus::Failed, Some(format!("Tool error: {}", e))),
                     }
                 }
@@ -667,8 +691,7 @@ impl PlannerAgent {
             plan.touch();
 
             self.events.emit(crate::events::Event::ToolOutput {
-                tool_name: step_tool
-                    .unwrap_or_else(|| "none".to_string()),
+                tool_name: step_tool.unwrap_or_else(|| "none".to_string()),
                 output: serde_json::json!({
                     "step": step_desc,
                     "status": new_status.to_string(),
@@ -676,12 +699,7 @@ impl PlannerAgent {
                 }),
             });
 
-            self.emit_plan_progress(
-                plan,
-                &step_id,
-                &step_desc,
-                &new_status.to_string(),
-            );
+            self.emit_plan_progress(plan, &step_id, &step_desc, &new_status.to_string());
 
             // Handle failure
             if new_status == StepStatus::Failed {
@@ -786,13 +804,16 @@ impl PlannerAgent {
             },
         );
 
-        let request = ChatRequest::new("planner", vec![
-            ChatMessageRequest::system(
-                "You are a planning agent. Create a revised plan in JSON array format. \
+        let request = ChatRequest::new(
+            "planner",
+            vec![
+                ChatMessageRequest::system(
+                    "You are a planning agent. Create a revised plan in JSON array format. \
                  Respond ONLY with the JSON array.",
-            ),
-            ChatMessageRequest::user(&prompt),
-        ]);
+                ),
+                ChatMessageRequest::user(&prompt),
+            ],
+        );
 
         let response = self
             .provider
@@ -807,7 +828,7 @@ impl PlannerAgent {
         revised.steps = completed_steps
             .into_iter()
             .cloned()
-            .chain(new_steps.into_iter())
+            .chain(new_steps)
             .collect();
         revised.touch();
 
@@ -848,12 +869,11 @@ mod tests {
 
     #[test]
     fn test_plan_with_steps() {
-        let plan = Plan::new("Goal")
-            .with_steps(vec![
-                Step::new("Step 1"),
-                Step::new("Step 2"),
-                Step::new("Step 3"),
-            ]);
+        let plan = Plan::new("Goal").with_steps(vec![
+            Step::new("Step 1"),
+            Step::new("Step 2"),
+            Step::new("Step 3"),
+        ]);
         assert_eq!(plan.steps.len(), 3);
     }
 
@@ -881,7 +901,10 @@ mod tests {
         let step = Step::new("Read file")
             .with_tool("read_file", serde_json::json!({"path": "/tmp/test.txt"}));
         assert_eq!(step.tool, Some("read_file".to_string()));
-        assert_eq!(step.args, Some(serde_json::json!({"path": "/tmp/test.txt"})));
+        assert_eq!(
+            step.args,
+            Some(serde_json::json!({"path": "/tmp/test.txt"}))
+        );
     }
 
     #[test]
@@ -936,7 +959,10 @@ mod tests {
         s.status = StepStatus::Completed;
         s.result = Some("done".to_string());
 
-        assert_eq!(plan.get_step(&step_id).unwrap().status, StepStatus::Completed);
+        assert_eq!(
+            plan.get_step(&step_id).unwrap().status,
+            StepStatus::Completed
+        );
     }
 
     #[test]
@@ -1082,12 +1108,11 @@ mod tests {
 
     #[test]
     fn test_plan_serialization_roundtrip() {
-        let plan = Plan::new("Build an API")
-            .with_steps(vec![
-                Step::new("Read existing code"),
-                Step::new("Write endpoints")
-                    .with_tool("write_file", serde_json::json!({"path": "/tmp/api.rs"})),
-            ]);
+        let plan = Plan::new("Build an API").with_steps(vec![
+            Step::new("Read existing code"),
+            Step::new("Write endpoints")
+                .with_tool("write_file", serde_json::json!({"path": "/tmp/api.rs"})),
+        ]);
         let json = serde_json::to_string_pretty(&plan).unwrap();
         let parsed: Plan = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.goal, plan.goal);
@@ -1139,7 +1164,8 @@ mod tests {
 
     #[test]
     fn test_parse_plan_response_simple() {
-        let json = r#"[{"description": "Read file", "tool": "read_file", "args": {"path": "test.rs"}}]"#;
+        let json =
+            r#"[{"description": "Read file", "tool": "read_file", "args": {"path": "test.rs"}}]"#;
         let steps = PlannerAgent::parse_plan_response(json).unwrap();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].description, "Read file");
@@ -1186,13 +1212,22 @@ mod tests {
     #[test]
     fn test_create_plan_manual() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider);
 
         let plan = planner.create_plan_manual(
             "Fix the bug",
-            vec!["Find the bug".to_string(), "Fix it".to_string(), "Test it".to_string()],
+            vec![
+                "Find the bug".to_string(),
+                "Fix it".to_string(),
+                "Test it".to_string(),
+            ],
         );
 
         assert_eq!(plan.goal, "Fix the bug");
@@ -1203,7 +1238,12 @@ mod tests {
     #[test]
     fn test_create_plan_manual_no_approval() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
             require_approval: false,
@@ -1217,7 +1257,12 @@ mod tests {
     #[test]
     fn test_approve_plan() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider);
 
@@ -1231,7 +1276,12 @@ mod tests {
     #[test]
     fn test_approve_plan_wrong_status() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider);
 
@@ -1245,7 +1295,12 @@ mod tests {
     #[test]
     fn test_reject_plan() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider);
 
@@ -1259,7 +1314,12 @@ mod tests {
     #[test]
     fn test_request_approval_default_approves() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider);
 
@@ -1271,7 +1331,12 @@ mod tests {
     #[test]
     fn test_request_approval_with_callback() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider);
         planner.set_approval_callback(|_plan| false);
@@ -1283,7 +1348,12 @@ mod tests {
     #[test]
     fn test_execute_plan_empty() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
             require_approval: false,
@@ -1302,7 +1372,12 @@ mod tests {
     #[test]
     fn test_execute_plan_no_tool_steps() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
             require_approval: false,
@@ -1311,10 +1386,7 @@ mod tests {
         let tools = ToolRegistry::new();
 
         let plan = Plan::new("Goal")
-            .with_steps(vec![
-                Step::new("Think about it"),
-                Step::new("Think more"),
-            ]);
+            .with_steps(vec![Step::new("Think about it"), Step::new("Think more")]);
         let mut plan = plan;
         plan.status = PlanStatus::Draft;
 
@@ -1326,7 +1398,12 @@ mod tests {
     #[test]
     fn test_execute_plan_with_tool_steps() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
             require_approval: false,
@@ -1336,10 +1413,8 @@ mod tests {
         let tools = ToolRegistry::new();
         tools.register(Box::new(crate::tools::RunCommandTool::new()));
 
-        let plan = Plan::new("Echo hello")
-            .with_steps(vec![
-                Step::new("Run echo").with_tool("run_command", serde_json::json!({"command": "echo hello"})),
-            ]);
+        let plan = Plan::new("Echo hello").with_steps(vec![Step::new("Run echo")
+            .with_tool("run_command", serde_json::json!({"command": "echo hello"}))]);
         let mut plan = plan;
         plan.status = PlanStatus::Draft;
 
@@ -1351,7 +1426,12 @@ mod tests {
     #[test]
     fn test_execute_plan_with_dependencies() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
             require_approval: false,
@@ -1361,12 +1441,14 @@ mod tests {
         let tools = ToolRegistry::new();
         tools.register(Box::new(crate::tools::RunCommandTool::new()));
 
-        let step1 = Step::new("Echo first").with_tool("run_command", serde_json::json!({"command": "echo first"}));
+        let step1 = Step::new("Echo first")
+            .with_tool("run_command", serde_json::json!({"command": "echo first"}));
         let step1_id = step1.id.clone();
-        let step2 = Step::new("Echo second").with_tool("run_command", serde_json::json!({"command": "echo second"})).depends_on(&step1_id);
+        let step2 = Step::new("Echo second")
+            .with_tool("run_command", serde_json::json!({"command": "echo second"}))
+            .depends_on(&step1_id);
 
-        let plan = Plan::new("Sequential echo")
-            .with_steps(vec![step1, step2]);
+        let plan = Plan::new("Sequential echo").with_steps(vec![step1, step2]);
         let mut plan = plan;
         plan.status = PlanStatus::Draft;
 
@@ -1378,7 +1460,12 @@ mod tests {
     #[test]
     fn test_execute_plan_fails_tool_not_found() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
             require_approval: false,
@@ -1387,10 +1474,9 @@ mod tests {
         });
         let tools = ToolRegistry::new();
 
-        let plan = Plan::new("Fail")
-            .with_steps(vec![
-                Step::new("Missing tool").with_tool("nonexistent_tool", serde_json::json!({})),
-            ]);
+        let plan = Plan::new("Fail").with_steps(vec![
+            Step::new("Missing tool").with_tool("nonexistent_tool", serde_json::json!({}))
+        ]);
         let mut plan = plan;
         plan.status = PlanStatus::Draft;
 
@@ -1410,7 +1496,12 @@ mod tests {
         let _guard = rt.enter();
 
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
             require_approval: false,
@@ -1419,11 +1510,8 @@ mod tests {
         });
         let tools = ToolRegistry::new();
 
-        let plan = Plan::new("Delegate")
-            .with_steps(vec![
-                Step::new("Explore API")
-                    .with_tool("spawn_subagent", serde_json::json!({"task": "Read files"})),
-            ]);
+        let plan = Plan::new("Delegate").with_steps(vec![Step::new("Explore API")
+            .with_tool("spawn_subagent", serde_json::json!({"task": "Read files"}))]);
         let mut plan = plan;
         plan.status = PlanStatus::Draft;
 
@@ -1433,14 +1521,22 @@ mod tests {
 
         // Verify the step result mentions Subagent (not regular Tool error)
         let step = plan.get_step(&plan.steps[0].id).unwrap();
-        assert!(step.result.as_deref().unwrap_or("").contains("Subagent"),
-            "Expected Subagent error prefix, got: {:?}", step.result);
+        assert!(
+            step.result.as_deref().unwrap_or("").contains("Subagent"),
+            "Expected Subagent error prefix, got: {:?}",
+            step.result
+        );
     }
 
     #[test]
     fn test_execute_plan_cancels_on_approval_reject() {
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
             require_approval: true,
@@ -1449,8 +1545,7 @@ mod tests {
         planner.set_approval_callback(|_plan| false);
         let tools = ToolRegistry::new();
 
-        let mut plan = Plan::new("Goal")
-            .with_steps(vec![Step::new("Step 1")]);
+        let mut plan = Plan::new("Goal").with_steps(vec![Step::new("Step 1")]);
         plan.status = PlanStatus::PendingApproval;
 
         let result = planner.execute_plan(&mut plan, &tools).unwrap();
@@ -1472,7 +1567,12 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
-            crate::providers::openai::OpenAIProviderConfig::new("test", "http://localhost:1", "key", "model"),
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
         ));
         let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
             require_approval: false,

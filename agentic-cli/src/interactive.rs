@@ -14,7 +14,7 @@ use anyhow::Result;
 use crossterm::{
     cursor::{MoveToColumn, MoveUp},
     event::{self, Event, KeyCode, KeyModifiers},
-    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
     ExecutableCommand,
 };
 use ratatui::{
@@ -22,7 +22,7 @@ use ratatui::{
     text::{Line, Span as RSpan},
 };
 use std::io::{self, Stdout, Write};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -94,7 +94,8 @@ impl SessionStats {
     }
 
     fn add_cache_creation_tokens(&self, n: u32) {
-        self.total_cache_creation_tokens.fetch_add(n, Ordering::Relaxed);
+        self.total_cache_creation_tokens
+            .fetch_add(n, Ordering::Relaxed);
     }
 
     fn total_cache_read_tokens(&self) -> u32 {
@@ -251,11 +252,7 @@ pub async fn run(mut commands: Commands) -> Result<()> {
         .unwrap_or_default()
         .display()
         .to_string();
-    let mut current_session = crate::session::create(
-        &cwd,
-        &model_info.provider,
-        &model_info.model,
-    );
+    let mut current_session = crate::session::create(&cwd, &model_info.provider, &model_info.model);
 
     print_banner(&model_info, &stats);
 
@@ -344,11 +341,11 @@ async fn repl_loop(
     loop {
         // ── Clean up expired toasts ──
         toast_manager.cleanup();
-        
+
         // ── Print status bar once per prompt cycle ──
         if render.needs_status_bar {
             print_prompt_status_bar(stats);
-            
+
             // Render active toasts
             if toast_manager.has_toasts() {
                 let toast_lines = toast_manager.render();
@@ -356,7 +353,7 @@ async fn repl_loop(
                     inline::print_line(&line);
                 }
             }
-            
+
             render.needs_status_bar = false;
         }
 
@@ -364,10 +361,7 @@ async fn repl_loop(
         render.clear_input_area(&mut stdout)?;
 
         // ── Render prompt line first ──
-        let meta = PromptMetadata::new(
-            model_info.provider.clone(),
-            model_info.model.clone(),
-        );
+        let meta = PromptMetadata::new(model_info.provider.clone(), model_info.model.clone());
         let prompt_lines = input_renderer::render_prompt_line(&meta, buffer, dropdown.is_some());
         render.prev_lines = prompt_lines;
 
@@ -401,7 +395,45 @@ async fn repl_loop(
                         }
                         (KeyModifiers::NONE, KeyCode::Tab)
                         | (KeyModifiers::NONE, KeyCode::Enter) => {
-                            accept_dropdown(buffer, dropdown);
+                            if let Some(_auto_cmd) = accept_dropdown(buffer, dropdown) {
+                                // Auto-submit: skill selected, execute immediately
+                                let input = buffer.submit();
+                                let dir_name = std::env::current_dir()
+                                    .unwrap_or_default()
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("?")
+                                    .to_string();
+                                inline::print_line(&Line::from(vec![
+                                    RSpan::styled(
+                                        format!("{}> ", dir_name),
+                                        RStyle::default().add_modifier(Modifier::DIM),
+                                    ),
+                                    RSpan::styled(
+                                        input.clone(),
+                                        RStyle::default().fg(Color::Rgb(220, 220, 230)),
+                                    ),
+                                ]));
+                                let should_break = handle_input(
+                                    &input,
+                                    commands,
+                                    conversation,
+                                    current_session,
+                                    stats,
+                                    model_info,
+                                    toast_manager,
+                                )
+                                .await;
+                                *model_info = get_model_info(commands);
+                                render.needs_status_bar = true;
+                                if should_break {
+                                    return Ok(());
+                                }
+                                continue;
+                            }
+                            // Re-evaluate dropdown: if user selected `/skill` the input
+                            // is now "/skill " which should trigger the skill dropdown.
+                            update_dropdown(buffer, dropdown);
                             continue;
                         }
                         (KeyModifiers::NONE, KeyCode::Esc) => {
@@ -443,7 +475,10 @@ async fn repl_loop(
                                 format!("{}> ", dir_name),
                                 RStyle::default().add_modifier(Modifier::DIM),
                             ),
-                            RSpan::styled(input.clone(), RStyle::default().fg(Color::Rgb(220, 220, 230))),
+                            RSpan::styled(
+                                input.clone(),
+                                RStyle::default().fg(Color::Rgb(220, 220, 230)),
+                            ),
                         ]));
 
                         // Handle input
@@ -480,9 +515,7 @@ async fn repl_loop(
                         *dropdown = None;
                         buffer.clear();
                         inline::print_blank();
-                        inline::print_line(&components::info_badge(
-                            "Use /quit or Ctrl+D to exit.",
-                        ));
+                        inline::print_line(&components::info_badge("Use /quit or Ctrl+D to exit."));
                         inline::print_blank();
                         render.needs_status_bar = true;
                     }
@@ -504,8 +537,10 @@ async fn repl_loop(
                     // ── Backspace ──
                     (KeyModifiers::NONE, KeyCode::Backspace) => {
                         // If at start of a line in multi-line mode, merge with previous line
-                        if buffer.is_multiline() && buffer.cursor() > 0 
-                            && buffer.text().as_bytes().get(buffer.cursor() - 1) == Some(&b'\n') {
+                        if buffer.is_multiline()
+                            && buffer.cursor() > 0
+                            && buffer.text().as_bytes().get(buffer.cursor() - 1) == Some(&b'\n')
+                        {
                             buffer.merge_with_previous_line();
                         } else {
                             buffer.delete_backward();
@@ -596,6 +631,21 @@ async fn repl_loop(
 
 // ── Dropdown trigger & accept logic ─────────────────────────
 
+/// Discover skills and return (name, description) pairs for the skill dropdown.
+fn discover_skill_pairs() -> Vec<(String, String)> {
+    let _config_path = core_agentic::Config::config_path();
+    let config = core_agentic::Config::load().unwrap_or_default();
+    let discovery_config: core_agentic::DiscoveryConfig =
+        core_agentic::DiscoveryConfig::from(&config.skills);
+    let index = core_agentic::discover_skills(&discovery_config);
+    let mut skills: Vec<_> = index.all().into_iter().collect();
+    skills.sort_by(|a, b| a.name().cmp(b.name()));
+    skills
+        .into_iter()
+        .map(|s| (s.name().to_string(), s.description().to_string()))
+        .collect()
+}
+
 /// Update dropdown state based on current input and cursor position.
 fn update_dropdown(buffer: &InputBuffer, dropdown: &mut Option<Dropdown>) {
     let text = buffer.text();
@@ -606,6 +656,12 @@ fn update_dropdown(buffer: &InputBuffer, dropdown: &mut Option<Dropdown>) {
         let before_cursor = &text[..cursor];
         if !before_cursor.contains(' ') {
             let query = &text[1..cursor];
+            // If the query exactly matches a skill command, open skills dropdown directly
+            if query == "skills" || query == "skill" || query == "sk" {
+                let skill_pairs = discover_skill_pairs();
+                *dropdown = Some(Dropdown::new_skill(String::new(), skill_pairs));
+                return;
+            }
             *dropdown = Some(Dropdown::new(DropdownType::Command, query.to_string()));
             return;
         }
@@ -616,6 +672,13 @@ fn update_dropdown(buffer: &InputBuffer, dropdown: &mut Option<Dropdown>) {
             if cmd == "models" || cmd == "m" {
                 let query = &text[space_pos + 1..cursor];
                 *dropdown = Some(Dropdown::new(DropdownType::Model, query.to_string()));
+                return;
+            }
+            // 1c) Check for `/skill <partial>` skill trigger
+            if cmd == "skill" || cmd == "sk" {
+                let query = &text[space_pos + 1..cursor];
+                let skill_pairs = discover_skill_pairs();
+                *dropdown = Some(Dropdown::new_skill(query.to_string(), skill_pairs));
                 return;
             }
         }
@@ -657,22 +720,29 @@ fn find_at_trigger(text: &str, cursor: usize) -> Option<usize> {
 }
 
 /// Accept the currently selected dropdown item and insert into buffer.
-fn accept_dropdown(buffer: &mut InputBuffer, dropdown: &mut Option<Dropdown>) {
-    let dd = match dropdown.take() {
-        Some(d) => d,
-        None => return,
-    };
+///
+/// Returns `Some(command)` when the input should be auto-submitted
+/// (e.g. after selecting a skill from the skills dropdown), or `None`
+/// when the user needs to press Enter again to confirm.
+fn accept_dropdown(buffer: &mut InputBuffer, dropdown: &mut Option<Dropdown>) -> Option<String> {
+    let dd = dropdown.take()?;
 
     let selected_text = match dd.selected_item() {
         Some(s) => s.to_string(),
-        None => return,
+        None => return None,
     };
 
     let is_dir = selected_text.ends_with('/');
 
     match dd.dropdown_type {
         DropdownType::Command => {
-            buffer.set_text(format!("/{} ", selected_text));
+            let cmd = selected_text.trim_start_matches('/');
+            if cmd == "skill" || cmd == "sk" {
+                // Skills dropdown is triggered separately — just fill /skill
+                buffer.set_text("/skill ".to_string());
+            } else {
+                buffer.set_text(format!("/{} ", selected_text));
+            }
         }
         DropdownType::File => {
             if let Some(at_pos) = find_at_trigger(buffer.text(), buffer.cursor()) {
@@ -680,6 +750,14 @@ fn accept_dropdown(buffer: &mut InputBuffer, dropdown: &mut Option<Dropdown>) {
                 let replacement = format!("{}{}", selected_text, suffix);
                 buffer.replace_range(at_pos + 1, &replacement);
             }
+        }
+        DropdownType::Skill => {
+            let skill_name = dd
+                .get_skill_name(&selected_text)
+                .unwrap_or_else(|| selected_text.clone());
+            let cmd = format!("/skill {}", skill_name);
+            buffer.set_text(cmd.clone());
+            return Some(cmd);
         }
         DropdownType::Model => {
             let model_id = dd
@@ -698,6 +776,7 @@ fn accept_dropdown(buffer: &mut InputBuffer, dropdown: &mut Option<Dropdown>) {
         update_dropdown(buffer, &mut new_dd);
         *dropdown = new_dd;
     }
+    None
 }
 
 // ── Input handling ──────────────────────────────────────────
@@ -741,11 +820,8 @@ async fn handle_input(
                 .unwrap_or_default()
                 .display()
                 .to_string();
-            *current_session = crate::session::create(
-                &cwd,
-                &model_info.provider,
-                &model_info.model,
-            );
+            *current_session =
+                crate::session::create(&cwd, &model_info.provider, &model_info.model);
             conversation.clear();
             stats.reset();
             commands.restart_session();
@@ -761,13 +837,20 @@ async fn handle_input(
             inline::print_line(&components::success_badge("New session started."));
             inline::print_blank();
             print_status_bar(model_info, stats);
-            
+
             // Show toast notification
             toast_manager.add(Toast::success("New session started"));
         }
         _ => {
-            process_message(input, commands, conversation, current_session, stats, model_info)
-                .await;
+            process_message(
+                input,
+                commands,
+                conversation,
+                current_session,
+                stats,
+                model_info,
+            )
+            .await;
         }
     }
 
@@ -834,8 +917,9 @@ fn handle_slash_command(input: &str) -> Option<ReplAction> {
             inline::print_blank();
             None
         }
-        "/skills" if !arg.is_empty() => Some(ReplAction::SkillsLoad(arg)),
+        "/skills" | "/skill" | "/sk" if !arg.is_empty() => Some(ReplAction::SkillsLoad(arg)),
         "/skills" => Some(ReplAction::Skills),
+        "/skill" | "/sk" => Some(ReplAction::Skills),
         "/search" | "/find" if !arg.is_empty() => Some(ReplAction::Search(arg)),
         "/search" | "/find" => {
             inline::print_blank();
@@ -902,11 +986,8 @@ async fn handle_repl_action(
                 .unwrap_or_default()
                 .display()
                 .to_string();
-            *current_session = crate::session::create(
-                &cwd,
-                &model_info.provider,
-                &model_info.model,
-            );
+            *current_session =
+                crate::session::create(&cwd, &model_info.provider, &model_info.model);
             conversation.clear();
             stats.reset();
             commands.restart_session();
@@ -922,7 +1003,7 @@ async fn handle_repl_action(
             inline::print_line(&components::success_badge("New session started."));
             inline::print_blank();
             print_status_bar(model_info, stats);
-            
+
             // Show toast notification
             toast_manager.add(Toast::success("New session started"));
         }
@@ -982,9 +1063,9 @@ async fn handle_repl_action(
                     )));
                     inline::print_blank();
                     print_status_bar(model_info, stats);
-                    
+
                     // Show toast notification
-                    toast_manager.add(Toast::success(&format!(
+                    toast_manager.add(Toast::success(format!(
                         "Session resumed: {}",
                         current_session.title
                     )));
@@ -996,12 +1077,9 @@ async fn handle_repl_action(
                         e
                     )));
                     inline::print_blank();
-                    
+
                     // Show toast notification
-                    toast_manager.add(Toast::error(&format!(
-                        "Failed to load session: {}",
-                        e
-                    )));
+                    toast_manager.add(Toast::error(format!("Failed to load session: {}", e)));
                 }
             }
         }
@@ -1036,9 +1114,9 @@ async fn handle_repl_action(
                 )));
                 inline::print_blank();
                 print_status_bar(model_info, stats);
-                
+
                 // Show toast notification
-                toast_manager.add(Toast::success(&format!(
+                toast_manager.add(Toast::success(format!(
                     "Switched to {} / {}",
                     provider, model
                 )));
@@ -1054,9 +1132,9 @@ async fn handle_repl_action(
                         provider, model
                     )));
                     inline::print_blank();
-                    
+
                     // Show toast notification
-                    toast_manager.add(Toast::success(&format!(
+                    toast_manager.add(Toast::success(format!(
                         "Switched to {} / {}",
                         provider, model
                     )));
@@ -1066,16 +1144,13 @@ async fn handle_repl_action(
                     inline::print_line(&components::error_badge(&e.to_string()));
                     inline::print_line(&Line::from(vec![
                         RSpan::raw("  Use "),
-                        RSpan::styled(
-                            "/models",
-                            RStyle::default().add_modifier(Modifier::BOLD),
-                        ),
+                        RSpan::styled("/models", RStyle::default().add_modifier(Modifier::BOLD)),
                         RSpan::raw(" to see available models."),
                     ]));
                     inline::print_blank();
-                    
+
                     // Show toast notification
-                    toast_manager.add(Toast::error(&e.to_string()));
+                    toast_manager.add(Toast::error(e.to_string()));
                 }
             }
         }
@@ -1094,7 +1169,7 @@ async fn handle_repl_action(
 
             print_turn_separator(model_info);
             let start = Instant::now();
-            if let Err(e) = run_with_cancel(commands.plan_inline(goal)).await {
+            if let Err(e) = commands.plan_inline(goal).await {
                 inline::print_blank();
                 inline::print_line(&components::error_badge(&e.to_string()));
                 inline::print_blank();
@@ -1120,60 +1195,64 @@ async fn handle_repl_action(
             inline::print_blank();
             inline::print_line(&components::section_header(
                 "⚡",
-                &format!("Loading skill: {}", name),
+                &format!("Activating skill: {}", name),
                 Color::Rgb(255, 215, 0),
             ));
             inline::print_blank();
 
-            let discovery_config: core_agentic::DiscoveryConfig =
-                core_agentic::DiscoveryConfig::from(&commands.get_config().skills);
-            let index = core_agentic::discover_skills(&discovery_config);
-
-            if let Some(skill) = index.get(name) {
-                inline::print_line(&Line::from(vec![
-                    Span::styled("  📦 ", Style::default()),
-                    Span::styled(
-                        format!("{} — {}", skill.name(), skill.description()),
+            // Load & activate: inject instructions into orchestrator context
+            match commands.load_and_activate_skill(name) {
+                Ok(body) => {
+                    // Success — show activation badge + preview
+                    inline::print_line(&Line::from(vec![
+                        Span::styled("  ✅ ", Style::default().fg(Color::Rgb(46, 204, 113))),
+                        Span::styled(
+                            format!(
+                                "Skill '{}' activated — instructions injected into agent context.",
+                                name
+                            ),
+                            Style::default()
+                                .fg(Color::Rgb(180, 180, 200))
+                                .add_modifier(Modifier::DIM),
+                        ),
+                    ]));
+                    inline::print_blank();
+                    inline::print_line(&Line::from(vec![Span::styled(
+                        "  📖 Preview:",
                         Style::default()
-                            .fg(Color::Rgb(255, 215, 0))
+                            .fg(Color::Rgb(241, 196, 15))
                             .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
-                inline::print_line(&Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(
-                        format!("Path: {}", skill.dir.display()),
-                        Style::default()
-                            .fg(Color::Rgb(100, 100, 120))
-                            .add_modifier(Modifier::DIM),
-                    ),
-                ]));
-                inline::print_blank();
-
-                let preview: Vec<&str> = skill.body.lines().take(5).collect();
-                for line in &preview {
+                    )]));
+                    let preview: Vec<&str> = body.lines().take(5).collect();
+                    for line in &preview {
+                        inline::print_line(&Line::from(vec![
+                            Span::raw("     "),
+                            Span::styled(*line, Style::default().fg(Color::Rgb(180, 180, 200))),
+                        ]));
+                    }
+                    if body.lines().count() > 5 {
+                        inline::print_line(&Line::from(vec![
+                            Span::raw("     "),
+                            Span::styled("...", Style::default().fg(Color::Rgb(100, 100, 120))),
+                        ]));
+                    }
+                    inline::print_blank();
                     inline::print_line(&Line::from(vec![
-                        Span::raw("     "),
+                        Span::raw("  💡 "),
                         Span::styled(
-                            *line,
-                            Style::default().fg(Color::Rgb(180, 180, 200)),
+                            "Now send a message — the skill instructions will be included as context.",
+                            Style::default()
+                                .fg(Color::Rgb(100, 100, 120))
+                                .add_modifier(Modifier::DIM),
                         ),
                     ]));
                 }
-                if skill.body.lines().count() > 5 {
-                    inline::print_line(&Line::from(vec![
-                        Span::raw("     "),
-                        Span::styled(
-                            "...",
-                            Style::default().fg(Color::Rgb(100, 100, 120)),
-                        ),
-                    ]));
+                Err(e) => {
+                    inline::print_line(&components::warning_badge(&format!(
+                        "Failed to activate skill '{}': {}",
+                        name, e
+                    )));
                 }
-            } else {
-                inline::print_line(&components::warning_badge(&format!(
-                    "Skill '{}' not found. Use /skills to list available skills.",
-                    name
-                )));
             }
             inline::print_blank();
         }
@@ -1198,36 +1277,6 @@ async fn handle_repl_action(
 /// the future runs. When Esc is detected, the process-global cancel flag
 /// is set, causing the orchestrator to stop at the next iteration boundary
 /// and return `AgenticError::Cancelled`.
-async fn run_with_cancel<F, T>(fut: F) -> Result<T>
-where
-    F: std::future::Future<Output = Result<T>>,
-{
-    let cancel = crate::cancel_flag();
-
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_w = stop.clone();
-    let cancel_w = cancel.clone();
-
-    let watcher = std::thread::spawn(move || {
-        while !stop_w.load(Ordering::Relaxed) {
-            if let Ok(true) = crossterm::event::poll(std::time::Duration::from_millis(100)) {
-                if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
-                    if key.code == KeyCode::Esc {
-                        cancel_w.store(true, Ordering::SeqCst);
-                        return;
-                    }
-                }
-            }
-        }
-    });
-
-    let result = fut.await;
-
-    stop.store(true, Ordering::Relaxed);
-    let _ = watcher.join();
-
-    result
-}
 
 /// Process a single user message through the agent.
 async fn process_message(
@@ -1252,9 +1301,10 @@ async fn process_message(
     inline::print_blank();
 
     let start = Instant::now();
-    // run_with_cancel sets the cancel flag on Esc; the orchestrator checks
-    // it at each iteration boundary and returns AgenticError::Cancelled.
-    let result = run_with_cancel(commands.run(input)).await;
+    // Ctrl+C cancellation is handled by the signal handler in main.rs,
+    // which sets the global CANCEL_FLAG.  The orchestrator checks this
+    // flag at every turn boundary and returns gracefully.
+    let result = commands.run(input).await;
 
     if let Err(e) = result {
         inline::print_blank();
@@ -1526,10 +1576,7 @@ fn print_status_bar(model_info: &ModelInfo, stats: &SessionStats) {
                 .add_modifier(Modifier::DIM),
         ),
         if model_info.vision_capable {
-            RSpan::styled(
-                "  👁",
-                RStyle::default().fg(Color::Rgb(135, 206, 250)),
-            )
+            RSpan::styled("  👁", RStyle::default().fg(Color::Rgb(135, 206, 250)))
         } else {
             RSpan::raw("")
         },
@@ -1608,7 +1655,10 @@ fn print_prompt_status_bar(stats: &SessionStats) {
 
     spans.push(sep.clone());
     spans.push(RSpan::styled(
-        format!("\u{1f4ca} \u{2191}{} \u{2193}{} ({})", in_tok, out_tok, total_formatted),
+        format!(
+            "\u{1f4ca} \u{2191}{} \u{2193}{} ({})",
+            in_tok, out_tok, total_formatted
+        ),
         RStyle::default().fg(Color::Rgb(186, 85, 211)),
     ));
 
@@ -1629,10 +1679,7 @@ fn print_response_summary(stats: &SessionStats) {
     let in_tok = stats.format_tokens(stats.total_input_tokens());
     let out_tok = stats.format_tokens(stats.total_output_tokens());
 
-    let sep = RSpan::styled(
-        " │ ",
-        RStyle::default().fg(Color::Rgb(60, 60, 80)),
-    );
+    let sep = RSpan::styled(" │ ", RStyle::default().fg(Color::Rgb(60, 60, 80)));
 
     inline::print_line(&Line::from(vec![
         RSpan::raw("  "),
@@ -1665,6 +1712,8 @@ fn print_help() {
 - `/mcp`               Show MCP server status
 - `/skills`            List all indexed skills
 - `/skills <name>`     Load and display a skill
+- `/skill`             Open skill selection dropdown
+- `/skill <name>`      Load and activate a skill
 - `/sessions`          List previous sessions
 - `/sessions <id>`     Resume a previous session
 - `/plan <goal>`       Create a plan for a goal
@@ -1689,7 +1738,7 @@ fn print_help() {
 
 **Tips:**
 - Type any text to send as a task to the AI agent
-- Use `/skills <name>` to load a skill before starting a task
+- Use `/skill <name>` or `/skills <name>` to load a skill before starting a task
 - Ctrl+C to cancel, Ctrl+D to exit
 "#;
 
@@ -2053,21 +2102,18 @@ fn show_sessions() {
         };
 
         inline::print_line(&Line::from(vec![
-            RSpan::styled(format!("  {:2}. ", i + 1), dim.clone()),
-            RSpan::styled(title.to_string(), bold.clone()),
-            RSpan::styled(format!("  {} msgs", s.message_count), dim.clone()),
+            RSpan::styled(format!("  {:2}. ", i + 1), dim),
+            RSpan::styled(title.to_string(), bold),
+            RSpan::styled(format!("  {} msgs", s.message_count), dim),
             RSpan::raw("  "),
-            RSpan::styled(
-                time,
-                RStyle::default().fg(Color::Rgb(135, 206, 250)),
-            ),
+            RSpan::styled(time, RStyle::default().fg(Color::Rgb(135, 206, 250))),
         ]));
         inline::print_line(&Line::from(vec![
             RSpan::styled("      ", RStyle::default()),
-            RSpan::styled(format!("{}", s.id), dim.clone()),
+            RSpan::styled(s.id.to_string(), dim),
             RSpan::styled(
                 format!(" · {} · {}/{}", s.directory, s.provider, s.model),
-                dim.clone(),
+                dim,
             ),
         ]));
         inline::print_blank();
@@ -2076,7 +2122,7 @@ fn show_sessions() {
     if sessions.len() > 20 {
         inline::print_line(&Line::from(vec![RSpan::styled(
             format!("  ... and {} more", sessions.len() - 20),
-            dim.clone(),
+            dim,
         )]));
         inline::print_blank();
     }

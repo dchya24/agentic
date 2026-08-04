@@ -53,10 +53,16 @@ impl Orchestrator {
 
         loop {
             iteration += 1;
+            tracing::debug!(
+                iteration,
+                max = self.max_iterations,
+                model = %self.model,
+                "agent loop iteration start (sync)"
+            );
             if iteration > self.max_iterations {
                 tracing::warn!(
                     max = self.max_iterations,
-                    "Agent loop hit max_iterations; aborting"
+                    "Agent loop exceeded max_iterations (unreachable backstop)"
                 );
                 return Err(AgenticError::Provider(format!(
                     "Agent loop exceeded max_iterations ({}). Aborting to prevent runaway.",
@@ -64,8 +70,19 @@ impl Orchestrator {
                 )));
             }
 
-            // Warn when approaching the limit (80% threshold)
-            if self.approaching_limit(iteration) && iteration < self.max_iterations {
+            // The last allowed iteration is a FORCED finalization: tools
+            // are stripped and a "wrap up now" nudge is injected, so the
+            // model must produce a text answer. This converts the old
+            // hard-abort (which threw away everything the agent found)
+            // into a useful final response built from the work already
+            // done.
+            let finalizing = iteration == self.max_iterations;
+
+            // Warn when approaching the limit (80% threshold): surface a
+            // UI notice and inject a transient "start wrapping up" nudge
+            // so the model converges naturally before forced finalization.
+            let approaching = self.approaching_limit(iteration) && !finalizing;
+            if approaching {
                 tracing::info!(
                     iteration,
                     max = self.max_iterations,
@@ -87,9 +104,27 @@ impl Orchestrator {
 
             self.maybe_autocompact();
 
-            let messages = self.build_messages();
-            let mut request =
-                ChatRequest::new(&self.model, messages).with_tools(tool_defs.clone());
+            let mut messages = self.build_messages();
+            if finalizing {
+                messages.push(Self::finalization_message());
+                self.events.emit(crate::events::Event::System {
+                    message: format!(
+                        "🛑 Iteration limit reached ({}) — finalizing answer",
+                        self.max_iterations
+                    ),
+                });
+            } else if approaching {
+                // Transient steering nudge — not saved to memory, so it
+                // only affects this one request.
+                messages.push(Self::wind_down_message());
+            }
+            Self::log_request(iteration, &self.model, &messages);
+            // On finalization, omit tools entirely so the provider can't
+            // return tool calls — the model is forced to answer in text.
+            let mut request = ChatRequest::new(&self.model, messages);
+            if !finalizing {
+                request = request.with_tools(tool_defs.clone());
+            }
             if let Some(ref prompt) = self.system_prompt {
                 request = request.with_system_prompt(prompt.clone());
             }
@@ -100,6 +135,35 @@ impl Orchestrator {
                 .map_err(|e| AgenticError::Provider(e.to_string()))?;
 
             let content = response.message.content.clone().unwrap_or_default();
+            Self::log_response(
+                iteration,
+                &self.model,
+                &content,
+                &response.message.tool_calls,
+                response.usage.as_ref(),
+                response.finish_reason.as_deref(),
+            );
+
+            // Forced finalization: accept whatever text the model returns
+            // as the final answer and terminate. (Tools were stripped, so
+            // the response carries no tool calls in practice.)
+            if finalizing {
+                tracing::info!(
+                    iteration,
+                    content_len = content.len(),
+                    "Forced finalization at max_iterations"
+                );
+                self.clear_loop_detection();
+                self.memory
+                    .lock()
+                    .unwrap()
+                    .add_message(Message::assistant(&content));
+                {
+                    let mut state = self.state.lock().unwrap();
+                    *state = OrchestratorState::Completed;
+                }
+                return Ok(content);
+            }
 
             if !response.message.tool_calls.is_empty() {
                 // Emit the LLM's text content as a Thought event so the user
@@ -110,20 +174,32 @@ impl Orchestrator {
                     });
                 }
 
-                // Check for loop detection on the first tool call
-                if let Some(first_tc) = response.message.tool_calls.first() {
-                    let tool_name = &first_tc.function.name;
-                    if self.record_tool_call_for_loop_detection(tool_name) {
-                        tracing::warn!(
-                            tool = %tool_name,
-                            threshold = super::LOOP_DETECTION_THRESHOLD,
-                            "Loop detected: same tool called consecutively"
-                        );
-                        return Err(AgenticError::Provider(format!(
-                            "Loop detected: '{}' called {} times consecutively. Aborting to prevent infinite loop.",
-                            tool_name, super::LOOP_DETECTION_THRESHOLD
-                        )));
-                    }
+                // Loop detection — record every tool call this turn as a
+                // (name + arguments) signature. Only the *exact same* call
+                // repeated `LOOP_DETECTION_THRESHOLD` times consecutively
+                // (across turns) trips the guard; calling the same tool
+                // with different arguments (e.g. loading different skills)
+                // is legitimate progress and does not count.
+                let loop_sigs: Vec<(&str, &str)> = response
+                    .message
+                    .tool_calls
+                    .iter()
+                    .map(|tc| (tc.function.name.as_str(), tc.function.arguments.as_str()))
+                    .collect();
+                if let Some((sig, run)) = self.record_tool_calls_for_loop_detection(&loop_sigs) {
+                    tracing::warn!(
+                        tool = %sig.tool,
+                        args = %sig.args_preview,
+                        run = run,
+                        threshold = super::LOOP_DETECTION_THRESHOLD,
+                        "Loop detected: identical tool call repeated consecutively"
+                    );
+                    return Err(AgenticError::Provider(format!(
+                        "Loop detected: '{}' called {} times consecutively with identical \
+                         arguments ({}). The model is repeating itself without making progress. \
+                         Aborting to prevent an infinite loop.",
+                        sig.tool, run, sig.args_preview,
+                    )));
                 }
 
                 let tool_calls: Vec<(String, String, String)> = response
@@ -158,15 +234,12 @@ impl Orchestrator {
         }
     }
 
-    pub async fn run_stream<F>(
-        &self,
-        input: &str,
-        on_chunk: F,
-    ) -> Result<String, AgenticError>
+    pub async fn run_stream<F>(&self, input: &str, on_chunk: F) -> Result<String, AgenticError>
     where
         F: FnMut(String),
     {
-        self.run_stream_with_attachments(input, Vec::new(), on_chunk).await
+        self.run_stream_with_attachments(input, Vec::new(), on_chunk)
+            .await
     }
 
     /// Streaming variant of [`Self::run_with_attachments`]. The same
@@ -208,10 +281,16 @@ impl Orchestrator {
 
         loop {
             iteration += 1;
+            tracing::debug!(
+                iteration,
+                max = self.max_iterations,
+                model = %self.model,
+                "agent loop iteration start (stream)"
+            );
             if iteration > self.max_iterations {
                 tracing::warn!(
                     max = self.max_iterations,
-                    "Agent stream loop hit max_iterations; aborting"
+                    "Agent stream loop exceeded max_iterations (unreachable backstop)"
                 );
                 return Err(AgenticError::Provider(format!(
                     "Agent loop exceeded max_iterations ({}). Aborting to prevent runaway.",
@@ -219,8 +298,17 @@ impl Orchestrator {
                 )));
             }
 
-            // Warn when approaching the limit (80% threshold)
-            if self.approaching_limit(iteration) && iteration < self.max_iterations {
+            // The last allowed iteration is a FORCED finalization: tools
+            // are stripped and a "wrap up now" nudge is injected, so the
+            // model must produce a text answer. See the sync path for
+            // the full rationale.
+            let finalizing = iteration == self.max_iterations;
+
+            // Warn when approaching the limit (80% threshold): UI notice
+            // + transient "start wrapping up" nudge so the model can
+            // converge naturally before forced finalization.
+            let approaching = self.approaching_limit(iteration) && !finalizing;
+            if approaching {
                 tracing::info!(
                     iteration,
                     max = self.max_iterations,
@@ -241,10 +329,26 @@ impl Orchestrator {
 
             self.maybe_autocompact();
 
-            let messages = self.build_messages();
-            let mut request = ChatRequest::new(&self.model, messages)
-                .with_tools(tool_defs.clone())
-                .stream();
+            let mut messages = self.build_messages();
+            if finalizing {
+                messages.push(Self::finalization_message());
+                self.events.emit(crate::events::Event::System {
+                    message: format!(
+                        "🛑 Iteration limit reached ({}) — finalizing answer",
+                        self.max_iterations
+                    ),
+                });
+            } else if approaching {
+                messages.push(Self::wind_down_message());
+            }
+            Self::log_request(iteration, &self.model, &messages);
+            // On finalization, omit tools entirely so the provider can't
+            // return tool calls — the model is forced to answer in text.
+            let mut request = ChatRequest::new(&self.model, messages);
+            if !finalizing {
+                request = request.with_tools(tool_defs.clone());
+            }
+            request = request.stream();
             if let Some(ref prompt) = self.system_prompt {
                 request = request.with_system_prompt(prompt.clone());
             }
@@ -262,9 +366,8 @@ impl Orchestrator {
                                     content_buf.push_str(&chunk.delta);
                                 }
                                 for tc in chunk.tool_calls {
-                                    let entry = tool_calls_map
-                                        .entry(tc.index)
-                                        .or_insert_with(|| {
+                                    let entry =
+                                        tool_calls_map.entry(tc.index).or_insert_with(|| {
                                             (String::new(), String::new(), String::new())
                                         });
                                     if let Some(id) = tc.id {
@@ -301,6 +404,34 @@ impl Orchestrator {
                     .collect()
             };
 
+            Self::log_stream_response(
+                iteration,
+                &self.model,
+                &content_buf,
+                &accumulated_tool_calls,
+            );
+
+            // Forced finalization: accept whatever text the model returns
+            // as the final answer and terminate. (Tools were stripped, so
+            // the response carries no tool calls in practice.)
+            if finalizing {
+                tracing::info!(
+                    iteration,
+                    content_len = content_buf.len(),
+                    "Forced finalization at max_iterations (stream)"
+                );
+                self.clear_loop_detection();
+                self.memory
+                    .lock()
+                    .unwrap()
+                    .add_message(Message::assistant(&content_buf));
+                {
+                    let mut state = self.state.lock().unwrap();
+                    *state = OrchestratorState::Completed;
+                }
+                return Ok(content_buf);
+            }
+
             if !accumulated_tool_calls.is_empty() {
                 // Emit the LLM's text content as a Thought event so the user
                 // can see what the model is thinking/planning before tool execution.
@@ -310,20 +441,28 @@ impl Orchestrator {
                     });
                 }
 
-                // Check for loop detection on the first tool call
-                if let Some(first_tc) = accumulated_tool_calls.first() {
-                    let tool_name = &first_tc.1; // (id, name, args)
-                    if self.record_tool_call_for_loop_detection(tool_name) {
-                        tracing::warn!(
-                            tool = %tool_name,
-                            threshold = super::LOOP_DETECTION_THRESHOLD,
-                            "Loop detected: same tool called consecutively"
-                        );
-                        return Err(AgenticError::Provider(format!(
-                            "Loop detected: '{}' called {} times consecutively. Aborting to prevent infinite loop.",
-                            tool_name, super::LOOP_DETECTION_THRESHOLD
-                        )));
-                    }
+                // Loop detection — see the sync path for the rationale.
+                // Only identical (name + args) calls repeated back-to-back
+                // across turns trip the guard; different-args calls and
+                // same-turn parallel batches are treated as progress.
+                let loop_sigs: Vec<(&str, &str)> = accumulated_tool_calls
+                    .iter()
+                    .map(|(_, name, args)| (name.as_str(), args.as_str()))
+                    .collect();
+                if let Some((sig, run)) = self.record_tool_calls_for_loop_detection(&loop_sigs) {
+                    tracing::warn!(
+                        tool = %sig.tool,
+                        args = %sig.args_preview,
+                        run = run,
+                        threshold = super::LOOP_DETECTION_THRESHOLD,
+                        "Loop detected: identical tool call repeated consecutively"
+                    );
+                    return Err(AgenticError::Provider(format!(
+                        "Loop detected: '{}' called {} times consecutively with identical \
+                         arguments ({}). The model is repeating itself without making progress. \
+                         Aborting to prevent an infinite loop.",
+                        sig.tool, run, sig.args_preview,
+                    )));
                 }
 
                 self.handle_tool_calls_parallel(&content_buf, &accumulated_tool_calls)
@@ -378,5 +517,138 @@ impl Orchestrator {
              (e.g. gpt-4o, gpt-4o-mini, claude-3-5-sonnet, claude-3-5-haiku) via `/models`.",
             self.model
         )))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Loop instrumentation
+// ---------------------------------------------------------------------------
+// These associated fns emit structured tracing events at each agent-loop
+// boundary so a debug log file captures the full request/response trace:
+// what messages were sent, what the model replied, and exactly which tool
+// calls (with args) it requested. This is the primary diagnostic surface
+// for diagnosing things like the `grep`-called-3x loop-detection abort.
+//
+// All events use module-path targets (e.g. `core_agentic::orchestrator::run`)
+// so the file layer's `core_agentic=trace` filter picks them up.
+
+impl Orchestrator {
+    /// Summarize the request we are about to send to the provider.
+    /// Logs each message's role + content length so cleared/truncated
+    /// tool results (Layer 2 compression) are visible at a glance.
+    fn log_request(iteration: u32, model: &str, messages: &[crate::providers::ChatMessageRequest]) {
+        let summary: Vec<String> = messages
+            .iter()
+            .map(|m| format!("{}:{}", m.role, m.content.len()))
+            .collect();
+        tracing::debug!(
+            iteration,
+            model = %model,
+            messages = messages.len(),
+            roles = %summary.join(" | "),
+            "request \u{2192} provider"
+        );
+    }
+
+    /// Summarize a non-streaming provider response: token usage,
+    /// finish reason, content length, and each requested tool call.
+    fn log_response(
+        iteration: u32,
+        model: &str,
+        content: &str,
+        tool_calls: &[crate::providers::ToolCallResponse],
+        usage: Option<&crate::providers::ChatUsage>,
+        finish_reason: Option<&str>,
+    ) {
+        tracing::info!(
+            iteration,
+            model = %model,
+            finish_reason,
+            prompt_tokens = usage.map(|u| u.prompt_tokens).unwrap_or(0),
+            completion_tokens = usage.map(|u| u.completion_tokens).unwrap_or(0),
+            content_len = content.len(),
+            tool_calls = tool_calls.len(),
+            "response \u{2190} provider"
+        );
+        for tc in tool_calls {
+            tracing::debug!(
+                iteration,
+                tool = %tc.function.name,
+                id = %tc.id,
+                args = %Self::truncate_preview(&tc.function.arguments, 300),
+                "tool call requested"
+            );
+        }
+    }
+
+    /// Streaming variant: the stream path accumulates tool calls as
+    /// `(id, name, args)` triples and doesn't track token usage on the
+    /// orchestrator side (the final chunk may carry it, but we don't
+    /// surface it here).
+    fn log_stream_response(
+        iteration: u32,
+        model: &str,
+        content: &str,
+        tool_calls: &[(String, String, String)],
+    ) {
+        tracing::info!(
+            iteration,
+            model = %model,
+            content_len = content.len(),
+            tool_calls = tool_calls.len(),
+            "response \u{2190} provider (stream)"
+        );
+        for (_id, name, args) in tool_calls {
+            tracing::debug!(
+                iteration,
+                tool = %name,
+                args = %Self::truncate_preview(args, 300),
+                "tool call requested"
+            );
+        }
+    }
+
+    /// Truncate a string to `max` bytes on a UTF-8 char boundary,
+    /// appending a marker with how many bytes were elided. Used so a
+    /// giant tool-call arguments blob doesn't drown the log line.
+    fn truncate_preview(s: &str, max: usize) -> String {
+        if s.len() <= max {
+            return s.to_string();
+        }
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}\u{2026} (+{} chars)", &s[..end], s.len() - end)
+    }
+
+    // ── Iteration-limit steering nudges ────────────────────────
+    //
+    // Both are injected as transient trailing `user` messages (NOT saved
+    // to memory) so they steer only the request they're appended to.
+    // `user` role is used because every provider accepts a trailing user
+    // message and the slice is guaranteed well-formed by
+    // `sanitize_for_provider`.
+
+    /// Soft nudge injected once the run crosses ~80% of the iteration
+    /// budget. Asks the model to start converging so it ideally
+    /// finishes on its own before the forced finalization turn.
+    fn wind_down_message() -> crate::providers::ChatMessageRequest {
+        crate::providers::ChatMessageRequest::user(
+            "[system] You are approaching the tool-call iteration limit. \
+             Start wrapping up: finish only the essential remaining steps, \
+             then give your final answer to the user.",
+        )
+    }
+
+    /// Hard nudge injected on the final allowed iteration. Paired with
+    /// stripping tools from the request, this forces a text answer so
+    /// the user gets a result instead of a hard abort.
+    fn finalization_message() -> crate::providers::ChatMessageRequest {
+        crate::providers::ChatMessageRequest::user(
+            "[system] You have reached the tool-call iteration limit and can \
+             no longer call tools. Using only what you have already learned, \
+             provide your best final answer to the user now.",
+        )
     }
 }

@@ -7,6 +7,12 @@ use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
 
 pub struct ListFilesTool;
 
+impl Default for ListFilesTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ListFilesTool {
     pub fn new() -> Self {
         Self

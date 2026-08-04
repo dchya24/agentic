@@ -117,7 +117,8 @@ impl Tool for SpawnSubagentTool {
             ToolParam {
                 param_type: "number".to_string(),
                 description: Some(
-                    "Optional cap on subagent loop iterations. Defaults to a small value.".to_string(),
+                    "Optional cap on subagent loop iterations. Defaults to a small value."
+                        .to_string(),
                 ),
                 default: Some(serde_json::json!(DEFAULT_SUBAGENT_MAX_ITERATIONS)),
             },
@@ -125,7 +126,8 @@ impl Tool for SpawnSubagentTool {
 
         ToolSchema {
             name: "spawn_subagent".to_string(),
-            description: "Spawn a subagent with isolated context for a focused subtask.".to_string(),
+            description: "Spawn a subagent with isolated context for a focused subtask."
+                .to_string(),
             parameters: params,
             required: vec!["task".to_string()],
         }
@@ -155,10 +157,8 @@ impl Tool for SpawnSubagentTool {
         // don't need a Tokio runtime context; spawn_subagent itself runs
         // inside Tool::execute, which the orchestrator may call from a
         // spawn_blocking thread.
-        let mut sub = crate::orchestrator::Orchestrator::new(
-            self.provider.clone(),
-            self.tools.clone(),
-        );
+        let mut sub =
+            crate::orchestrator::Orchestrator::new(self.provider.clone(), self.tools.clone());
         sub.set_model(self.model.clone());
         sub.set_max_iterations(max_iter);
         sub.set_system_prompt(SUBAGENT_SYSTEM_PROMPT);
@@ -207,8 +207,12 @@ mod tests {
     }
 
     impl LLMProvider for ScriptedProvider {
-        fn provider_type(&self) -> &str { "fake" }
-        fn provider_id(&self) -> &str { "fake" }
+        fn provider_type(&self) -> &str {
+            "fake"
+        }
+        fn provider_id(&self) -> &str {
+            "fake"
+        }
         fn chat(&self, _req: ChatRequest) -> ProviderResult<ChatResponse> {
             let mut q = self.responses.lock().unwrap();
             if q.is_empty() {
@@ -247,8 +251,9 @@ mod tests {
 
     #[test]
     fn returns_subagent_answer_to_parent() {
-        let provider: Arc<dyn LLMProvider> =
-            Arc::new(ScriptedProvider::new(vec![text_response("42 is the answer")]));
+        let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![text_response(
+            "42 is the answer",
+        )]));
         let tool = SpawnSubagentTool::new(provider, ToolRegistry::new(), "fake");
         let result = tool
             .execute(serde_json::json!({"task": "what is the meaning of life?"}))
