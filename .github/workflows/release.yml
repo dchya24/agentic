@@ -108,7 +108,7 @@ jobs:
       - name: Build .msi (cargo-wix)
         run: |
           cargo install cargo-wix --locked
-          cargo wix -p agentic-cli
+          cargo wix -p agentic-cli --nocapture
           cp target/wix/*.msi dist/agentic-windows-x86_64.msi
       - name: Checksums
         shell: bash
