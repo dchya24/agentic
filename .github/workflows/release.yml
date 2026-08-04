@@ -1,0 +1,216 @@
+name: Release
+
+# Builds all platform packages and publishes the GitHub Release.
+#
+# Triggered automatically when a `vX.Y.Z` tag is pushed (by
+# `scripts/release.sh` or manually), or manually via workflow_dispatch
+# with a tag input to rebuild/re-publish an existing release.
+#
+# Produces, per platform:
+#   linux   : agentic-linux-x86_64            (raw binary for self-update)
+#             agentic-linux-x86_64.deb        (cargo-deb)
+#             agentic-linux-x86_64.rpm        (cargo-generate-rpm)
+#             agentic-linux-x86_64.tar.gz
+#   windows : agentic-windows-x86_64          (raw binary for self-update)
+#             agentic-windows-x86_64.exe
+#             agentic-windows-x86_64.zip
+#             agentic-windows-x86_64.msi      (cargo-wix / WiX)
+#   macos   : agentic-macos-x86_64            (raw binary for self-update)
+#             agentic-macos-aarch64
+#             agentic-macos-<arch>.tar.gz
+#   plus a per-platform checksums-*.txt
+#
+# Asset names follow the updater's expectation in
+# agentic-cli/src/update.rs (`agentic-<os>-<arch>`).
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and publish (e.g. v0.3.2)'
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Tag being released: explicit input on manual dispatch, pushed tag otherwise.
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  linux:
+    name: Linux (deb, rpm, tar.gz)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release tag
+        run: |
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Not a release tag: $RELEASE_TAG"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        run: cargo build --release -p agentic-cli
+      - name: Install packaging tools
+        run: cargo install cargo-deb cargo-generate-rpm --locked
+      - name: Build .deb
+        run: cargo deb -p agentic-cli --no-build
+      - name: Build .rpm
+        run: cargo generate-rpm -p agentic-cli
+      - name: Stage assets
+        run: |
+          mkdir -p dist
+          cp target/release/agentic dist/agentic-linux-x86_64
+          cp target/debian/*.deb dist/agentic-linux-x86_64.deb
+          cp target/generate-rpm/*.rpm dist/agentic-linux-x86_64.rpm
+          tar -czf dist/agentic-linux-x86_64.tar.gz -C target/release agentic
+          cd dist && sha256sum * > checksums-linux.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/
+
+  windows:
+    name: Windows (exe, zip, msi)
+    runs-on: windows-latest
+    steps:
+      - name: Validate release tag
+        run: |
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Not a release tag: $RELEASE_TAG"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        run: cargo build --release -p agentic-cli
+      - name: Stage exe + zip
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/agentic.exe dist/agentic-windows-x86_64          # updater-compatible name
+          cp target/release/agentic.exe dist/agentic-windows-x86_64.exe      # user-friendly name
+      - name: Zip exe
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/agentic-windows-x86_64.exe -DestinationPath dist/agentic-windows-x86_64.zip -Force
+      - name: Build .msi (cargo-wix)
+        run: |
+          cargo install cargo-wix --locked
+          cargo wix -p agentic-cli
+          cp target/wix/*.msi dist/agentic-windows-x86_64.msi
+      - name: Checksums
+        shell: bash
+        run: |
+          cd dist && sha256sum * > checksums-windows.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/
+
+  macos:
+    name: macOS (x86_64 + aarch64)
+    runs-on: macos-latest
+    steps:
+      - name: Validate release tag
+        run: |
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Not a release tag: $RELEASE_TAG"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build for both architectures
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cargo build --release -p agentic-cli --target x86_64-apple-darwin
+          cargo build --release -p agentic-cli --target aarch64-apple-darwin
+      - name: Stage assets
+        run: |
+          mkdir -p dist
+          cp target/x86_64-apple-darwin/release/agentic dist/agentic-macos-x86_64
+          cp target/aarch64-apple-darwin/release/agentic dist/agentic-macos-aarch64
+          tar -czf dist/agentic-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release agentic
+          tar -czf dist/agentic-macos-aarch64.tar.gz -C target/aarch64-apple-darwin/release agentic
+          cd dist && shasum -a 256 * > checksums-macos.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/
+
+  publish:
+    name: Publish release
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+      - name: Download all assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Generate release notes
+        run: |
+          PREV="$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '2p' || true)"
+          TAG="$RELEASE_TAG"
+          {
+            echo "## $TAG"
+            echo
+            echo "### What's changed since ${PREV:-the beginning}"
+            echo
+            if [ -n "$PREV" ]; then
+              git log "${PREV}..${TAG}" --format='%s' | grep -E '^(feat|fix|refactor|perf|docs|chore|style|test|build|ci|revert|breaking)(\(.*\))?[!: ]' \
+                | sed -E 's/^(feat|fix|refactor|perf|docs|chore|style|test|build|ci|revert|breaking)(\(([^)]*)\))?[!: ]*//' > /dev/null || true
+              {
+                echo "### Features"
+                git log "${PREV}..${TAG}" --format='%s' | grep '^feat' | sed 's/^feat\(([^)]*)\)\?[!]*: */  - /' || true
+                echo
+                echo "### Bug Fixes"
+                git log "${PREV}..${TAG}" --format='%s' | grep '^fix' | sed 's/^fix\(([^)]*)\)\?[!]*: */  - /' || true
+                echo
+                echo "### Refactors & Performance"
+                git log "${PREV}..${TAG}" --format='%s' | grep -E '^(refactor|perf)' | sed -E 's/^(refactor|perf)(\(([^)]*)\))?[!]*: */  - /' || true
+                echo
+                echo "### Other"
+                git log "${PREV}..${TAG}" --format='%s' | grep -vE '^(feat|fix|refactor|perf)' | sed -E 's/^(docs|chore|style|test|build|ci|revert|breaking)(\(([^)]*)\))?[!]*: */  - /' || true
+              } | grep -vE '^[[:space:]]*$' || echo "(no conventional commits since ${PREV})"
+            else
+              echo "(no previous release)"
+            fi
+            echo
+            echo "### Install"
+            echo
+            echo '- Debian/Ubuntu:  `sudo dpkg -i agentic-linux-x86_64.deb`'
+            echo '- Fedora/RHEL:    `sudo dnf install agentic-linux-x86_64.rpm`'
+            echo '- Windows:        run `agentic-windows-x86_64.msi`'
+            echo '- Any platform:   unpack the `.tar.gz`/`.zip` or update an existing install with `agentic update`'
+          } > NOTES.md
+          cat NOTES.md
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release-assets
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" ./* --clobber
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file ../NOTES.md
+          else
+            gh release create "$RELEASE_TAG" ./* --title "$RELEASE_TAG" --notes-file ../NOTES.md
+          fi
+          echo "Published: https://github.com/${{ github.repository }}/releases/tag/$RELEASE_TAG"
