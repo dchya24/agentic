@@ -1,6 +1,7 @@
 # Build artifacts
 /target/
 **/target/
+dist/
 
 # Cargo.lock for library crates (keep for binary crates)
 # core-agentic is a library — ignore its lockfile
