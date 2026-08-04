@@ -9,20 +9,22 @@
 #   ./scripts/release.sh major      # major bump (0.3.0 → 1.0.0)
 #
 # What it does:
-#   1. Preflight checks (clean tree, gh CLI, last release reachable)
+#   1. Preflight checks (clean tree, last release reachable)
 #   2. Bumps `version` in the Cargo.toml of agentic-cli (always) and
 #      core-agentic (only when it has unreleased commits)
 #   3. Runs the same checks as CI (fmt, clippy, tests)
 #   4. Commits the version bump and creates the annotated tag
-#   5. Pushes the branch and tag
-#   6. Builds a release binary for the current platform
-#   7. Creates the GitHub release with auto-generated notes + assets
+#   5. Pushes the branch and tag — this triggers the Release workflow
+#      (.github/workflows/release.yml), which builds and publishes all
+#      platform packages (.deb, .rpm, .tar.gz, .exe, .msi) and creates
+#      the GitHub Release with auto-generated notes.
 #
 # Conventions (kept consistent with past releases):
 #   - tag:            vX.Y.Z            (annotated)
 #   - tag message:    release: vX.Y.Z (agentic-cli X.Y.Z, core-agentic A.B.C)
 #   - release title:  vX.Y.Z
-#   - assets:         agentic-<os>-<arch> (+ .sha256)
+#   - assets:         agentic-<os>-<arch> for updater compat, plus
+#                     .deb / .rpm / .tar.gz / .exe / .msi packages
 #
 # See docs/RELEASING.md for the full process.
 
@@ -43,7 +45,6 @@ done
 REPO="dchya24/agentic"
 CLI_CRATE="agentic-cli"
 CORE_CRATE="core-agentic"
-DIST_DIR="dist"
 RELEASE_BRANCHES=("dev" "main" "master")
 
 # ── Helpers ─────────────────────────────────────────────────
@@ -109,27 +110,6 @@ last_tag() {
     git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true
 }
 
-changelog_since() {
-    # changelog_since <tag> — grouped, conventional-commit release notes
-    local tag="$1"
-    local commits
-    commits="$(git log "${tag}..HEAD" --format='%s' 2>/dev/null | grep -E '^(feat|fix|refactor|perf|docs|chore|style|test|build|ci|revert|breaking)(\(.*\))?[!: ]' || true)"
-    [ -n "$commits" ] || { echo "(no conventional commits since ${tag})"; return; }
-    {
-        echo "### Features"
-        echo "$commits" | grep '^feat' | sed 's/^feat\(([^)]*)\)\?[!]*: */  - /' || true
-        echo
-        echo "### Bug Fixes"
-        echo "$commits" | grep '^fix' | sed 's/^fix\(([^)]*)\)\?[!]*: */  - /' || true
-        echo
-        echo "### Refactors & Performance"
-        echo "$commits" | grep -E '^(refactor|perf)' | sed -E 's/^(refactor|perf)(\(([^)]*)\))?[!]*: */  - /' || true
-        echo
-        echo "### Other"
-        echo "$commits" | grep -vE '^(feat|fix|refactor|perf)' | sed -E 's/^(docs|chore|style|test|build|ci|revert|breaking)(\(([^)]*)\))?[!]*: */  - /' || true
-    } | grep -vE '^[[:space:]]*$' || true
-}
-
 # ── 1. Preflight ────────────────────────────────────────────
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -151,8 +131,7 @@ if [ -n "$(git status --porcelain)" ]; then
         || die "Aborting. Commit or stash your changes first."
 fi
 
-command -v gh >/dev/null 2>&1 || die "gh CLI is required (https://cli.github.com)"
-gh auth status >/dev/null 2>&1 || die "gh is not authenticated. Run: gh auth login"
+command -v gh >/dev/null 2>&1 || warn "gh CLI not found — only needed to inspect releases later"
 
 PREV_TAG="$(last_tag || true)"
 if [ -z "$PREV_TAG" ]; then
@@ -218,52 +197,12 @@ git push origin "$BRANCH"
 git push origin "$TAG"
 ok "Pushed ${BRANCH} and ${TAG}"
 
-# ── 5. Build release binary for the current platform ────────
-info "Building release binary…"
-cargo build --release -p agentic-cli
-mkdir -p "$DIST_DIR"
+# ── 5. Packaging + GitHub release ─────────────────────────
+# Builds are NOT done locally anymore: pushing the tag triggers the
+# .github/workflows/release.yml workflow, which builds and publishes
+# all platform packages (.deb, .rpm, .tar.gz, .exe, .msi) and creates
+# the GitHub Release. Monitor the run here:
+info "Packaging runs in CI — monitor the workflow run:"
+info "  https://github.com/${REPO}/actions/workflows/release.yml"
+info "The GitHub Release is created automatically when all platform builds finish."
 
-OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]')"
-[ "$OS_NAME" = "darwin" ] && OS_NAME="macos"
-ARCH_NAME="$(uname -m)"
-ASSET="${DIST_DIR}/agentic-${OS_NAME}-${ARCH_NAME}"
-cp target/release/agentic "$ASSET"
-chmod +x "$ASSET"
-(cd "$DIST_DIR" && sha256sum "agentic-${OS_NAME}-${ARCH_NAME}" > "agentic-${OS_NAME}-${ARCH_NAME}.sha256")
-ok "Built ${ASSET}"
-
-# ── 6. GitHub release ───────────────────────────────────────
-NOTES_FILE="$(mktemp)"
-{
-    echo "## ${TAG}"
-    echo
-    echo "### What's changed since ${PREV_TAG:-the beginning}"
-    echo
-    changelog_since "${PREV_TAG:-HEAD}"
-    echo
-    echo "### Install"
-    echo
-    echo '```bash'
-    echo "chmod +x agentic-${OS_NAME}-${ARCH_NAME}"
-    echo "./agentic-${OS_NAME}-${ARCH_NAME}"
-    echo '```'
-    echo
-    echo "Or update an existing install with: \`agentic update\`"
-} > "$NOTES_FILE"
-
-confirm "Create GitHub release ${TAG} with assets and publish?" || {
-    warn "Skipped GitHub release. Publish manually:"
-    warn "  gh release create ${TAG} ${ASSET} ${ASSET}.sha256 --title ${TAG} --notes-file ${NOTES_FILE}"
-    rm -f "$NOTES_FILE"
-    exit 0
-}
-
-gh release create "$TAG" \
-    "${ASSET}" "${ASSET}.sha256" \
-    --repo "$REPO" \
-    --title "$TAG" \
-    --notes-file "$NOTES_FILE"
-rm -f "$NOTES_FILE"
-ok "Published ${TAG} → https://github.com/${REPO}/releases/tag/${TAG}"
-
-info "Release complete. Verify: gh release view ${TAG} --repo ${REPO}"

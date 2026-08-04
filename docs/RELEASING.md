@@ -2,16 +2,16 @@
 
 This document describes the release process for the agentic workspace
 (`core-agentic` + `agentic-cli`). Releases are published as **annotated git
-tags** plus a **GitHub Release** with platform binaries that the
-[`agentic update`](../agentic-cli/src/update.rs) self-update mechanism
-downloads.
+tags**; pushing the tag triggers a **GitHub Actions workflow** that builds
+all platform packages and creates the **GitHub Release**.
 
-The whole flow is automated by [`scripts/release.sh`](../scripts/release.sh).
+The whole flow is automated by [`scripts/release.sh`](../scripts/release.sh)
+plus [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
 ## Versioning
 
 - The project follows [Semantic Versioning](https://semver.org).
-- The **tag** is the authority: `v<cli-version>` (e.g. `v0.3.0`).
+- The **tag** is the authority: `v<cli-version>` (e.g. `v0.3.1`).
 - `agentic-cli` is bumped on every release.
 - `core-agentic` is bumped in lockstep **only when it has unreleased
   commits** since the last tag; otherwise its version stays put.
@@ -25,14 +25,13 @@ The whole flow is automated by [`scripts/release.sh`](../scripts/release.sh).
 ## Prerequisites
 
 - Clean working tree (commit or stash pending work first).
-- [`gh` CLI](https://cli.github.com) installed and authenticated
-  (`gh auth login`).
 - Git remote `origin` pointing at `github.com:dchya24/agentic`.
 - Rust toolchain with `rustfmt` and `clippy` components.
+- (Optional) [`gh` CLI](https://cli.github.com) to inspect releases.
 
 ## The process
 
-### 1. Prepare the branch
+### 1. Cut the release
 
 Releases are cut from `dev` (or `main`/`master`). Finish and merge all work
 for the release first, then:
@@ -40,16 +39,11 @@ for the release first, then:
 ```bash
 git checkout dev
 git pull
-./scripts/release.sh [patch | minor | major]
+./scripts/release.sh [patch | minor | major] [--yes]
 ```
 
-The script runs in six stages and pauses for confirmation at each
-destructive step. Pass `--yes` to skip the prompts.
-
-### 2. What the script does
-
-1. **Preflight** — verifies the repo, warns about dirty tree / off-branch,
-   checks `gh`, finds the previous release tag.
+The script:
+1. **Preflight** — verifies the repo, warns about dirty tree / off-branch.
 2. **Version bump** — computes the next version, bumps `version` in
    `agentic-cli/Cargo.toml` (and `core-agentic/Cargo.toml` when it changed),
    updates `Cargo.lock`.
@@ -59,41 +53,69 @@ destructive step. Pass `--yes` to skip the prompts.
    `release: vX.Y.Z (agentic-cli X.Y.Z, core-agentic A.B.C)` and creates the
    annotated tag with the same message.
 5. **Push** — pushes the branch and tag to `origin`.
-6. **Build + publish** — builds a release binary for the current platform,
-   writes `dist/agentic-<os>-<arch>` (+ `.sha256`), and creates the GitHub
-   release with auto-generated notes (grouped conventional commits).
+
+That's it — the tag push triggers the Release workflow automatically.
+
+### 2. The Release workflow (`.github/workflows/release.yml`)
+
+Runs on the pushed tag (`v*`) and builds every platform package in CI:
+
+| Platform | Artifacts |
+|----------|-----------|
+| Linux (`ubuntu-latest`) | `agentic-linux-x86_64` (raw, for self-update), `.deb` (cargo-deb), `.rpm` (cargo-generate-rpm), `.tar.gz` |
+| Windows (`windows-latest`) | `agentic-windows-x86_64` (raw, for self-update), `.exe`, `.zip`, `.msi` (cargo-wix / WiX) |
+| macOS (`macos-latest`) | `agentic-macos-x86_64`, `agentic-macos-aarch64` (raw, for self-update), `.tar.gz` per arch |
+| all | `checksums-<platform>.txt` |
+
+The final `publish` job creates the GitHub Release with auto-generated
+notes (grouped conventional commits) and all assets attached.
+
+Monitor the run at
+`https://github.com/dchya24/agentic/actions/workflows/release.yml`.
+A release can also be rebuilt/re-published manually from the Actions tab
+(workflow_dispatch with a tag input) — useful after a workflow fix.
 
 ### 3. After the release
 
 ```bash
 gh release view vX.Y.Z            # verify notes + assets
-git fetch --tags                  # make sure local tags are current
 ```
 
 Optionally install the new build locally:
 
 ```bash
-cargo install --path agentic-cli   # or use the downloaded asset
+cargo install --path agentic-cli   # or use the downloaded package
 ```
 
 ## Asset naming
 
-Assets must match what the updater expects:
+Asset names follow the updater's expectation in
+`agentic-cli/src/update.rs` (`agentic-<os>-<arch>`):
 
 ```
-agentic-<os>-<arch>          e.g. agentic-linux-x86_64
-                                 agentic-macos-aarch64
-                                 agentic-windows-x86_64
+agentic-linux-x86_64      agentic-windows-x86_64      agentic-macos-aarch64
+agentic-linux-x86_64.deb  agentic-windows-x86_64.exe  agentic-macos-x86_64.tar.gz
+agentic-linux-x86_64.rpm  agentic-windows-x86_64.zip
+agentic-linux-x86_64.tar.gz
 ```
 
-(`os` = `linux` / `macos` / `windows`, `arch` = `x86_64` / `aarch64`.)
-Each asset has a sibling `.sha256` file. The OS qualifier is required —
-without it an x86_64 macOS client would match the Linux x86_64 asset and
-download the wrong binary.
+The OS-qualified raw binaries (`agentic-<os>-<arch>`) are what
+`agentic update` downloads; the packages are for distribution.
+
+## Packaging metadata
+
+Debian and RPM package definitions live in `agentic-cli/Cargo.toml`:
+
+- `[package.metadata.deb]` — used by `cargo deb` (maintainer, section…)
+- `[package.metadata.generate-rpm]` — used by `cargo generate-rpm` (bindir,
+  assets)
+
+The Windows MSI template lives in `agentic-cli/wix/` (generated by
+`cargo wix init`, built by `cargo wix`).
 
 ## Manual release (fallback)
 
-If the script cannot be used, the steps are:
+If CI is unavailable, the local steps are:
 
 ```bash
 # 1. bump versions in agentic-cli/Cargo.toml (and core-agentic if changed)
@@ -104,19 +126,22 @@ git add agentic-cli/Cargo.toml core-agentic/Cargo.toml Cargo.lock
 git commit -m "release: vX.Y.Z (agentic-cli X.Y.Z, core-agentic A.B.C)"
 git tag -a vX.Y.Z -m "release: vX.Y.Z (agentic-cli X.Y.Z, core-agentic A.B.C)"
 git push origin dev vX.Y.Z
-# 4. build + publish
+# 4. build current-platform binary and publish (best effort, single platform)
 cargo build --release -p agentic-cli
-cp target/release/agentic dist/agentic-<os>-<arch>
-gh release create vX.Y.Z dist/agentic-<os>-<arch> dist/agentic-<os>-<arch>.sha256 --title vX.Y.Z --notes "..."
+gh release create vX.Y.Z target/release/agentic --title vX.Y.Z --notes "..."
 ```
 
 ## Troubleshooting
 
-- **`gh` not authenticated** → `gh auth login`
 - **Script aborts on dirty tree** → commit or stash; the release must not
   include unreleased working-tree changes.
 - **Clippy/fmt/test fail** → fix before re-running; the script never ships a
   failing tree.
 - **Tag already exists** → you cannot overwrite a pushed tag; bump again
   (`patch` → `minor`) or delete the remote tag deliberately.
-- **Release created but asset missing** → `gh release upload vX.Y.Z <asset>`
+- **Workflow failed / assets missing** → fix the workflow, then re-run it
+  manually from the Actions tab (workflow_dispatch, enter the tag). The
+  publish job updates an existing release instead of failing.
+- **Windows self-update** → `agentic update` replaces the running exe; on
+  Windows a running binary cannot be overwritten, so the rename falls back
+  and may report an error — use the `.msi`/`.zip` in that case.
