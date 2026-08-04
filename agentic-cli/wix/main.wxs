@@ -88,20 +88,6 @@
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
                 <Directory Id='APPLICATIONFOLDER' Name='agentic-cli'>
-                    <!--
-                      Disabling the license sidecar file in the installer is a two step process:
-
-                      1. Comment out or remove the `Component` tag along with its contents.
-                      2. Comment out or remove the `ComponentRef` tag with the "License" Id
-                         attribute value further down in this file.
-                    -->
-                    <Component Id='License' Guid='*'>
-                        <File Id='LicenseFile'
-                            DiskId='1'
-                            Source='License.rtf'
-                            KeyPath='yes'/>
-                    </Component>
-                    
                     <Directory Id='Bin' Name='bin'>
                         <Component Id='Path' Guid='4AD80AFC-C515-4C5A-840D-B180AB629846' KeyPath='yes'>
                             <Environment
@@ -135,12 +121,6 @@
             AllowAdvertise='no'
             Display='expand'
             Absent='disallow'>
-            <!--
-              Comment out or remove the following `ComponentRef` tag to remove
-              the license sidecar file from the installer.
-            -->
-            <ComponentRef Id='License'/>
-            
             <ComponentRef Id='binary0'/>
 
             <Feature
@@ -169,24 +149,14 @@
         
         <UI>
             <UIRef Id='WixUI_FeatureTree'/>
-            <!--
-              Disabling the EULA dialog in the installer is a two step process:
-
-                 1. Uncomment the following two `Publish` tags
-                 2. Comment out or remove the `<WiXVariable Id='WixUILicenseRtf'...` tag further down
-
-            -->
-            <!--<Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='99'>1</Publish>-->
-            <!--<Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>-->
+            <!-- Skip the EULA dialog (the MIT license ships in the source
+                 and .deb/.rpm packages; this MSI is a simple binary + PATH
+                 installer). -->
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='99'>1</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>
             
         </UI>
 
-        <!--
-          Disabling the EULA dialog in the installer requires commenting out
-          or removing the following `WixVariable` tag
-        -->
-        <WixVariable Id='WixUILicenseRtf' Value='License.rtf'/>
-        
         
         <!--
           Uncomment the next `WixVariable` tag to customize the installer's
