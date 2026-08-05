@@ -199,10 +199,16 @@ jobs:
             echo
             echo '- Debian/Ubuntu:  `sudo dpkg -i agentic-linux-x86_64.deb`'
             echo '- Fedora/RHEL:    `sudo dnf install agentic-linux-x86_64.rpm`'
-            echo '- Windows:        run `agentic-windows-x86_64.msi`'
+            echo '- Windows:        run `agentic-windows-x86_64.msi` or use `install.ps1` for a user-local install'
+            echo '- Linux/macOS:    use `install.sh` for a checksum-verified user-local install'
             echo '- Any platform:   unpack the `.tar.gz`/`.zip` or update an existing install with `agentic update`'
+            echo '- Configuration:  installation does not modify config; use `agentic config init --interactive` explicitly'
           } > NOTES.md
           cat NOTES.md
+      - name: Add installer scripts
+        run: |
+          cp scripts/install.sh release-assets/install.sh
+          cp scripts/install.ps1 release-assets/install.ps1
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

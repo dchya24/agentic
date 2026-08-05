@@ -4,11 +4,18 @@ AI agent orchestration command-line interface using [core-agentic](https://githu
 
 ## Installation
 
+Prebuilt binaries and user-local installers for Linux, macOS, and Windows are
+documented in the repository's [main installation guide](../README.md#installation).
+The installers verify GitHub Release archives with SHA-256 and do not alter
+existing Agentic configuration.
+
+To build from source instead:
+
 ```bash
 cargo install --path agentic-cli
 ```
 
-Or build manually:
+Or build without installing:
 
 ```bash
 cd agentic-cli

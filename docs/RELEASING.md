@@ -65,10 +65,12 @@ Runs on the pushed tag (`v*`) and builds every platform package in CI:
 | Linux (`ubuntu-latest`) | `agentic-linux-x86_64` (raw, for self-update), `.deb` (cargo-deb), `.rpm` (cargo-generate-rpm), `.tar.gz` |
 | Windows (`windows-latest`) | `agentic-windows-x86_64` (raw, for self-update), `.exe`, `.zip`, `.msi` (cargo-wix / WiX) |
 | macOS (`macos-latest`) | `agentic-macos-x86_64`, `agentic-macos-aarch64` (raw, for self-update), `.tar.gz` per arch |
-| all | `checksums-<platform>.txt` |
+| all | `checksums-<platform>.txt`, `install.sh`, `install.ps1` |
 
-The final `publish` job creates the GitHub Release with auto-generated
-notes (grouped conventional commits) and all assets attached.
+The final `publish` job adds the installer scripts to the collected assets and
+creates the GitHub Release with auto-generated notes. The installers download
+these archives and require the platform checksum manifest before replacing an
+existing binary.
 
 Monitor the run at
 `https://github.com/dchya24/agentic/actions/workflows/release.yml`.
@@ -81,11 +83,18 @@ A release can also be rebuilt/re-published manually from the Actions tab
 gh release view vX.Y.Z            # verify notes + assets
 ```
 
-Optionally install the new build locally:
+Optionally install the new build locally using the release installer:
 
 ```bash
-cargo install --path agentic-cli   # or use the downloaded package
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/dchya24/agentic/dev/scripts/install.sh \
+  -o install.sh
+sh install.sh
 ```
+
+The normal installer preserves existing configuration and does not run the
+wizard. Use `sh install.sh --init` (or `.\\install.ps1 -Init` on Windows) only
+when the wizard should run after installation.
 
 ## Asset naming
 
@@ -97,6 +106,7 @@ agentic-linux-x86_64      agentic-windows-x86_64      agentic-macos-aarch64
 agentic-linux-x86_64.deb  agentic-windows-x86_64.exe  agentic-macos-x86_64.tar.gz
 agentic-linux-x86_64.rpm  agentic-windows-x86_64.zip
 agentic-linux-x86_64.tar.gz
+install.sh                 install.ps1                checksums-<platform>.txt
 ```
 
 The OS-qualified raw binaries (`agentic-<os>-<arch>`) are what

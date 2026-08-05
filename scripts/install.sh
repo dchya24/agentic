@@ -1,0 +1,145 @@
+#!/bin/sh
+set -eu
+
+REPOSITORY="dchya24/agentic"
+DEFAULT_RELEASE_BASE_URL="https://github.com/$REPOSITORY/releases/latest/download"
+INSTALL_DIR=${AGENTIC_INSTALL_DIR:-"${HOME:?HOME is not set}/.local/bin"}
+RUN_INIT=false
+
+fail() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+Install Agentic into a user-local directory.
+
+Usage: install.sh [--init] [--help]
+
+Options:
+  --init  Run `agentic config init --interactive` after installation.
+  --help  Show this help.
+
+Environment:
+  AGENTIC_VERSION           Release version, for example v0.3.2 or 0.3.2.
+  AGENTIC_INSTALL_DIR       Destination directory (default: $HOME/.local/bin).
+  AGENTIC_RELEASE_BASE_URL  Override the GitHub Release download base URL.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --init) RUN_INIT=true ;;
+    --help|-h) usage; exit 0 ;;
+    *) fail "Unknown option: $1" ;;
+  esac
+  shift
+done
+
+case "$(uname -s)" in
+  Linux) OS=linux ;;
+  Darwin) OS=macos ;;
+  *) fail "Unsupported operating system: $(uname -s)" ;;
+esac
+
+case "$(uname -m)" in
+  x86_64|amd64) ARCH=x86_64 ;;
+  arm64|aarch64)
+    if [ "$OS" = macos ]; then
+      ARCH=aarch64
+    else
+      fail "Linux aarch64 is not supported yet. Prebuilt releases currently support Linux x86_64 only."
+    fi
+    ;;
+  *) fail "Unsupported architecture: $(uname -m)" ;;
+esac
+
+ASSET="agentic-$OS-$ARCH.tar.gz"
+CHECKSUMS="checksums-$OS.txt"
+RELEASE_BASE_URL=${AGENTIC_RELEASE_BASE_URL:-$DEFAULT_RELEASE_BASE_URL}
+
+if [ -n "${AGENTIC_VERSION:-}" ]; then
+  VERSION=$AGENTIC_VERSION
+  case "$VERSION" in
+    v*) ;;
+    *) VERSION="v$VERSION" ;;
+  esac
+  if ! printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+    fail "Invalid AGENTIC_VERSION '$AGENTIC_VERSION'; expected vX.Y.Z or X.Y.Z"
+  fi
+  # Preserve custom hosts used by mirrors/tests while replacing the standard
+  # GitHub latest-release suffix with the requested tag.
+  case "$RELEASE_BASE_URL" in
+    */releases/latest/download)
+      RELEASE_BASE_URL=${RELEASE_BASE_URL%/releases/latest/download}/releases/download/$VERSION
+      ;;
+    *) RELEASE_BASE_URL=${RELEASE_BASE_URL%/}/$VERSION ;;
+  esac
+fi
+RELEASE_BASE_URL=${RELEASE_BASE_URL%/}
+
+command -v curl >/dev/null 2>&1 || fail "curl is required to download Agentic"
+command -v tar >/dev/null 2>&1 || fail "tar is required to extract Agentic"
+
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_file() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+  fail "sha256sum or shasum is required to verify the download"
+fi
+
+umask 077
+TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t agentic-install)
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT HUP INT TERM
+
+ARCHIVE_PATH="$TMP_DIR/$ASSET"
+CHECKSUM_PATH="$TMP_DIR/$CHECKSUMS"
+STAGE_DIR="$TMP_DIR/stage"
+mkdir -p "$STAGE_DIR"
+
+printf 'Downloading %s...\n' "$ASSET"
+curl --fail --location --silent --show-error --output "$ARCHIVE_PATH" "$RELEASE_BASE_URL/$ASSET"
+curl --fail --location --silent --show-error --output "$CHECKSUM_PATH" "$RELEASE_BASE_URL/$CHECKSUMS"
+
+EXPECTED_HASH=$(awk -v asset="$ASSET" '$2 == asset || $2 == "*" asset { print $1; exit }' "$CHECKSUM_PATH")
+[ -n "$EXPECTED_HASH" ] || fail "Checksum entry for $ASSET was not found in $CHECKSUMS"
+ACTUAL_HASH=$(sha256_file "$ARCHIVE_PATH")
+[ "$ACTUAL_HASH" = "$EXPECTED_HASH" ] || fail "Checksum mismatch for $ASSET"
+printf 'Checksum verified.\n'
+
+tar -xzf "$ARCHIVE_PATH" -C "$STAGE_DIR"
+[ -f "$STAGE_DIR/agentic" ] || fail "Downloaded archive does not contain the agentic binary"
+mkdir -p "$INSTALL_DIR"
+DEST_TMP="$INSTALL_DIR/.agentic.install.$$"
+cp "$STAGE_DIR/agentic" "$DEST_TMP"
+chmod 755 "$DEST_TMP"
+
+# Stage the final file inside the destination filesystem, then rename it over
+# the old executable. This keeps checksum/extraction failures from touching the
+# current install and makes the final replacement atomic on the target volume.
+mv -f "$DEST_TMP" "$INSTALL_DIR/agentic"
+printf 'Agentic installed successfully: %s\n' "$INSTALL_DIR/agentic"
+
+CONFIG_PATH="${HOME:?HOME is not set}/.config/agentic/config.json"
+if [ -f "$CONFIG_PATH" ]; then
+  printf 'Existing config preserved: %s\n' "$CONFIG_PATH"
+else
+  printf 'No config was created. Initialize it when ready.\n'
+fi
+
+case ":${PATH:-}:" in
+  *:"$INSTALL_DIR":*) ;;
+  *)
+    printf '\nAdd Agentic to PATH for future shells:\n'
+    printf '  export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+    ;;
+esac
+
+if [ "$RUN_INIT" = true ]; then
+  "$INSTALL_DIR/agentic" config init --interactive
+else
+  printf '\nNext: %s/agentic config init --interactive\n' "$INSTALL_DIR"
+fi

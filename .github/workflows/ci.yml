@@ -46,6 +46,41 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-targets
 
+  installers:
+    name: Installer scripts
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shell: bash
+          - os: windows-latest
+            shell: pwsh
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test POSIX installer
+        if: runner.os != 'Windows'
+        run: bash scripts/tests/installer_test.sh
+      - name: Test PowerShell installer
+        if: runner.os == 'Windows'
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            'scripts/install.ps1',
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+          .\scripts\tests\installer_test.ps1
+
   audit:
     name: Security audit
     runs-on: ubuntu-latest

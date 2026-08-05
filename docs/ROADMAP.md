@@ -1,7 +1,7 @@
 # Roadmap
 
 > Consolidated current-state + next-steps for the agentic CLI + core library.
-> Last updated: 2026-05-31.
+> Last updated: 2026-08-05.
 
 This replaces the older `PLAN.md` / `IMPLEMENTATION_ROADMAP.md` /
 `QUICK_START_IMPLEMENTATION.md` triad
@@ -51,7 +51,7 @@ Foundation is complete; coverage of the architecture spec is at ~95%.
 | Layer | Surface |
 |-------|---------|
 | Modes | `agentic run`, `agentic interactive`, `agentic tui`, `agentic config …`. `--mode default|plan|yolo`. |
-| REPL | Reedline + slash commands (`/help`, `/new`, `/config`, `/history`, `/tools`, `/stats`, `/mcp`, `/sessions`, `/models`, `/plan`, `/search`, `/image`, `/provider`, `/quit`). `@` file completion (auto-detects images for vision channel), `/` command completion, `/models ` model name completion. Sessions auto-saved to `~/.config/agentic/sessions/`. Inline fuzzy-select model picker (dialoguer). Resize-safe full-width prompt. Status bar surfaces model / provider / tokens / vision indicator / elapsed. |
+| REPL | Custom `crossterm`/ratatui input loop + slash commands (`/help`, `/new`, `/config`, `/history`, `/tools`, `/stats`, `/mcp`, `/sessions`, `/models`, `/plan`, `/search`, `/image`, `/provider`, `/quit`). `@` file completion (auto-detects images for vision channel), `/` command completion, `/models ` model completion. Sessions auto-saved to `~/.config/agentic/sessions/`. Resize-safe prompt with active provider/model metadata. |
 | Widgets | One ratatui-based stack used by inline + TUI: markdown, spinner, progress, panels, badges, headers, tool-call panel, unified-diff renderer. Capability detection (`NO_COLOR`, `TERM=dumb`, isatty, `--color`). Zero raw `\x1b[` escapes in the source. |
 | Safety UX | Risk-coloured confirmation panel. Diff preview in the confirmation prompt for `write_file` / `edit_file` / `apply_patch`. |
 | Cancel | Two-stage Ctrl+C → cooperative cancel (process-global `Arc<AtomicBool>`). |
@@ -127,6 +127,20 @@ Sized by effort. Each item has its own home in
       `skill` tool to load domain-specific instructions, and
       `skill create` / `skill list` / `skill info` CLI commands.
       Implemented in Milestone 5.
+
+### Distribution and platform support
+
+- [x] **Checksum-verified user-local installers.** POSIX installer for Linux/macOS
+      and PowerShell installer for Windows, with explicit opt-in config setup.
+- [ ] **Linux ARM64 and Windows ARM64 release artifacts.** Installers currently
+      reject these targets because the release workflow publishes Linux and
+      Windows x86_64 only.
+- [ ] **Package-manager distribution.** Homebrew, Scoop/Winget, and community
+      Linux package repositories.
+- [ ] **Code signing.** Authenticode for Windows and signing/notarization for
+      macOS release artifacts.
+- [ ] **Shell completion packages.** Generate and distribute completions for
+      common shells.
 
 ### Out of scope (intentional)
 
