@@ -374,11 +374,15 @@ mod tests {
 
     #[test]
     fn test_physical_lines_styled_ignores_ansi() {
-        // Styling must not affect the physical row count.
+        // Styling must not affect the row count. Verify this against the
+        // `Line`'s own width (which must exclude the zero-width ANSI escapes)
+        // and a fixed column count, since `physical_lines` reads the ambient
+        // terminal width (which is not 80 on headless CI runners).
         let styled = Line::from(Span::styled(
             "x".repeat(81),
             Style::default().fg(Color::Rgb(1, 2, 3)),
         ));
-        assert_eq!(physical_lines(&styled), 2);
+        assert_eq!(styled.width(), 81);
+        assert_eq!(wrapped_line_count(styled.width(), 80), 2);
     }
 }

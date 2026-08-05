@@ -5,7 +5,7 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Installer = Join-Path $RepoRoot 'scripts\install.ps1'
 $TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("agentic-installer-test-" + [Guid]::NewGuid().ToString('N'))
 $FixtureDir = Join-Path $TestRoot 'release'
-$Script:DownloadLog = [System.Collections.Generic.List[string]]::new()
+$Global:AgenticDownloadLog = [System.Collections.Generic.List[string]]::new()
 $Passed = 0
 $Failed = 0
 
@@ -30,7 +30,7 @@ function Invoke-WebRequest {
         [Parameter(Mandatory = $true)][string]$OutFile,
         [switch]$UseBasicParsing
     )
-    $Script:DownloadLog.Add($Uri)
+    $Global:AgenticDownloadLog.Add($Uri)
     $Asset = [System.IO.Path]::GetFileName(([Uri]$Uri).AbsolutePath)
     Copy-Item -LiteralPath (Join-Path $FixtureDir $Asset) -Destination $OutFile -Force
 }
@@ -52,7 +52,7 @@ function Invoke-InstallerCase {
     $env:AGENTIC_RELEASE_BASE_URL = 'https://fixtures.invalid/releases/latest/download'
     $env:AGENTIC_VERSION = $null
     New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
-    $Script:DownloadLog.Clear()
+    $Global:AgenticDownloadLog.Clear()
 
     if ($Version) {
         & $Installer -InstallDir $InstallDir -Version $Version -SkipPathUpdate -Init:$Init
@@ -60,6 +60,39 @@ function Invoke-InstallerCase {
         & $Installer -InstallDir $InstallDir -SkipPathUpdate -Init:$Init
     }
     return @{ CaseDir = $CaseDir; InstallDir = $InstallDir }
+}
+
+function Build-FixtureExe {
+    <#
+        Compile the fixture C# source into a runnable console executable.
+
+        PowerShell 7 (pwsh) cannot emit executables via Add-Type -- it raises
+        "Both the assembly types 'ConsoleApplication' and 'WindowsApplication'
+        are not currently supported." Delegate to Windows PowerShell 5.1
+        (powershell.exe), which is always installed on Windows and emits a
+        self-contained .NET Framework executable (no runtimeconfig.json is
+        required, which matters because the installer copies only the .exe).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceFile,
+        [Parameter(Mandatory = $true)][string]$Output
+    )
+    $BuilderPath = Join-Path ([System.IO.Path]::GetTempPath()) ("agentic-build-fixture-" + [Guid]::NewGuid().ToString('N') + '.ps1')
+    $Builder = @'
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath '{0}' -Raw
+Add-Type -TypeDefinition $source -OutputType ConsoleApplication -OutputAssembly '{1}'
+'@ -f ($SourceFile -replace "'", "''"), ($Output -replace "'", "''")
+    Set-Content -LiteralPath $BuilderPath -Value $Builder -Encoding UTF8
+    try {
+        $buildOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $BuilderPath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Building fixture executable failed (exit $LASTEXITCODE):`n$buildOutput"
+        }
+    } finally {
+        Remove-Item -LiteralPath $BuilderPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 try {
@@ -80,7 +113,9 @@ public static class FixtureAgentic {
     }
 }
 '@
-    Add-Type -TypeDefinition $FixtureSource -OutputType ConsoleApplication -OutputAssembly (Join-Path $BuildDir 'agentic-windows-x86_64.exe')
+    $FixtureSourcePath = Join-Path $BuildDir 'FixtureAgentic.cs'
+    Set-Content -LiteralPath $FixtureSourcePath -Value $FixtureSource -Encoding UTF8
+    Build-FixtureExe -SourceFile $FixtureSourcePath -Output (Join-Path $BuildDir 'agentic-windows-x86_64.exe')
     $Archive = Join-Path $FixtureDir 'agentic-windows-x86_64.zip'
     Compress-Archive -LiteralPath (Join-Path $BuildDir 'agentic-windows-x86_64.exe') -DestinationPath $Archive -Force
     $GoodHash = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash
@@ -117,8 +152,8 @@ public static class FixtureAgentic {
 
     $Result = Invoke-InstallerCase -Name 'tagged-version' -Version '0.3.2'
     Assert-True 'Windows explicit version selects tagged URL' `
-        (($Script:DownloadLog -join "`n") -match '/releases/download/v0\.3\.2/') `
-        ($Script:DownloadLog -join ', ')
+        (($Global:AgenticDownloadLog -join "`n") -match '/releases/download/v0\.3\.2/') `
+        ($Global:AgenticDownloadLog -join ', ')
 
     $MismatchDir = Join-Path $TestRoot 'checksum-mismatch'
     $MismatchBin = Join-Path $MismatchDir 'bin'
