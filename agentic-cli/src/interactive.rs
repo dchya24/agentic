@@ -319,6 +319,11 @@ pub async fn run(mut commands: Commands) -> Result<()> {
 //   keystroke.  `render_prompt_line` uses `print_line` (which appends
 //   `\r\n`) for the last line, guaranteeing this.
 //
+//   N counts *physical* terminal rows: long input wraps onto extra
+//   rows, so render_prompt_line / render_dropdown_lines return the
+//   sum of wrapped row counts (see input_renderer::physical_lines),
+//   not the number of logical print_line calls.
+//
 //   Terminal resize: clears render state + reprints status bar.
 //
 //   We avoid DECSC/DECRC (SavePosition/RestorePosition) because they
@@ -380,6 +385,18 @@ async fn repl_loop(
 
         match event {
             Event::Key(key) => {
+                if !crate::keyboard::should_process_key_kind(key.kind) {
+                    continue;
+                }
+
+                // Safety net: an empty dropdown renders nothing but would
+                // still swallow Enter / Tab / Up / Down below. update_dropdown
+                // already closes empty dropdowns; this guards any path that
+                // re-creates one (e.g. after accepting an item).
+                if dropdown.as_ref().is_some_and(|dd| dd.is_empty()) {
+                    *dropdown = None;
+                }
+
                 // If dropdown is open, handle dropdown-specific keys first
                 if dropdown.is_some() {
                     match (key.modifiers, key.code) {
@@ -398,7 +415,7 @@ async fn repl_loop(
                         (KeyModifiers::NONE, KeyCode::Tab)
                         | (KeyModifiers::NONE, KeyCode::Enter) => {
                             if let Some(_auto_cmd) = accept_dropdown(buffer, dropdown) {
-                                // Auto-submit: skill selected, execute immediately
+                                // Auto-submit: skill / model selected, execute immediately
                                 let input = buffer.submit();
                                 let dir_name = std::env::current_dir()
                                     .unwrap_or_default()
@@ -649,9 +666,19 @@ fn discover_skill_pairs() -> Vec<(String, String)> {
 }
 
 /// Update dropdown state based on current input and cursor position.
+///
+/// An empty dropdown is closed immediately: it renders nothing, yet if it
+/// stayed open it would intercept Enter / Up / Down and swallow those keys.
+/// This happens in practice right after accepting a model — the input
+/// becomes `/models <id> ` (trailing space) whose query `<id> ` matches no
+/// model, so the next Enter, which should submit the `/models <id>`
+/// command, would instead be consumed by the empty dropdown and the model
+/// would never get selected.
 fn update_dropdown(buffer: &InputBuffer, dropdown: &mut Option<Dropdown>) {
     let text = buffer.text();
     let cursor = buffer.cursor();
+
+    let mut next: Option<Dropdown> = None;
 
     // 1) Check for `/` command trigger
     if text.starts_with('/') {
@@ -661,40 +688,36 @@ fn update_dropdown(buffer: &InputBuffer, dropdown: &mut Option<Dropdown>) {
             // If the query exactly matches a skill command, open skills dropdown directly
             if query == "skills" || query == "skill" || query == "sk" {
                 let skill_pairs = discover_skill_pairs();
-                *dropdown = Some(Dropdown::new_skill(String::new(), skill_pairs));
-                return;
+                next = Some(Dropdown::new_skill(String::new(), skill_pairs));
+            } else {
+                next = Some(Dropdown::new(DropdownType::Command, query.to_string()));
             }
-            *dropdown = Some(Dropdown::new(DropdownType::Command, query.to_string()));
-            return;
-        }
-
-        // 1b) Check for `/models <partial>` model trigger
-        if let Some(space_pos) = before_cursor.find(' ') {
+        } else if let Some(space_pos) = before_cursor.find(' ') {
             let cmd = &text[1..space_pos];
+            // 1b) Check for `/models <partial>` model trigger
             if cmd == "models" || cmd == "m" {
                 let query = &text[space_pos + 1..cursor];
-                *dropdown = Some(Dropdown::new(DropdownType::Model, query.to_string()));
-                return;
+                next = Some(Dropdown::new(DropdownType::Model, query.to_string()));
             }
             // 1c) Check for `/skill <partial>` skill trigger
-            if cmd == "skill" || cmd == "sk" {
+            else if cmd == "skill" || cmd == "sk" {
                 let query = &text[space_pos + 1..cursor];
                 let skill_pairs = discover_skill_pairs();
-                *dropdown = Some(Dropdown::new_skill(query.to_string(), skill_pairs));
-                return;
+                next = Some(Dropdown::new_skill(query.to_string(), skill_pairs));
             }
         }
     }
 
     // 2) Check for `@` file trigger
-    if let Some(at_pos) = find_at_trigger(text, cursor) {
-        let query = &text[at_pos + 1..cursor];
-        *dropdown = Some(Dropdown::new(DropdownType::File, query.to_string()));
-        return;
+    if next.is_none() {
+        if let Some(at_pos) = find_at_trigger(text, cursor) {
+            let query = &text[at_pos + 1..cursor];
+            next = Some(Dropdown::new(DropdownType::File, query.to_string()));
+        }
     }
 
-    // 3) No trigger
-    *dropdown = None;
+    // 3) Commit, closing empty dropdowns so they cannot swallow keys.
+    *dropdown = next.filter(|dd| !dd.is_empty());
 }
 
 /// Find the byte position of the `@` trigger that the cursor is inside.
@@ -759,13 +782,25 @@ fn accept_dropdown(buffer: &mut InputBuffer, dropdown: &mut Option<Dropdown>) ->
             return Some(cmd);
         }
         DropdownType::Model => {
-            let model_id = dd
-                .get_model_id(&selected_text)
-                .unwrap_or_else(|| selected_text.clone());
-            let space_pos = buffer.text().find(' ').unwrap_or(buffer.text().len());
-            let prefix = buffer.text()[..=space_pos].to_string();
-            let after_cursor = buffer.text()[buffer.cursor()..].to_string();
-            buffer.set_text(format!("{}{} {}", prefix, model_id, after_cursor));
+            // Auto-submit like the skill dropdown: selecting a model from
+            // `/models <partial>` is always the whole command, so switch
+            // to it immediately on Enter/Tab.
+            //
+            // Use the exact (provider, model id) carried by the dropdown
+            // and emit a provider-qualified command. A plain id would be
+            // re-resolved with a contains() search and could silently hit
+            // a different provider that happens to share the display name
+            // / id (e.g. "GLM-4.7" in two providers, or an aliased id).
+            let (provider, model_id) = dd
+                .selected_model_meta()
+                .unwrap_or_else(|| (String::new(), selected_text.clone()));
+            let cmd = if provider.is_empty() {
+                format!("/models {}", model_id)
+            } else {
+                format!("/models {}/{}", provider, model_id)
+            };
+            buffer.set_text(cmd.clone());
+            return Some(cmd);
         }
     }
 

@@ -11,6 +11,7 @@ mod file_ref;
 mod input_buffer;
 mod input_renderer;
 mod interactive;
+mod keyboard;
 mod session;
 mod tui;
 mod update;

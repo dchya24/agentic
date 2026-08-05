@@ -1887,6 +1887,10 @@ pub async fn run_tui(commands: Arc<tokio::sync::Mutex<Commands>>) -> Result<()> 
 
 /// Handle a single key event
 async fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) {
+    if !crate::keyboard::should_process_key_kind(key.kind) {
+        return;
+    }
+
     // ── Session view mode ──
     // When session list is open, all keys go to session view handler
     if app.session_view.is_some() {

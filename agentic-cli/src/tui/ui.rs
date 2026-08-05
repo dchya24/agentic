@@ -399,7 +399,7 @@ fn draw_dropdown(frame: &mut Frame, app: &App, input_area: Rect) {
     // Build list items
     let items: Vec<ListItem> = visible_items
         .iter()
-        .map(|(_, item, selected)| {
+        .map(|(i, item, selected)| {
             let style = if *selected {
                 Style::default()
                     .bg(Color::Rgb(52, 152, 219))
@@ -428,7 +428,7 @@ fn draw_dropdown(frame: &mut Frame, app: &App, input_area: Rect) {
             ];
 
             // Add description for commands
-            if let Some(desc) = dropdown.get_description(item) {
+            if let Some(desc) = dropdown.get_description(*i) {
                 spans.push(Span::styled(
                     format!("  {}", desc),
                     if *selected {

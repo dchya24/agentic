@@ -10,6 +10,34 @@ use crate::widgets::inline;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+/// Number of physical terminal rows a `Line` occupies after the terminal
+/// wraps it at the current column width.
+///
+/// Styled ANSI escape sequences are zero-width and [`Line::width`] uses
+/// unicode display widths, so this matches what the terminal renders even
+/// for emoji / CJK. A `Line` of exactly `cols` characters does **not** wrap
+/// (the terminal fills the last column, then `\r\n` moves cleanly to the
+/// next row), hence `div_ceil`.
+fn physical_lines(line: &Line<'_>) -> usize {
+    wrapped_line_count(line.width(), terminal_cols())
+}
+
+/// Pure wrap math: how many rows a string of display `width` occupies in a
+/// terminal `cols` columns wide. Always at least 1 (the row itself).
+fn wrapped_line_count(width: usize, cols: usize) -> usize {
+    width.div_ceil(cols.max(1)).max(1)
+}
+
+/// Actual terminal width in columns. Falls back to 80 when it cannot be
+/// determined. Unlike `inline::terminal_width()` there is no 40-column
+/// floor: underestimating the width would undercount wrapped rows and
+/// break the REPL's MoveUp(N) clearing on narrow terminals.
+fn terminal_cols() -> usize {
+    crossterm::terminal::size()
+        .map(|(w, _)| (w as usize).max(1))
+        .unwrap_or(80)
+}
+
 /// Metadata shown in the prompt area
 pub struct PromptMetadata {
     pub dir_name: String,
@@ -53,19 +81,35 @@ impl PromptMetadata {
     }
 }
 
-/// Render the prompt line + input to stdout as a transient line.
+fn model_status_line(meta: &PromptMetadata) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("Model: ", Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(
+            format!("{}/{}", meta.provider, meta.model),
+            Style::default().fg(Color::Cyan),
+        ),
+    ])
+}
+
+/// Render the model status line followed by the prompt + input to stdout.
 /// Overwrites the previous prompt render in-place.
 ///
-/// Returns the number of terminal lines rendered (including continuation
-/// lines and footer for multi-line mode).  The cursor is left on a NEW
-/// line below the prompt so the REPL loop can MoveUp(N) correctly.
+/// Returns the number of *physical* terminal lines rendered (including
+/// continuation lines and footer for multi-line mode). Long input wraps
+/// onto extra rows, so the count is the sum of wrapped rows, not the
+/// number of logical `print_line` calls — the REPL loop needs this exact
+/// count for its MoveUp(N) clearing. The cursor is left on a NEW line
+/// below the prompt so the REPL loop can MoveUp(N) correctly.
 pub fn render_prompt_line(
     meta: &PromptMetadata,
     buffer: &InputBuffer,
     _has_dropdown: bool,
 ) -> usize {
     let dim = Style::default().add_modifier(Modifier::DIM);
-    let _cyan = Style::default().fg(Color::Cyan);
+
+    let model_line = model_status_line(meta);
+    inline::print_line(&model_line);
+    let model_physical = physical_lines(&model_line);
 
     // Build prompt prefix: "dirname> "
     let prompt_prefix = format!("{}> ", meta.dir_name);
@@ -75,6 +119,7 @@ pub fn render_prompt_line(
         // Render multi-line input
         let lines = buffer.lines();
         let current_line = buffer.current_line();
+        let mut physical = model_physical;
 
         for (i, line) in lines.iter().enumerate() {
             if i == 0 {
@@ -82,7 +127,9 @@ pub fn render_prompt_line(
                 let input_line = render_input(line, buffer.cursor().min(line.len()));
                 let mut spans: Vec<Span<'static>> = vec![Span::styled(prompt_prefix.clone(), dim)];
                 spans.extend(input_line.spans);
-                inline::print_line(&Line::from(spans));
+                let rendered = Line::from(spans);
+                inline::print_line(&rendered);
+                physical += physical_lines(&rendered);
             } else {
                 // Continuation lines with indent
                 let indent = "  "; // 2 spaces for continuation
@@ -107,12 +154,14 @@ pub fn render_prompt_line(
                     ),
                 ];
                 spans.extend(input_line.spans);
-                inline::print_line(&Line::from(spans));
+                let rendered = Line::from(spans);
+                inline::print_line(&rendered);
+                physical += physical_lines(&rendered);
             }
         }
 
         // Show multi-line indicator
-        inline::print_line(&Line::from(vec![
+        let indicator = Line::from(vec![
             Span::styled("  ", dim),
             Span::styled(
                 format!(
@@ -123,14 +172,16 @@ pub fn render_prompt_line(
                     .fg(Color::Rgb(100, 100, 120))
                     .add_modifier(Modifier::DIM),
             ),
-        ]));
+        ]);
+        inline::print_line(&indicator);
+        physical += physical_lines(&indicator);
 
-        lines.len() + 1 // input lines + indicator
+        physical
     } else {
         // Single-line mode
         // NOTE: We use `print_line` (which appends `\r\n`) instead of
         // `print_transient` so that the cursor ends up on the NEXT line
-        // after the prompt.  This lets the REPL loop's `MoveUp(1)`
+        // after the prompt.  This lets the REPL loop's `MoveUp(N)`
         // correctly return to the prompt line rather than overshooting
         // to the status bar above it.
         let input_line = if buffer.is_empty() {
@@ -143,8 +194,9 @@ pub fn render_prompt_line(
         let mut spans: Vec<Span<'static>> = vec![Span::styled(prompt_prefix, dim)];
         spans.extend(input_line.spans);
 
-        inline::print_line(&Line::from(spans));
-        1 // single-line input
+        let rendered = Line::from(spans);
+        inline::print_line(&rendered);
+        model_physical + physical_lines(&rendered)
     }
 }
 
@@ -168,14 +220,18 @@ pub fn render_dropdown_lines(dropdown: &Dropdown) -> usize {
     let title_style = Style::default()
         .fg(Color::Rgb(241, 196, 15))
         .add_modifier(Modifier::BOLD);
-    inline::print_line(&Line::from(vec![Span::styled(
+    let title = Line::from(vec![Span::styled(
         format!("  {} {} ", icon, dropdown.title()),
         title_style,
-    )]));
+    )]);
+    inline::print_line(&title);
 
-    let mut count = 1;
+    // Count *physical* rows: a long item (e.g. a model display name with
+    // description) wraps, and the REPL loop must clear back to the top of
+    // the dropdown on the next keystroke.
+    let mut count = physical_lines(&title);
 
-    for (_, item, selected) in &visible {
+    for (i, item, selected) in &visible {
         let base_style = if *selected {
             Style::default()
                 .bg(Color::Rgb(52, 152, 219))
@@ -206,7 +262,7 @@ pub fn render_dropdown_lines(dropdown: &Dropdown) -> usize {
             spans.push(Span::styled(item.to_string(), base_style));
         }
 
-        if let Some(desc) = dropdown.get_description(item) {
+        if let Some(desc) = dropdown.get_description(*i) {
             let desc_style = if *selected {
                 Style::default()
                     .bg(Color::Rgb(52, 152, 219))
@@ -217,8 +273,9 @@ pub fn render_dropdown_lines(dropdown: &Dropdown) -> usize {
             spans.push(Span::styled(format!("  {}", desc), desc_style));
         }
 
-        inline::print_line(&Line::from(spans));
-        count += 1;
+        let rendered = Line::from(spans);
+        inline::print_line(&rendered);
+        count += physical_lines(&rendered);
     }
 
     count
@@ -264,4 +321,64 @@ fn fuzzy_match_highlight(text: &str, query: &str, is_selected: bool) -> Vec<Span
     }
 
     spans
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_model_status_line_includes_provider_and_model() {
+        let meta = PromptMetadata {
+            dir_name: "project".to_string(),
+            provider: "openai".to_string(),
+            model: "gpt-4o".to_string(),
+            git_branch: None,
+        };
+
+        assert_eq!(model_status_line(&meta).to_string(), "Model: openai/gpt-4o");
+    }
+
+    #[test]
+    fn test_wrapped_line_count_single_row() {
+        assert_eq!(wrapped_line_count(0, 80), 1); // empty line still occupies a row
+        assert_eq!(wrapped_line_count(1, 80), 1);
+        assert_eq!(wrapped_line_count(79, 80), 1);
+        // Exactly one full row does NOT wrap (last column filled, \r\n
+        // moves cleanly to the next row).
+        assert_eq!(wrapped_line_count(80, 80), 1);
+    }
+
+    #[test]
+    fn test_wrapped_line_count_multi_row() {
+        assert_eq!(wrapped_line_count(81, 80), 2);
+        assert_eq!(wrapped_line_count(160, 80), 2);
+        assert_eq!(wrapped_line_count(161, 80), 3);
+    }
+
+    #[test]
+    fn test_wrapped_line_count_narrow_terminal() {
+        assert_eq!(wrapped_line_count(30, 30), 1);
+        assert_eq!(wrapped_line_count(31, 30), 2);
+    }
+
+    #[test]
+    fn test_wrapped_line_count_unicode_width() {
+        // CJK characters have display width 2 in unicode-width.
+        let line = Line::from(Span::raw("你好"));
+        assert_eq!(line.width(), 4);
+        assert_eq!(wrapped_line_count(line.width(), 80), 1);
+        // Wide chars near the boundary count toward wrapping.
+        assert_eq!(wrapped_line_count(line.width(), 3), 2);
+    }
+
+    #[test]
+    fn test_physical_lines_styled_ignores_ansi() {
+        // Styling must not affect the physical row count.
+        let styled = Line::from(Span::styled(
+            "x".repeat(81),
+            Style::default().fg(Color::Rgb(1, 2, 3)),
+        ));
+        assert_eq!(physical_lines(&styled), 2);
+    }
 }

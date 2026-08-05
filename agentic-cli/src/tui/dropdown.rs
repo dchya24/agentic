@@ -28,6 +28,15 @@ pub enum DropdownType {
 pub struct Dropdown {
     pub dropdown_type: DropdownType,
     pub items: Vec<String>,
+    /// Parallel to `items`: per-item description shown dimmed next to the
+    /// item (e.g. model capabilities / max tokens). Empty for types that
+    /// embed their description in the item string (skills).
+    pub descriptions: Vec<String>,
+    /// Parallel to `items`: (provider, exact model id) for model dropdowns.
+    /// Lets the REPL build an unambiguous `/models provider/id` command so
+    /// identical display names / ids across providers resolve to the exact
+    /// entry the user selected.
+    pub model_meta: Vec<(String, String)>,
     pub selected: usize,
     pub visible_count: usize,
     pub query: String,
@@ -55,20 +64,27 @@ const SLASH_COMMANDS: &[(&str, &[&str], &str)] = &[
 
 impl Dropdown {
     pub fn new(dropdown_type: DropdownType, query: String) -> Self {
-        let items = match dropdown_type {
-            DropdownType::Command => Self::filter_commands(&query),
-            DropdownType::File => Self::filter_files(&query),
-            DropdownType::Model => Self::filter_models(&query),
-            DropdownType::Skill => vec![], // use new_skill() instead
-        };
-
-        Self {
+        let mut dd = Self {
             dropdown_type,
-            items,
+            items: Vec::new(),
+            descriptions: Vec::new(),
+            model_meta: Vec::new(),
             selected: 0,
             visible_count: 8,
             query,
+        };
+        match dd.dropdown_type {
+            DropdownType::Command => dd.items = Self::filter_commands(&dd.query),
+            DropdownType::File => dd.items = Self::filter_files(&dd.query),
+            DropdownType::Model => {
+                let (items, descriptions, model_meta) = Self::filter_models(&dd.query);
+                dd.items = items;
+                dd.descriptions = descriptions;
+                dd.model_meta = model_meta;
+            }
+            DropdownType::Skill => {} // use new_skill() instead
         }
+        dd
     }
 
     /// Create a skill selection dropdown with discovered skills.
@@ -106,6 +122,8 @@ impl Dropdown {
         Self {
             dropdown_type: DropdownType::Skill,
             items,
+            descriptions: Vec::new(),
+            model_meta: Vec::new(),
             selected: 0,
             visible_count: 8,
             query,
@@ -135,6 +153,8 @@ impl Dropdown {
         Self {
             dropdown_type: DropdownType::Model,
             items,
+            descriptions: Vec::new(),
+            model_meta: Vec::new(),
             selected: 0,
             visible_count: 8,
             query,
@@ -158,20 +178,26 @@ impl Dropdown {
             .collect()
     }
 
-    /// Filter model names by query
-    fn filter_models(query: &str) -> Vec<String> {
+    /// Filter model names by query.
+    ///
+    /// Returns (items, descriptions, model_meta) kept in sync: each item
+    /// is the display string (`name 👁 [provider] ●`), each description is
+    /// a compact capability / limit summary, and each model_meta entry is
+    /// the exact (provider, model id) for building an unambiguous switch
+    /// command.
+    fn filter_models(query: &str) -> (Vec<String>, Vec<String>, Vec<(String, String)>) {
         let query_lower = query.to_lowercase();
 
         // Load config to get all available models
         let config = match core_agentic::Config::load() {
             Some(c) => c,
-            None => return Vec::new(),
+            None => return (Vec::new(), Vec::new(), Vec::new()),
         };
 
         let active_provider = config.active_provider().map(|p| p.name.clone());
         let active_model = config.active_model().map(|m| m.model.clone());
 
-        let mut models: Vec<String> = Vec::new();
+        let mut entries: Vec<(String, String, (String, String))> = Vec::new();
         for provider in &config.providers {
             for model in &provider.models {
                 let display_name = model.display_name.as_deref().unwrap_or(&model.model);
@@ -196,14 +222,19 @@ impl Dropdown {
                     continue;
                 }
 
-                models.push(display);
+                let description = build_model_description(model);
+                entries.push((
+                    display,
+                    description,
+                    (provider.name.clone(), model.model.clone()),
+                ));
             }
         }
 
-        // Sort: active first, then alphabetically
-        models.sort_by(|a, b| {
-            let a_active = a.contains("●");
-            let b_active = b.contains("●");
+        // Sort: active first, then alphabetically (keep all vecs in sync)
+        entries.sort_by(|(a, _, _), (b, _, _)| {
+            let a_active = a.contains('●');
+            let b_active = b.contains('●');
             match (a_active, b_active) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
@@ -211,7 +242,15 @@ impl Dropdown {
             }
         });
 
-        models
+        let mut items = Vec::with_capacity(entries.len());
+        let mut descriptions = Vec::with_capacity(entries.len());
+        let mut model_meta = Vec::with_capacity(entries.len());
+        for (display, description, meta) in entries {
+            items.push(display);
+            descriptions.push(description);
+            model_meta.push(meta);
+        }
+        (items, descriptions, model_meta)
     }
 
     /// Filter files by query — always recursive, respects .gitignore.
@@ -366,15 +405,22 @@ impl Dropdown {
             .collect()
     }
 
-    /// Get description for command (if command dropdown)
-    pub fn get_description(&self, cmd: &str) -> Option<&'static str> {
-        if self.dropdown_type == DropdownType::Command {
-            SLASH_COMMANDS
-                .iter()
-                .find(|(c, _, _)| *c == cmd)
-                .map(|(_, _, desc)| *desc)
-        } else {
-            None
+    /// Get description for the dropdown item at `index`, if any.
+    ///
+    /// Commands return their one-line help; models return the compact
+    /// capability / limit summary computed by [`build_model_description`].
+    /// Index-based (not item-string-based) so duplicate display strings
+    /// — e.g. two models aliased to the same display name — still resolve
+    /// to the correct per-item description.
+    pub fn get_description(&self, index: usize) -> Option<String> {
+        match self.dropdown_type {
+            DropdownType::Command => self
+                .items
+                .get(index)
+                .and_then(|cmd| SLASH_COMMANDS.iter().find(|(c, _, _)| *c == cmd.as_str()))
+                .map(|(_, _, desc)| desc.to_string()),
+            DropdownType::Model => self.descriptions.get(index).cloned(),
+            _ => None,
         }
     }
 
@@ -408,11 +454,86 @@ impl Dropdown {
         if self.dropdown_type != DropdownType::Model {
             return None;
         }
-        // Extract model name before the provider bracket
-        // "gpt-4o 👁 [openai] ●" → "gpt-4o"
-        let model_id = display.split(' ').next()?.to_string();
-        Some(model_id)
+        // Extract everything before the provider bracket:
+        // "GPT-4o mini 👁 [openai] ●" → "GPT-4o mini"
+        // (splitting on the first space would truncate names containing
+        // spaces, e.g. "GPT-4o mini" → "GPT-4o")
+        let id = display.split(" [").next()?.to_string();
+        // Strip the trailing vision icon if present: "gpt-4o 👁" → "gpt-4o"
+        let id = id.strip_suffix('👁').map(str::trim_end).unwrap_or(&id);
+        Some(id.to_string())
     }
+
+    /// Exact (provider, model id) for the currently selected item.
+    ///
+    /// The display string only shows `display_name`, which can hide the
+    /// real id (aliases) or collide across providers; the metadata carries
+    /// the exact identity so the REPL can switch to precisely this entry.
+    pub fn selected_model_meta(&self) -> Option<(String, String)> {
+        if self.dropdown_type != DropdownType::Model {
+            return None;
+        }
+        self.model_meta.get(self.selected).cloned()
+    }
+}
+
+/// Build a compact description line for a model dropdown item, e.g.
+/// `"👁 vision · max 198K"` or `"id: sm/deepseek-v4-flash · max 198K"`.
+/// Only non-default capabilities are shown (vision, missing tools,
+/// missing streaming) so text-only models stay terse. Truncated so the
+/// item still fits on one terminal line.
+fn build_model_description(model: &core_agentic::config::ModelConfig) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    let caps = model.effective_capabilities();
+    if caps.vision {
+        parts.push("👁 vision".to_string());
+    }
+    if !caps.tools {
+        parts.push("no tools".to_string());
+    }
+    if !caps.streaming {
+        parts.push("no streaming".to_string());
+    }
+
+    // Surface the underlying model id when the display name hides it
+    // (e.g. display "kimi-k2.6" → id "sm/deepseek-v4-flash").
+    let id_hidden = model
+        .display_name
+        .as_deref()
+        .is_some_and(|d| d != model.model.as_str());
+    if id_hidden {
+        parts.push(format!("id: {}", model.model));
+    }
+
+    parts.push(format!("max {}", format_max_tokens(model.max_tokens)));
+
+    truncate_desc(&parts.join(" · "), 50)
+}
+
+/// Format a token count as a compact string: `1_000_000 → "1.0M"`,
+/// `198_192 → "198K"`, `8192 → "8K"`, `512 → "512"`.
+fn format_max_tokens(n: u32) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{}K", n / 1_000)
+    } else {
+        n.to_string()
+    }
+}
+
+/// Truncate a description at `max` bytes on a UTF-8 char boundary and
+/// append an ellipsis when cut.
+fn truncate_desc(desc: &str, max: usize) -> String {
+    if desc.len() <= max {
+        return desc.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !desc.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &desc[..end])
 }
 
 #[cfg(test)]
@@ -522,5 +643,162 @@ mod tests {
     fn test_query_empty() {
         let dropdown = Dropdown::new(DropdownType::Command, "".to_string());
         assert_eq!(dropdown.query(), "");
+    }
+
+    #[test]
+    fn test_get_model_id_plain() {
+        let dropdown = Dropdown::new(DropdownType::Model, String::new());
+        assert_eq!(
+            dropdown.get_model_id("gpt-4o [openai]"),
+            Some("gpt-4o".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_model_id_with_vision_icon() {
+        let dropdown = Dropdown::new(DropdownType::Model, String::new());
+        assert_eq!(
+            dropdown.get_model_id("gpt-4o 👁 [openai]"),
+            Some("gpt-4o".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_model_id_with_active_marker() {
+        let dropdown = Dropdown::new(DropdownType::Model, String::new());
+        assert_eq!(
+            dropdown.get_model_id("gpt-4o [openai] ●"),
+            Some("gpt-4o".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_model_id_with_space_in_name() {
+        let dropdown = Dropdown::new(DropdownType::Model, String::new());
+        // Display names containing spaces must not be truncated.
+        assert_eq!(
+            dropdown.get_model_id("GPT-4o mini 👁 [openai]"),
+            Some("GPT-4o mini".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_model_id_ignores_other_types() {
+        let dropdown = Dropdown::new(DropdownType::Command, String::new());
+        assert_eq!(dropdown.get_model_id("models"), None);
+    }
+
+    #[test]
+    fn test_build_model_description_text_only() {
+        let model = core_agentic::config::ModelConfig {
+            model: "glm-4.7".into(),
+            display_name: None,
+            temperature: 0.7,
+            max_tokens: 198_192,
+            capabilities: None,
+        };
+        assert_eq!(build_model_description(&model), "max 198K");
+    }
+
+    #[test]
+    fn test_build_model_description_vision() {
+        let model = core_agentic::config::ModelConfig {
+            model: "gpt-4o".into(),
+            display_name: None,
+            temperature: 0.7,
+            max_tokens: 8192,
+            capabilities: Some(core_agentic::capabilities::ModelCapabilities::new(
+                true, true, true,
+            )),
+        };
+        assert_eq!(build_model_description(&model), "👁 vision · max 8K");
+    }
+
+    #[test]
+    fn test_build_model_description_hidden_id() {
+        let model = core_agentic::config::ModelConfig {
+            model: "sm/deepseek-v4-flash".into(),
+            display_name: Some("kimi-k2.6".into()),
+            temperature: 0.7,
+            max_tokens: 8192,
+            capabilities: None,
+        };
+        assert_eq!(
+            build_model_description(&model),
+            "id: sm/deepseek-v4-flash · max 8K"
+        );
+    }
+
+    #[test]
+    fn test_build_model_description_missing_caps() {
+        let model = core_agentic::config::ModelConfig {
+            model: "o1".into(),
+            display_name: None,
+            temperature: 0.7,
+            max_tokens: 200_000,
+            capabilities: Some(core_agentic::capabilities::ModelCapabilities::new(
+                false, true, false,
+            )),
+        };
+        assert_eq!(build_model_description(&model), "no streaming · max 200K");
+    }
+
+    #[test]
+    fn test_format_max_tokens() {
+        assert_eq!(format_max_tokens(512), "512");
+        assert_eq!(format_max_tokens(8192), "8K");
+        assert_eq!(format_max_tokens(198_192), "198K");
+        assert_eq!(format_max_tokens(1_000_000), "1.0M");
+    }
+
+    #[test]
+    fn test_truncate_desc_keeps_char_boundary() {
+        let long = "👁 vision · id: sm/deepseek-v4-flash · max 198K";
+        let truncated = truncate_desc(long, 20);
+        // 20 bytes + multi-byte ellipsis
+        assert!(truncated.len() <= 20 + "…".len());
+        assert!(truncated.ends_with('…'));
+        assert!(truncated.is_char_boundary(truncated.len()));
+    }
+
+    #[test]
+    fn test_model_descriptions_parallel_to_items() {
+        // The model dropdown must keep descriptions in sync with items
+        // (same length, every item resolvable via get_description).
+        let dropdown = Dropdown::new(DropdownType::Model, String::new());
+        assert_eq!(dropdown.items.len(), dropdown.descriptions.len());
+        for (i, _item) in dropdown.items.iter().enumerate() {
+            assert!(
+                dropdown.get_description(i).is_some(),
+                "missing description for item {}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_selected_model_meta_matches_items() {
+        // Every model item must carry an exact (provider, model id) so the
+        // REPL can build an unambiguous /models provider/id command.
+        let dropdown = Dropdown::new(DropdownType::Model, String::new());
+        assert_eq!(dropdown.items.len(), dropdown.model_meta.len());
+        for (i, item) in dropdown.items.iter().enumerate() {
+            let (provider, id) = dropdown.model_meta.get(i).expect("meta missing");
+            assert!(!provider.is_empty(), "empty provider for {item}");
+            assert!(!id.is_empty(), "empty model id for {item}");
+        }
+    }
+
+    #[test]
+    fn test_selected_model_meta_follows_navigation() {
+        let mut dropdown = Dropdown::new(DropdownType::Model, String::new());
+        if dropdown.items.is_empty() {
+            return; // no models configured in this environment
+        }
+        let first = dropdown.selected_model_meta().unwrap();
+        dropdown.select_next();
+        let second = dropdown.selected_model_meta().unwrap();
+        // Navigation must move the metadata in lockstep with the item.
+        assert_ne!(first, second);
     }
 }

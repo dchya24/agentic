@@ -4,6 +4,21 @@ mod unit_tests {
     use clap::Parser;
 
     #[test]
+    fn keyboard_release_events_are_ignored_but_press_and_repeat_are_processed() {
+        use crossterm::event::KeyEventKind;
+
+        assert!(crate::keyboard::should_process_key_kind(
+            KeyEventKind::Press
+        ));
+        assert!(crate::keyboard::should_process_key_kind(
+            KeyEventKind::Repeat
+        ));
+        assert!(!crate::keyboard::should_process_key_kind(
+            KeyEventKind::Release
+        ));
+    }
+
+    #[test]
     fn test_cli_run_command_parsing() {
         let cli = Cli::try_parse_from(["agentic", "run", "my task"]).unwrap();
         match cli.command {
