@@ -130,6 +130,22 @@ impl ToolRegistry {
             .ok_or_else(|| ToolError::new(format!("Tool not found: {}", name)))?;
         tool.execute(args.clone())
     }
+
+    /// Execute a tool by name, streaming progress deltas through
+    /// `on_progress`. For tools without a streaming override this routes
+    /// to the default (atomic) execution and never calls `on_progress`.
+    pub fn execute_streaming_by_name(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        on_progress: &dyn Fn(&str),
+    ) -> Result<serde_json::Value, ToolError> {
+        let tools = self.tools.read().unwrap();
+        let tool = tools
+            .get(name)
+            .ok_or_else(|| ToolError::new(format!("Tool not found: {}", name)))?;
+        tool.execute_streaming(args.clone(), on_progress)
+    }
 }
 
 impl Clone for ToolRegistry {
@@ -231,5 +247,47 @@ mod tests {
         for t in threads {
             t.join().unwrap();
         }
+    }
+
+    // Tool yang override execute_streaming untuk memancarkan dua delta;
+    // registry harus meneruskan callback apa adanya.
+    struct Counter;
+    impl Tool for Counter {
+        fn name(&self) -> &str {
+            "counter"
+        }
+        fn description(&self) -> &str {
+            "dummy"
+        }
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new("counter", "dummy")
+        }
+        fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        fn execute_streaming(
+            &self,
+            _: serde_json::Value,
+            on_progress: &dyn Fn(&str),
+        ) -> Result<serde_json::Value, ToolError> {
+            on_progress("alpha");
+            on_progress("beta");
+            Ok(serde_json::json!({ "ok": true }))
+        }
+    }
+
+    #[test]
+    fn registry_forwards_streaming_deltas() {
+        let reg = ToolRegistry::new();
+        reg.register(Box::new(Counter));
+        let deltas = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let d2 = deltas.clone();
+        let result = reg
+            .execute_streaming_by_name("counter", &serde_json::json!({}), &move |s| {
+                d2.lock().unwrap().push(s.to_string());
+            })
+            .unwrap();
+        assert_eq!(result, serde_json::json!({ "ok": true }));
+        assert_eq!(*deltas.lock().unwrap(), vec!["alpha", "beta"]);
     }
 }
