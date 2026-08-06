@@ -21,6 +21,7 @@ use crate::tool_registry::ToolRegistry;
 
 mod compaction;
 mod messages;
+mod progress;
 mod run;
 mod tool_exec;
 
@@ -117,7 +118,9 @@ pub struct Orchestrator {
     memory: Mutex<Memory>,
     safety: Safety,
     state: Mutex<OrchestratorState>,
-    events: EventEmitter,
+    /// Event emitter. Shared via `Arc` so delta-forwarder threads (async
+    /// tool execution) can emit `ToolDelta` from outside the orchestrator.
+    events: Arc<EventEmitter>,
     confirmation_handler: Mutex<Option<ConfirmationHandler>>,
     system_prompt: Option<String>,
     model: String,
@@ -154,7 +157,7 @@ impl Orchestrator {
             memory: Mutex::new(Memory::new(128000)),
             safety: Safety::new(),
             state: Mutex::new(OrchestratorState::Idle),
-            events: EventEmitter::new(),
+            events: Arc::new(EventEmitter::new()),
             confirmation_handler: Mutex::new(None),
             system_prompt: None,
             model: "glm-4.7".to_string(),

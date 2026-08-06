@@ -4,7 +4,7 @@
 
 use core_agentic::providers::{
     ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, LLMProvider, ProviderError,
-    ProviderResult, StreamResult, ToolCallFunction, ToolCallResponse,
+    ProviderResult, StreamResult, ToolCallDelta, ToolCallFunction, ToolCallResponse,
 };
 use std::sync::Mutex;
 
@@ -144,6 +144,80 @@ impl LLMProvider for RecordingProvider {
         Err(ProviderError::new(
             "streaming not supported in RecordingProvider",
         ))
+    }
+}
+
+/// Provider that streams scripted `ChatResponse`s in order, one per
+/// `chat_stream()` call. Text content is streamed as a single delta;
+/// tool calls are delivered as one chunk carrying the full arguments.
+/// When the queue is empty, returns an error so a runaway loop fails
+/// loudly instead of hanging.
+pub struct StreamingScriptedProvider {
+    responses: Mutex<Vec<ChatResponse>>,
+}
+
+impl StreamingScriptedProvider {
+    pub fn new(responses: Vec<ChatResponse>) -> Self {
+        Self {
+            responses: Mutex::new(responses),
+        }
+    }
+}
+
+impl LLMProvider for StreamingScriptedProvider {
+    fn provider_type(&self) -> &str {
+        "fake-stream"
+    }
+    fn provider_id(&self) -> &str {
+        "fake-stream"
+    }
+    fn chat(&self, _req: ChatRequest) -> ProviderResult<ChatResponse> {
+        Err(ProviderError::new(
+            "streaming only — use chat_stream for StreamingScriptedProvider",
+        ))
+    }
+    fn chat_stream(&self, _req: ChatRequest) -> StreamResult<ChatChunk, ProviderError> {
+        let mut q = self.responses.lock().unwrap();
+        if q.is_empty() {
+            return Err(ProviderError::new(
+                "StreamingScriptedProvider: no scripted response left",
+            ));
+        }
+        let resp = q.remove(0);
+
+        // Single chunk carrying either text delta or full tool calls.
+        let mut chunks = Vec::new();
+        if resp.message.tool_calls.is_empty() {
+            chunks.push(Ok(ChatChunk {
+                id: resp.id.clone(),
+                delta: resp.message.content.clone().unwrap_or_default(),
+                finish_reason: resp.finish_reason.clone(),
+                tool_calls: vec![],
+                usage: resp.usage.clone(),
+            }));
+        } else {
+            let tool_calls: Vec<ToolCallDelta> = resp
+                .message
+                .tool_calls
+                .iter()
+                .map(|tc| ToolCallDelta {
+                    index: 0,
+                    id: Some(tc.id.clone()),
+                    function_name: Some(tc.function.name.clone()),
+                    function_arguments: Some(tc.function.arguments.clone()),
+                })
+                .collect();
+            chunks.push(Ok(ChatChunk {
+                id: resp.id.clone(),
+                delta: resp.message.content.clone().unwrap_or_default(),
+                finish_reason: resp.finish_reason.clone(),
+                tool_calls,
+                usage: resp.usage.clone(),
+            }));
+        }
+
+        let stream = futures::stream::iter(chunks);
+        Ok(Box::pin(stream))
     }
 }
 

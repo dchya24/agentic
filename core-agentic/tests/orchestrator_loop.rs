@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 mod support;
-use support::{tool_call, ScriptedProvider};
+use support::{tool_call, ScriptedProvider, StreamingScriptedProvider};
 
 /// One realistic happy path: model says "use read_file", we let it run,
 /// model produces final text. Verifies the loop terminates, the tool
@@ -646,4 +646,118 @@ fn sync_run_executes_read_only_batch_concurrently() {
         serial_elapsed,
         elapsed
     );
+}
+
+/// Tool lifecycle events: run_command must emit ToolStart then an
+/// enriched ToolOutput (duration_ms > 0) via the sync path, and the
+/// deltas between them must carry the streamed output.
+#[test]
+fn tool_lifecycle_events_emitted_in_order() {
+    let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
+        support::tool_call_response(
+            "call-1",
+            "run_command",
+            &serde_json::json!({"command": "printf 'a\nb\n'"}),
+        ),
+        support::text_response("done"),
+    ]));
+
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+
+    let orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+
+    let seen: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+    let s2 = seen.clone();
+    orch.on_event(move |e| s2.lock().unwrap().push(e));
+
+    let out = orch.run("run it").expect("run");
+    assert_eq!(out, "done");
+
+    let events = seen.lock().unwrap();
+    let starts = events
+        .iter()
+        .filter(|e| matches!(e, Event::ToolStart { .. }))
+        .count();
+    let deltas = events
+        .iter()
+        .filter(|e| matches!(e, Event::ToolDelta { .. }))
+        .count();
+    let outputs = events
+        .iter()
+        .filter(|e| matches!(e, Event::ToolOutput { .. }))
+        .count();
+    assert!(starts >= 1, "expected at least one ToolStart");
+    assert!(deltas >= 1, "expected at least one ToolDelta (streamed output)");
+    assert!(outputs >= 1, "expected at least one ToolOutput");
+
+    // Enriched ToolOutput for run_command must carry a real duration.
+    let run_cmd_output = events.iter().find_map(|e| match e {
+        Event::ToolOutput {
+            tool_name,
+            duration_ms,
+            success,
+            ..
+        } if tool_name == "run_command" => Some((*duration_ms, *success)),
+        _ => None,
+    });
+    let (duration_ms, success) = run_cmd_output.expect("run_command ToolOutput");
+    assert!(duration_ms > 0, "duration_ms should be > 0, got {}", duration_ms);
+    assert!(success, "run_command should report success");
+}
+
+/// Streaming path (`run_stream`) must also surface ToolStart/ToolDelta/
+/// ToolOutput via the delta forwarder, with deltas arriving before the
+/// final ToolOutput.
+#[tokio::test]
+async fn tool_lifecycle_events_stream_path() {
+    let provider: Arc<dyn LLMProvider> = Arc::new(StreamingScriptedProvider::new(vec![
+        support::tool_call_response(
+            "call-1",
+            "run_command",
+            &serde_json::json!({"command": "printf 'x\ny\n'"}),
+        ),
+        support::text_response("stream done"),
+    ]));
+
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+
+    let orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+
+    let seen: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+    let s2 = seen.clone();
+    orch.on_event(move |e| s2.lock().unwrap().push(e));
+
+    let chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let c2 = chunks.clone();
+    let out = orch
+        .run_stream("stream it", move |chunk| c2.lock().unwrap().push(chunk))
+        .await
+        .expect("run_stream");
+    assert_eq!(out, "stream done");
+
+    let events = seen.lock().unwrap();
+    assert!(events.iter().any(|e| matches!(e, Event::ToolStart { .. })));
+    assert!(
+        events.iter().any(|e| matches!(e, Event::ToolDelta { .. })),
+        "expected ToolDelta on stream path"
+    );
+    let output = events.iter().find_map(|e| match e {
+        Event::ToolOutput {
+            tool_name,
+            duration_ms,
+            ..
+        } if tool_name == "run_command" => Some(*duration_ms),
+        _ => None,
+    });
+    assert!(output.is_some(), "expected run_command ToolOutput");
+    assert!(output.unwrap() > 0);
+    assert!(!chunks.lock().unwrap().is_empty());
 }
