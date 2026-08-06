@@ -327,8 +327,20 @@ impl Tool for TodowriteTool {
 mod tests {
     use super::*;
 
+    /// Serializes tests that touch the process-global `TODO_LIST` /
+    /// `TODO_CHANGE_HANDLER` (which can't be safely accessed from parallel
+    /// test threads). Every test in this module acquires it.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Acquire the test lock, recovering from poisoning (a panicked
+    /// predecessor) so one failure doesn't cascade.
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn rejects_empty_content() {
+        let _guard = test_lock();
         let tool = TodowriteTool::new();
         let err = tool
             .execute(serde_json::json!({"todos": [{"content": "  "}]}))
@@ -338,6 +350,7 @@ mod tests {
 
     #[test]
     fn rejects_too_many_todos() {
+        let _guard = test_lock();
         clear_todos();
         let tool = TodowriteTool::new();
         let todos: Vec<serde_json::Value> = (0..51)
@@ -352,6 +365,7 @@ mod tests {
 
     #[test]
     fn stores_and_returns_summary() {
+        let _guard = test_lock();
         clear_todos();
 
         let tool = TodowriteTool::new();
@@ -384,6 +398,7 @@ mod tests {
 
     #[test]
     fn replaces_previous_list() {
+        let _guard = test_lock();
         clear_todos();
 
         let tool = TodowriteTool::new();
@@ -408,6 +423,7 @@ mod tests {
 
     #[test]
     fn empty_array_clears_list() {
+        let _guard = test_lock();
         clear_todos();
 
         let tool = TodowriteTool::new();
@@ -423,6 +439,7 @@ mod tests {
 
     #[test]
     fn calls_change_handler() {
+        let _guard = test_lock();
         clear_todos();
 
         struct TestHandler;
@@ -451,6 +468,7 @@ mod tests {
 
     #[test]
     fn todo_status_parse() {
+        let _guard = test_lock();
         assert_eq!(TodoStatus::parse("pending"), Some(TodoStatus::Pending));
         assert_eq!(
             TodoStatus::parse("in_progress"),
@@ -468,6 +486,7 @@ mod tests {
 
     #[test]
     fn todo_priority_parse() {
+        let _guard = test_lock();
         assert_eq!(TodoPriority::parse("low"), Some(TodoPriority::Low));
         assert_eq!(TodoPriority::parse("medium"), Some(TodoPriority::Medium));
         assert_eq!(TodoPriority::parse("high"), Some(TodoPriority::High));
@@ -477,16 +496,19 @@ mod tests {
 
     #[test]
     fn todo_status_default() {
+        let _guard = test_lock();
         assert_eq!(TodoStatus::default(), TodoStatus::Pending);
     }
 
     #[test]
     fn todo_priority_default() {
+        let _guard = test_lock();
         assert_eq!(TodoPriority::default(), TodoPriority::Medium);
     }
 
     #[test]
     fn progress_pct_100_when_all_done() {
+        let _guard = test_lock();
         let tool = TodowriteTool::new();
         let result = tool
             .execute(serde_json::json!({
@@ -501,6 +523,7 @@ mod tests {
 
     #[test]
     fn progress_pct_0_when_none_done() {
+        let _guard = test_lock();
         let tool = TodowriteTool::new();
         let result = tool
             .execute(serde_json::json!({
@@ -515,6 +538,7 @@ mod tests {
 
     #[test]
     fn defaults_optional_fields_in_item() {
+        let _guard = test_lock();
         let item: TodoItem =
             serde_json::from_value(serde_json::json!({"content": "test"})).unwrap();
         assert_eq!(item.status, TodoStatus::Pending);

@@ -598,7 +598,7 @@ fn restart_session_workflow_resets_memory() {
 /// total wall-time is much less than 4 * 200ms.
 #[test]
 fn sync_run_executes_read_only_batch_concurrently() {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     // Four no-op slow reads in one assistant turn, then a final answer.
     let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
@@ -612,39 +612,26 @@ fn sync_run_executes_read_only_batch_concurrently() {
     ]));
 
     let tools = ToolRegistry::new();
-    // Single tool registered four times under one name; each call lands
-    // a fresh Box. The CONCURRENT path doesn't care about name
-    // duplication — it dispatches by name per call.
-    tools.register(Box::new(support::SlowReadTool::new(
-        "slow_read",
-        Duration::from_millis(200),
-    )));
+    // Concurrency-tracking tool: asserts on peak concurrent executions
+    // (deterministic) instead of wall-clock thresholds (flaky under
+    // parallel CI load).
+    let tool = support::ConcurrentReadTool::new("slow_read", Duration::from_millis(200));
+    let peak = tool.max.clone();
+    tools.register(Box::new(tool));
 
     let orch = Orchestrator::new(provider, tools);
     orch.set_permission_mode(PermissionMode::Yolo);
 
-    let start = Instant::now();
     let answer = orch.run("go").expect("ok");
-    let elapsed = start.elapsed();
     assert_eq!(answer, "done");
 
-    // Prove concurrency with a *measured* serial baseline rather than an
-    // absolute wall-clock bound: on a loaded machine (full test suite,
-    // parallel CI) even a concurrent batch can take >600ms, so absolute
-    // thresholds are flaky. Four 200ms sleeps back-to-back are the
-    // sequential lower bound; a concurrent batch must beat that baseline
-    // by a wide margin (it should be ~4x faster).
-    let serial_start = Instant::now();
-    for _ in 0..4 {
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    let serial_elapsed = serial_start.elapsed();
-
+    // If the batch ran concurrently, at least two executions overlapped.
+    // Sequential execution would give a peak of exactly 1.
+    let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
     assert!(
-        elapsed < serial_elapsed.mul_f64(0.8),
-        "expected concurrent batch to beat serial baseline (serial {:?}, concurrent {:?})",
-        serial_elapsed,
-        elapsed
+        peak > 1,
+        "expected concurrent read-only batch, but peak concurrent executions was {}",
+        peak
     );
 }
 
@@ -691,7 +678,10 @@ fn tool_lifecycle_events_emitted_in_order() {
         .filter(|e| matches!(e, Event::ToolOutput { .. }))
         .count();
     assert!(starts >= 1, "expected at least one ToolStart");
-    assert!(deltas >= 1, "expected at least one ToolDelta (streamed output)");
+    assert!(
+        deltas >= 1,
+        "expected at least one ToolDelta (streamed output)"
+    );
     assert!(outputs >= 1, "expected at least one ToolOutput");
 
     // Enriched ToolOutput for run_command must carry a real duration.
@@ -705,7 +695,11 @@ fn tool_lifecycle_events_emitted_in_order() {
         _ => None,
     });
     let (duration_ms, success) = run_cmd_output.expect("run_command ToolOutput");
-    assert!(duration_ms > 0, "duration_ms should be > 0, got {}", duration_ms);
+    assert!(
+        duration_ms > 0,
+        "duration_ms should be > 0, got {}",
+        duration_ms
+    );
     assert!(success, "run_command should report success");
 }
 

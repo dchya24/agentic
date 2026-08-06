@@ -275,3 +275,51 @@ impl core_agentic::tool::Tool for SlowReadTool {
         true
     }
 }
+
+/// Read-only test tool that tracks peak concurrent executions via shared
+/// atomics. A deterministic concurrency proof: after a run, `max` holds the
+/// largest number of simultaneously-executing copies. No wall-clock asserts,
+/// so it can't flake under parallel test load.
+pub struct ConcurrentReadTool {
+    name: String,
+    sleep: std::time::Duration,
+    pub current: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub max: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ConcurrentReadTool {
+    pub fn new(name: &str, sleep: std::time::Duration) -> Self {
+        Self {
+            name: name.to_string(),
+            sleep,
+            current: Default::default(),
+            max: Default::default(),
+        }
+    }
+}
+
+impl core_agentic::tool::Tool for ConcurrentReadTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        "concurrency-tracking read-only test tool"
+    }
+    fn schema(&self) -> core_agentic::tool::ToolSchema {
+        core_agentic::tool::ToolSchema::new(self.name.clone(), "concurrency test")
+    }
+    fn execute(
+        &self,
+        _args: serde_json::Value,
+    ) -> core_agentic::tool::ToolResult<serde_json::Value> {
+        use std::sync::atomic::Ordering;
+        let cur = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max.fetch_max(cur, Ordering::SeqCst);
+        std::thread::sleep(self.sleep);
+        self.current.fetch_sub(1, Ordering::SeqCst);
+        Ok(serde_json::json!({ "ok": true, "name": self.name }))
+    }
+    fn is_read_only(&self) -> bool {
+        true
+    }
+}
