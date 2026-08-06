@@ -335,7 +335,9 @@ mod tests {
     /// Acquire the test lock, recovering from poisoning (a panicked
     /// predecessor) so one failure doesn't cascade.
     fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]
