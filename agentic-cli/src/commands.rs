@@ -3025,7 +3025,32 @@ fn render_event(event: &core_agentic::Event) {
         } => {
             inline::print_line(&tool_call::render_call_compact(tool_name, arguments));
         }
-        core_agentic::Event::ToolOutput { tool_name, output, .. } => {
+        core_agentic::Event::ToolStart {
+            tool_name, arguments, ..
+        } => {
+            // Running header: "  ⟳ run_command" — live progress begins.
+            let line = RLine::from(vec![RSpan::raw("  "), RSpan::styled(
+                format!("\u{27F3} {}", tool_name),
+                RStyle::default().fg(RColor::Indexed(247)).add_modifier(RModifier::BOLD),
+            )]);
+            inline::print_line(&line);
+            let _ = arguments;
+        }
+        core_agentic::Event::ToolDelta {
+            delta, tool_name, ..
+        } => {
+            let lines = render_tool_delta(tool_name, delta);
+            for line in lines {
+                inline::print_line(&line);
+            }
+        }
+        core_agentic::Event::ToolOutput {
+            tool_name,
+            output,
+            duration_ms,
+            truncated,
+            ..
+        } => {
             // Heuristic: orchestrator records denied/skipped/error outcomes
             // as plain string output with these prefixes. We render those
             // with the red error accent.
@@ -3057,6 +3082,20 @@ fn render_event(event: &core_agentic::Event) {
 
             // Compact result line: → ✓ summary  or  → ✗ error
             inline::print_line(&tool_call::render_result_compact(output, is_error));
+
+            // Enriched metadata: duration + truncation notice.
+            if *duration_ms > 0 {
+                inline::print_line(&RLine::from(RSpan::styled(
+                    format!("   ({:.1}s)", *duration_ms as f64 / 1000.0),
+                    RStyle::default().add_modifier(RModifier::DIM),
+                )));
+            }
+            if *truncated {
+                inline::print_line(&RLine::from(RSpan::styled(
+                    "   \u{2026} output dipotong (hasil penuh tersimpan di konteks model)",
+                    RStyle::default().add_modifier(RModifier::DIM),
+                )));
+            }
 
             // If there's a diff, render it inline without borders.
             if let Some(diff) = diff_text {
@@ -3103,6 +3142,24 @@ fn render_event(event: &core_agentic::Event) {
         // channels (the confirmation prompt, the final markdown).
         _ => {}
     }
+}
+
+/// Render a live tool-output delta as indented DIM lines. Pure — no
+/// terminal access — so it can be unit-tested without capturing stdout.
+fn render_tool_delta(_tool_name: &str, delta: &str) -> Vec<RLine<'static>> {
+    let mut lines = Vec::new();
+    for line in delta.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        lines.push(RLine::from(RSpan::styled(
+            format!("    {}", line),
+            RStyle::default()
+                .fg(RColor::Indexed(244))
+                .add_modifier(RModifier::DIM),
+        )));
+    }
+    lines
 }
 
 // ── Print helpers (shared widgets) ──────────────────────────
@@ -3677,5 +3734,34 @@ mod switch_model_tests {
             err.contains("refusing to save config under test"),
             "expected test-save refusal, got: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod render_tool_delta_tests {
+    use super::*;
+
+    #[test]
+    fn skips_blank_lines() {
+        let lines = render_tool_delta("run_command", "a\n\nb\n");
+        let rendered: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        assert_eq!(rendered.len(), 2, "blank lines should be skipped");
+        assert!(rendered[0].contains("a"));
+        assert!(rendered[1].contains("b"));
+    }
+
+    #[test]
+    fn indents_every_line() {
+        let lines = render_tool_delta("run_command", "cargo: compiling\ncargo: done");
+        assert_eq!(lines.len(), 2);
+        for l in &lines {
+            assert!(l.to_string().contains("    "), "expected 4-space indent");
+        }
+    }
+
+    #[test]
+    fn empty_delta_produces_no_lines() {
+        let lines = render_tool_delta("run_command", "");
+        assert!(lines.is_empty());
     }
 }

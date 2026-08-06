@@ -57,6 +57,11 @@ pub enum AppMessage {
     },
     /// LLM's thinking/explanation before tool execution.
     Thought(String),
+    /// Live output delta from a streaming tool.
+    ToolDelta {
+        name: String,
+        delta: String,
+    },
     /// Plan progress update from the planner agent.
     PlanProgress {
         goal: String,
@@ -171,6 +176,9 @@ pub enum MessageRole {
     /// Tool result (error / blocked / skipped): rendered as a red
     /// notification with the body always shown.
     ToolError,
+    /// Live output delta from a streaming tool (run_command/run_script).
+    /// Rendered as indented DIM lines under the tool's panel.
+    ToolActivity,
 }
 
 impl App {
@@ -417,6 +425,7 @@ impl App {
                     MessageRole::Tool => "tool",
                     MessageRole::ToolResult => "tool-result",
                     MessageRole::ToolError => "tool-error",
+                    MessageRole::ToolActivity => "tool-activity",
                 };
                 hits.push((i, role_label, &msg.content));
             }
@@ -881,6 +890,16 @@ impl App {
                             let _ = event_tx.send(AppMessage::ToolCall {
                                 name: tool_name,
                                 arguments,
+                            });
+                        }
+                        core_agentic::Event::ToolStart { .. } => {
+                            // ToolCall (just above) already surfaces the
+                            // running marker — ToolStart is a no-op here.
+                        }
+                        core_agentic::Event::ToolDelta { tool_name, delta, .. } => {
+                            let _ = event_tx.send(AppMessage::ToolDelta {
+                                name: tool_name,
+                                delta,
                             });
                         }
                         core_agentic::Event::ToolOutput { tool_name, output, .. } => {
@@ -1405,6 +1424,16 @@ impl App {
                                 arguments,
                             });
                         }
+                        core_agentic::Event::ToolStart { .. } => {
+                            // ToolCall (just above) already surfaces the
+                            // running marker — ToolStart is a no-op here.
+                        }
+                        core_agentic::Event::ToolDelta { tool_name, delta, .. } => {
+                            let _ = event_tx.send(AppMessage::ToolDelta {
+                                name: tool_name,
+                                delta,
+                            });
+                        }
                         core_agentic::Event::ToolOutput { tool_name, output, .. } => {
                             let body = match &output {
                                 serde_json::Value::String(s) => s.clone(),
@@ -1796,6 +1825,15 @@ impl App {
                             self.messages.push(Message {
                                 role: MessageRole::Assistant,
                                 content,
+                                timestamp: chrono::Local::now(),
+                            });
+                        }
+                    }
+                    AppMessage::ToolDelta { name, delta } => {
+                        if !delta.trim().is_empty() {
+                            self.messages.push(Message {
+                                role: MessageRole::ToolActivity,
+                                content: format!("[{}]\n{}", name, delta),
                                 timestamp: chrono::Local::now(),
                             });
                         }

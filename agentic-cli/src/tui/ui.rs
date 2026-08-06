@@ -155,6 +155,25 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
                 continue;
             }
+            MessageRole::ToolActivity => {
+                // Live streaming output from a tool: strip the "[name]"
+                // prefix and render the body as indented DIM lines.
+                let body = message
+                    .content
+                    .split_once('\n')
+                    .map(|(_, rest)| rest.to_string())
+                    .unwrap_or_else(|| message.content.clone());
+                for line in body.lines() {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    all_lines.push(Line::from(Span::styled(
+                        format!("    {}", line),
+                        Style::default().fg(Color::Indexed(244)).add_modifier(Modifier::DIM),
+                    )));
+                }
+                continue;
+            }
             MessageRole::ToolResult | MessageRole::ToolError => {
                 if let Some((name, output)) = parse_tool_result_payload(&message.content) {
                     let is_error = matches!(message.role, MessageRole::ToolError);
