@@ -69,6 +69,19 @@ pub trait Tool: Send + Sync {
     fn is_read_only(&self) -> bool {
         false
     }
+
+    /// Stream progressive output to `on_progress` as the tool runs.
+    ///
+    /// Default: run [`Self::execute`] atomically and ignore the callback.
+    /// Tools that produce long-running output (e.g. run_command) override
+    /// this to report deltas live; non-streaming tools are untouched.
+    fn execute_streaming(
+        &self,
+        args: serde_json::Value,
+        _on_progress: &dyn Fn(&str),
+    ) -> ToolResult<serde_json::Value> {
+        self.execute(args)
+    }
 }
 
 impl ToolSchema {
@@ -107,5 +120,51 @@ impl ToolSchema {
             parameters: params,
             required: required_list,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    // Tool yang hanya mengimplementasikan `execute` (bukan meng-override
+    // `execute_streaming`) tetap berfungsi: default mengembalikan hasil yang
+    // sama dan tidak pernah memanggil on_progress.
+    #[test]
+    fn execute_streaming_defaults_to_execute() {
+        struct Basic;
+        impl Tool for Basic {
+            fn name(&self) -> &str {
+                "basic"
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn schema(&self) -> ToolSchema {
+                ToolSchema::new("basic", "")
+            }
+            fn execute(&self, _: serde_json::Value) -> ToolResult<serde_json::Value> {
+                Ok(serde_json::json!({ "ok": 1 }))
+            }
+        }
+
+        let tool = Basic;
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let c = callbacks.clone();
+        // Closure harus Fn (bukan FnMut) supaya bisa di-coerce ke
+        // `&dyn Fn(&str)`.
+        let result = tool
+            .execute_streaming(serde_json::json!({}), &move |_| {
+                c.fetch_add(1, Ordering::SeqCst);
+            })
+            .unwrap();
+        assert_eq!(result, serde_json::json!({ "ok": 1 }));
+        assert_eq!(
+            callbacks.load(Ordering::SeqCst),
+            0,
+            "fallback must not invoke on_progress"
+        );
     }
 }
