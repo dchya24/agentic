@@ -50,7 +50,10 @@ impl Orchestrator {
         on_progress: &dyn Fn(&str),
     ) -> SlotOutcome {
         let start = std::time::Instant::now();
-        let raw = match self.tools.execute_streaming_by_name(name, args, on_progress) {
+        let raw = match self
+            .tools
+            .execute_streaming_by_name(name, args, on_progress)
+        {
             Ok(result) => {
                 serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
             }
@@ -70,12 +73,7 @@ impl Orchestrator {
     }
 
     /// Execute a tool with live `ToolDelta` emission (sync path).
-    fn execute_tool_live(
-        &self,
-        id: &str,
-        name: &str,
-        args: &serde_json::Value,
-    ) -> SlotOutcome {
+    fn execute_tool_live(&self, id: &str, name: &str, args: &serde_json::Value) -> SlotOutcome {
         self.events.emit(Event::ToolStart {
             tool_call_id: id.to_string(),
             tool_name: name.to_string(),
@@ -572,13 +570,9 @@ impl Orchestrator {
                     let tx = tx.clone();
                     let handle = tokio::task::spawn_blocking(move || {
                         let start = std::time::Instant::now();
-                        let raw = match registry.execute_streaming_by_name(
-                            &name,
-                            &args,
-                            &|delta| {
-                                let _ = tx.send((id.clone(), name.clone(), delta.to_string()));
-                            },
-                        ) {
+                        let raw = match registry.execute_streaming_by_name(&name, &args, &|delta| {
+                            let _ = tx.send((id.clone(), name.clone(), delta.to_string()));
+                        }) {
                             Ok(v) => {
                                 serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
                             }

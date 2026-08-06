@@ -139,7 +139,8 @@ impl RunScriptTool {
         drop(file);
 
         // Execute
-        let result = self.run_interpreter(interpreter, &script_path, cwd, timeout_secs, on_progress);
+        let result =
+            self.run_interpreter(interpreter, &script_path, cwd, timeout_secs, on_progress);
 
         // Cleanup
         let _ = std::fs::remove_file(&script_path);
@@ -174,10 +175,7 @@ impl RunScriptTool {
 
         // Read a stream incrementally; stream each line through on_progress
         // when present. Generic over ChildStdout/ChildStderr.
-        fn read_into<R: std::io::Read>(
-            reader: R,
-            on: Option<&dyn Fn(&str)>,
-        ) -> String {
+        fn read_into<R: std::io::Read>(reader: R, on: Option<&dyn Fn(&str)>) -> String {
             let reader = BufReader::new(reader);
             let mut acc = String::new();
             for line in reader.lines() {
@@ -322,9 +320,6 @@ mod tests {
             "bad stdout: {}",
             stdout
         );
-        assert!(
-            !deltas.lock().unwrap().is_empty(),
-            "expected live deltas"
-        );
+        assert!(!deltas.lock().unwrap().is_empty(), "expected live deltas");
     }
 }

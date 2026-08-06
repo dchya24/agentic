@@ -58,10 +58,7 @@ pub enum AppMessage {
     /// LLM's thinking/explanation before tool execution.
     Thought(String),
     /// Live output delta from a streaming tool.
-    ToolDelta {
-        name: String,
-        delta: String,
-    },
+    ToolDelta { name: String, delta: String },
     /// Plan progress update from the planner agent.
     PlanProgress {
         goal: String,
@@ -896,13 +893,17 @@ impl App {
                             // ToolCall (just above) already surfaces the
                             // running marker — ToolStart is a no-op here.
                         }
-                        core_agentic::Event::ToolDelta { tool_name, delta, .. } => {
+                        core_agentic::Event::ToolDelta {
+                            tool_name, delta, ..
+                        } => {
                             let _ = event_tx.send(AppMessage::ToolDelta {
                                 name: tool_name,
                                 delta,
                             });
                         }
-                        core_agentic::Event::ToolOutput { tool_name, output, .. } => {
+                        core_agentic::Event::ToolOutput {
+                            tool_name, output, ..
+                        } => {
                             let body = match &output {
                                 serde_json::Value::String(s) => s.clone(),
                                 other => other.to_string(),
@@ -1428,13 +1429,17 @@ impl App {
                             // ToolCall (just above) already surfaces the
                             // running marker — ToolStart is a no-op here.
                         }
-                        core_agentic::Event::ToolDelta { tool_name, delta, .. } => {
+                        core_agentic::Event::ToolDelta {
+                            tool_name, delta, ..
+                        } => {
                             let _ = event_tx.send(AppMessage::ToolDelta {
                                 name: tool_name,
                                 delta,
                             });
                         }
-                        core_agentic::Event::ToolOutput { tool_name, output, .. } => {
+                        core_agentic::Event::ToolOutput {
+                            tool_name, output, ..
+                        } => {
                             let body = match &output {
                                 serde_json::Value::String(s) => s.clone(),
                                 other => other.to_string(),

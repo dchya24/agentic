@@ -169,7 +169,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                     }
                     all_lines.push(Line::from(Span::styled(
                         format!("    {}", line),
-                        Style::default().fg(Color::Indexed(244)).add_modifier(Modifier::DIM),
+                        Style::default()
+                            .fg(Color::Indexed(244))
+                            .add_modifier(Modifier::DIM),
                     )));
                 }
                 continue;
