@@ -78,6 +78,27 @@ impl Tool for RunScriptTool {
     }
 
     fn execute(&self, args: serde_json::Value) -> ToolResult<serde_json::Value> {
+        self.run_script_impl(args, None)
+    }
+
+    fn execute_streaming(
+        &self,
+        args: serde_json::Value,
+        on_progress: &dyn Fn(&str),
+    ) -> ToolResult<serde_json::Value> {
+        self.run_script_impl(args, Some(on_progress))
+    }
+}
+
+impl RunScriptTool {
+    /// Shared implementation: parse args, write temp script, run the
+    /// interpreter, clean up. Streams each output line to `on_progress`
+    /// when provided; otherwise runs atomically (same output as before).
+    fn run_script_impl(
+        &self,
+        args: serde_json::Value,
+        on_progress: Option<&dyn Fn(&str)>,
+    ) -> ToolResult<serde_json::Value> {
         let args_obj = args
             .as_object()
             .ok_or_else(|| ToolError::new("Invalid arguments: expected object"))?;
@@ -118,7 +139,7 @@ impl Tool for RunScriptTool {
         drop(file);
 
         // Execute
-        let result = self.run_interpreter(interpreter, &script_path, cwd, timeout_secs);
+        let result = self.run_interpreter(interpreter, &script_path, cwd, timeout_secs, on_progress);
 
         // Cleanup
         let _ = std::fs::remove_file(&script_path);
@@ -134,6 +155,7 @@ impl RunScriptTool {
         script_path: &std::path::Path,
         cwd: Option<&str>,
         _timeout_secs: u64,
+        on_progress: Option<&dyn Fn(&str)>,
     ) -> ToolResult<serde_json::Value> {
         let mut cmd = Command::new(interpreter);
         cmd.arg(script_path);
@@ -142,14 +164,49 @@ impl RunScriptTool {
             cmd.current_dir(dir);
         }
 
-        let output = cmd
+        let mut child = cmd
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .output()
+            .spawn()
             .map_err(|e| ToolError::new(format!("Failed to execute script: {}", e)))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        use std::io::{BufRead, BufReader};
+
+        // Read a stream incrementally; stream each line through on_progress
+        // when present. Generic over ChildStdout/ChildStderr.
+        fn read_into<R: std::io::Read>(
+            reader: R,
+            on: Option<&dyn Fn(&str)>,
+        ) -> String {
+            let reader = BufReader::new(reader);
+            let mut acc = String::new();
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => {
+                        if let Some(on) = on {
+                            on(&line);
+                        }
+                        acc.push_str(&line);
+                        acc.push('\n');
+                    }
+                    Err(_) => break,
+                }
+            }
+            acc
+        }
+
+        let stdout = match child.stdout.take() {
+            Some(s) => read_into(s, on_progress),
+            None => String::new(),
+        };
+        let stderr = match child.stderr.take() {
+            Some(s) => read_into(s, on_progress),
+            None => String::new(),
+        };
+
+        let status = child
+            .wait()
+            .map_err(|e| ToolError::new(format!("Failed to wait script: {}", e)))?;
 
         // Truncate output if too large (64KB limit)
         let max_output = 65536;
@@ -173,8 +230,8 @@ impl RunScriptTool {
         };
 
         Ok(serde_json::json!({
-            "success": output.status.success(),
-            "exit_code": output.status.code().unwrap_or(-1),
+            "success": status.success(),
+            "exit_code": status.code().unwrap_or(-1),
             "stdout": stdout_truncated,
             "stderr": stderr_truncated,
             "interpreter": interpreter,
@@ -241,5 +298,33 @@ mod tests {
         let output = result.unwrap();
         assert_eq!(output["success"], false);
         assert_eq!(output["exit_code"], 42);
+    }
+
+    #[test]
+    fn run_script_streams_echo_lines() {
+        use std::sync::{Arc, Mutex};
+        let tool = RunScriptTool::new();
+        let deltas: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let d = deltas.clone();
+        let result = tool
+            .execute_streaming(
+                serde_json::json!({
+                    "script": "echo one\necho two",
+                    "interpreter": "sh",
+                }),
+                &move |line| d.lock().unwrap().push(line.to_string()),
+            )
+            .unwrap();
+        assert_eq!(result["success"], true);
+        let stdout = result["stdout"].as_str().unwrap();
+        assert!(
+            stdout.contains("one") && stdout.contains("two"),
+            "bad stdout: {}",
+            stdout
+        );
+        assert!(
+            !deltas.lock().unwrap().is_empty(),
+            "expected live deltas"
+        );
     }
 }
