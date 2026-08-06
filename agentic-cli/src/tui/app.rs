@@ -883,7 +883,7 @@ impl App {
                                 arguments,
                             });
                         }
-                        core_agentic::Event::ToolOutput { tool_name, output } => {
+                        core_agentic::Event::ToolOutput { tool_name, output, .. } => {
                             let body = match &output {
                                 serde_json::Value::String(s) => s.clone(),
                                 other => other.to_string(),
@@ -1405,7 +1405,7 @@ impl App {
                                 arguments,
                             });
                         }
-                        core_agentic::Event::ToolOutput { tool_name, output } => {
+                        core_agentic::Event::ToolOutput { tool_name, output, .. } => {
                             let body = match &output {
                                 serde_json::Value::String(s) => s.clone(),
                                 other => other.to_string(),

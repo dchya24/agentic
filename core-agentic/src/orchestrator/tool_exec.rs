@@ -86,6 +86,11 @@ impl Orchestrator {
                 self.events.emit(Event::ToolOutput {
                     tool_name: tc_name.clone(),
                     output: serde_json::Value::String(format!("Blocked: {}", reason)),
+                    error: None,
+                    tool_call_id: tc_id.clone(),
+                    duration_ms: 0,
+                    success: false,
+                    truncated: false,
                 });
                 slots.push(Slot::PreResolved {
                     name: tc_name.clone(),
@@ -105,6 +110,11 @@ impl Orchestrator {
                         output: serde_json::Value::String(
                             "Skipped: Confirmation denied".to_string(),
                         ),
+                        error: None,
+                        tool_call_id: tc_id.clone(),
+                        duration_ms: 0,
+                        success: false,
+                        truncated: false,
                     });
                     slots.push(Slot::PreResolved {
                         name: tc_name.clone(),
@@ -252,6 +262,11 @@ impl Orchestrator {
                     self.events.emit(Event::ToolOutput {
                         tool_name: name.clone(),
                         output: serde_json::Value::String(output.clone()),
+                        error: None,
+                        tool_call_id: id.clone(),
+                        duration_ms: 0,
+                        success: !output.starts_with("Tool error"),
+                        truncated: false,
                     });
                 }
                 mem.add_message(Message::tool(name, id, output));
@@ -331,6 +346,11 @@ impl Orchestrator {
                 self.events.emit(Event::ToolOutput {
                     tool_name: tc_name.clone(),
                     output: serde_json::Value::String(format!("Blocked: {}", reason)),
+                    error: None,
+                    tool_call_id: tc_id.clone(),
+                    duration_ms: 0,
+                    success: false,
+                    truncated: false,
                 });
                 slots.push(Slot::PreResolved {
                     name: tc_name.clone(),
@@ -350,6 +370,11 @@ impl Orchestrator {
                         output: serde_json::Value::String(
                             "Skipped: Confirmation denied".to_string(),
                         ),
+                        error: None,
+                        tool_call_id: tc_id.clone(),
+                        duration_ms: 0,
+                        success: false,
+                        truncated: false,
                     });
                     slots.push(Slot::PreResolved {
                         name: tc_name.clone(),
@@ -461,6 +486,11 @@ impl Orchestrator {
                     self.events.emit(Event::ToolOutput {
                         tool_name: name.clone(),
                         output: serde_json::Value::String(output.clone()),
+                        error: None,
+                        tool_call_id: id.clone(),
+                        duration_ms: 0,
+                        success: !output.starts_with("Tool error"),
+                        truncated: false,
                     });
                 }
                 mem.add_message(Message::tool(name, id, output));

@@ -16,10 +16,34 @@ pub enum Event {
         arguments: serde_json::Value,
     },
 
+    /// Emitted right before a tool actually executes (after safety passes).
+    #[serde(rename = "tool_start")]
+    #[serde(rename_all = "camelCase")]
+    ToolStart {
+        tool_call_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+
+    /// Live output chunk from a streaming tool (run_command/run_script).
+    #[serde(rename = "tool_delta")]
+    #[serde(rename_all = "camelCase")]
+    ToolDelta {
+        tool_call_id: String,
+        tool_name: String,
+        delta: String,
+    },
+
     #[serde(rename = "tool_output")]
+    #[serde(rename_all = "camelCase")]
     ToolOutput {
         tool_name: String,
         output: serde_json::Value,
+        error: Option<String>,
+        tool_call_id: String,
+        duration_ms: u64,
+        success: bool,
+        truncated: bool,
     },
 
     #[serde(rename = "confirmation_request")]
@@ -67,6 +91,8 @@ pub enum Event {
 pub enum EventType {
     Thought,
     ToolCall,
+    ToolStart,
+    ToolDelta,
     ToolOutput,
     ConfirmationRequest,
     Error,
@@ -81,6 +107,8 @@ impl Event {
         match self {
             Event::Thought { .. } => EventType::Thought,
             Event::ToolCall { .. } => EventType::ToolCall,
+            Event::ToolStart { .. } => EventType::ToolStart,
+            Event::ToolDelta { .. } => EventType::ToolDelta,
             Event::ToolOutput { .. } => EventType::ToolOutput,
             Event::ConfirmationRequest { .. } => EventType::ConfirmationRequest,
             Event::Error { .. } => EventType::Error,
@@ -138,5 +166,50 @@ impl EventEmitter {
 impl Default for EventEmitter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_lifecycle_variants_map_to_type() {
+        let start = Event::ToolStart {
+            tool_call_id: "c1".into(),
+            tool_name: "run_command".into(),
+            arguments: serde_json::json!({ "command": "echo hi" }),
+        };
+        assert_eq!(start.event_type(), EventType::ToolStart);
+
+        let delta = Event::ToolDelta {
+            tool_call_id: "c1".into(),
+            tool_name: "run_command".into(),
+            delta: "hi\n".to_string(),
+        };
+        assert_eq!(delta.event_type(), EventType::ToolDelta);
+
+        let out = Event::ToolOutput {
+            tool_name: "run_command".into(),
+            output: serde_json::json!({ "stdout": "hi" }),
+            error: None,
+            tool_call_id: "c1".into(),
+            duration_ms: 42,
+            success: true,
+            truncated: false,
+        };
+        assert_eq!(out.event_type(), EventType::ToolOutput);
+    }
+
+    #[test]
+    fn tool_delta_serializes_with_type_tag() {
+        let delta = Event::ToolDelta {
+            tool_call_id: "c1".into(),
+            tool_name: "run_command".into(),
+            delta: "hi\n".to_string(),
+        };
+        let json = serde_json::to_value(&delta).unwrap();
+        assert_eq!(json["type"], "tool_delta");
+        assert_eq!(json["toolName"], "run_command");
     }
 }

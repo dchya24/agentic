@@ -697,6 +697,11 @@ impl PlannerAgent {
                     "status": new_status.to_string(),
                     "result": result_text,
                 }),
+                error: None,
+                tool_call_id: step_id.clone(),
+                duration_ms: 0,
+                success: true,
+                truncated: false,
             });
 
             self.emit_plan_progress(plan, &step_id, &step_desc, &new_status.to_string());

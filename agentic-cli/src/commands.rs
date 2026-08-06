@@ -3025,7 +3025,7 @@ fn render_event(event: &core_agentic::Event) {
         } => {
             inline::print_line(&tool_call::render_call_compact(tool_name, arguments));
         }
-        core_agentic::Event::ToolOutput { tool_name, output } => {
+        core_agentic::Event::ToolOutput { tool_name, output, .. } => {
             // Heuristic: orchestrator records denied/skipped/error outcomes
             // as plain string output with these prefixes. We render those
             // with the red error accent.
