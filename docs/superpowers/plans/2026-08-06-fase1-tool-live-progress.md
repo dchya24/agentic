@@ -165,14 +165,23 @@ mod tests {
             fn description(&self) -> &str { "" }
             fn schema(&self) -> ToolSchema { ToolSchema::new("basic", "") }
             fn execute(&self, _: serde_json::Value) -> ToolResult<serde_json::Value> {
-                Ok(serde_json::json!({"ok": 1}))
+                Ok(serde_json::json!({ "ok": 1 }))
             }
         }
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
         let tool = Basic;
-        let mut callbacks = 0;
-        let result = tool.execute_streaming(serde_json::json!({}), &|_| callbacks += 1).unwrap();
-        assert_eq!(result, serde_json::json!({"ok": 1}));
-        assert_eq!(callbacks, 0, "fallback must not invoke on_progress");
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let c = callbacks.clone();
+        // Closure harus Fn (bukan FnMut) — pakai AtomicUsize, bukan `+=` ke
+        // variabel local, supaya bisa di-coerce ke `&dyn Fn(&str)`.
+        let result = tool
+            .execute_streaming(serde_json::json!({}), &move |_| {
+                c.fetch_add(1, Ordering::SeqCst);
+            })
+            .unwrap();
+        assert_eq!(result, serde_json::json!({ "ok": 1 }));
+        assert_eq!(callbacks.load(Ordering::SeqCst), 0, "fallback must not invoke on_progress");
     }
 }
 ```
