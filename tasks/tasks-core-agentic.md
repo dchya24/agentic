@@ -218,3 +218,16 @@
 > **Architecture reference:** [AGENT_ARCHITECTURE.md](../AGENT_ARCHITECTURE.md)
 > **Coverage detail:** [docs/architecture-alignment-overview-25052026.md](../docs/architecture-alignment-overview-25052026.md)
 > **Roadmap:** [docs/ROADMAP.md](../docs/ROADMAP.md)
+
+### Fase 1 — Tool lifecycle & live output (landed)
+
+- [x] 24.0 Event enum: `ToolStart`, `ToolDelta`, `ToolOutput` diperkaya (`tool_call_id`, `duration_ms`, `success`, `truncated`)
+- [x] 24.1 `Tool::execute_streaming` (default = `execute`, non-breaking) + `ToolRegistry::execute_streaming_by_name`
+- [x] 24.2 `run_command` streaming (baca per-baris stdout/stderr, kontrak JSON sama)
+- [x] 24.3 `run_script` streaming (pertahankan truncation 64KB)
+- [x] 24.4 Orchestrator: `ToolStart`/`ToolDelta`/enriched `ToolOutput` di path sync + async (channel + forwarder thread)
+- [x] 24.5 `DeltaThrottler` (~80ms + budget 8KB/tool)
+- [x] 24.6 Test: lifecycle events sync + stream path (dengan `StreamingScriptedProvider` di test support)
+
+> Spec: `docs/superpowers/specs/2026-08-06-interactive-live-progress-and-steering-design.md`
+> Next: Fase 2 — steering queue + REPL non-blokir.

@@ -37,7 +37,7 @@ Foundation is complete; coverage of the architecture spec is at ~95%.
 
 | Layer | Surface |
 |-------|---------|
-| Loop | `Orchestrator::run` (sync) and `run_stream` (async, with concurrent read-only batches). Max-iterations cap. Cooperative cancel via shared `Arc<AtomicBool>`. |
+| Loop | `Orchestrator::run` (sync) and `run_stream` (async, with concurrent read-only batches). Max-iterations cap. Cooperative cancel via shared `Arc<AtomicBool>`. Tool lifecycle events (`ToolStart`/`ToolDelta`/`ToolOutput` dengan durasi+sukses+truncated) — live output streaming untuk `run_command`/`run_script`. |
 | Tools | read / write / edit / list / glob / grep / search / run_command / run_script / fetch / web_search / update_memory / spawn_subagent / apply_patch / question / todowrite (16 builtins). |
 | Memory | Token-budget context window, message pinning, session isolation, disk persistence, keyword search, optional tiktoken backend. |
 | Safety | Risk scoring (0.0–1.0), pattern-based detection, hard blocklist, path sandboxing, URL allowlist (+ optional IP-literal block), per-tool rate limiting, audit log, permission modes (`default` / `plan` / `yolo`). Prompt-injection scanner for content brought in by `fetch` / `web_search`. |
@@ -69,6 +69,27 @@ panel, and goodbye summary. Session persistence includes cache token counters.
 **Deferred (v2):**
 - ~~Wire usage events from the orchestrator to `SessionStats`~~ — caching works, just no visibility UI.
 - ~~Expose cache settings in `agentic config` wizard~~ — configurable via manual config.toml edit.
+
+---
+
+## Fase 1 — Tool lifecycle & live output (landed)
+
+Per-tool progress live: `Event::ToolStart` / `Event::ToolDelta` (output
+mentah streaming) / `Event::ToolOutput` diperkaya (`duration_ms`, `success`,
+`truncated`).
+
+- `Tool::execute_streaming` (default = `execute`, non-breaking) —
+  `run_command`/`run_script` override untuk streaming per-baris.
+- Orchestrator: throttled delta emission (`DeltaThrottler`, ~80ms + budget
+  8KB per tool) di path sync (direct emit) dan async (channel + forwarder
+  thread).
+- Renderer inline: header `⟳ tool` → delta DIM → `✓ tool — 0.4s` (+ nota
+  truncated). TUI: role `ToolActivity` untuk delta live.
+- Session/context contract TIDAK berubah: hasil final tetap di-truncate
+  oleh `tool_result_max_chars`; delta hanya observability.
+
+Spec: `docs/superpowers/specs/2026-08-06-interactive-live-progress-and-steering-design.md` (Fase 1).
+Next: **Fase 2 — steering + REPL non-blokir** (spec yang sama).
 
 ## Open work
 

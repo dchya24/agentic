@@ -156,3 +156,12 @@
 
 > **Architecture reference:** [docs/shared-widgets-architecture-26052026.md](../docs/shared-widgets-architecture-26052026.md)
 > **Roadmap:** [docs/ROADMAP.md](../docs/ROADMAP.md)
+
+### Fase 1 — Tool live output rendering (landed)
+
+- [x] 21.0 Inline `render_event`: header `⟳ tool`, delta DIM, durasi + nota truncated di `ToolOutput`
+- [x] 21.1 Pure helper `render_tool_delta` (unit-testable)
+- [x] 21.2 TUI: role `MessageRole::ToolActivity` + `AppMessage::ToolDelta` + rendering indent DIM (kedua match site + `/search` label)
+
+> Spec: `docs/superpowers/specs/2026-08-06-interactive-live-progress-and-steering-design.md`
+> Next: Fase 2 — steering + REPL non-blokir (interactive mode).
