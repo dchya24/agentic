@@ -204,4 +204,36 @@ mod tests {
         let line = compact_progress_line(&progress, 10);
         assert!(!line.spans.is_empty());
     }
+
+    #[test]
+    fn compact_progress_width_is_stable_across_frames() {
+        // The renderer overwrites the transient spinner line in place
+        // (no Clear before repaint), so every frame MUST have the same
+        // display width or stale characters would be left behind.
+        let mut progress = ProgressState::new();
+        progress.start();
+        progress.set_message("Thinking…".to_string());
+
+        let first: String = compact_progress_line(&progress, 18)
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        let first_len = first.chars().count();
+        assert!(first_len > 0);
+
+        for _ in 0..20 {
+            progress.tick();
+            let frame: String = compact_progress_line(&progress, 18)
+                .spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect();
+            assert_eq!(
+                frame.chars().count(),
+                first_len,
+                "spinner frame changed width — in-place overwrite would ghost text"
+            );
+        }
+    }
 }

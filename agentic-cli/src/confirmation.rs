@@ -3,6 +3,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+use std::sync::atomic::Ordering;
 
 use crate::widgets::components::{panel, BoxStyle};
 use crate::widgets::diff as diff_widget;
@@ -16,6 +17,36 @@ pub enum ConfirmationResponse {
 }
 
 pub fn prompt_confirmation(request: &ConfirmationRequest) -> Option<ConfirmationResponse> {
+    // Pause the streaming renderer / TUI draw loop for the whole prompt
+    // (same gate as the question handler). The confirmation panel must
+    // not race the spinner's MoveUp/Clear redraws in REPL mode, and in
+    // TUI mode the draw loop must stay parked so the panel survives on
+    // the primary screen until the operator answers.
+    let _render_gate = crate::commands::RENDER_GATE.lock().unwrap();
+    let tui_active = crate::commands::TUI_ACTIVE.load(Ordering::Relaxed);
+    if tui_active {
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+    }
+    if crate::commands::SPINNER_ACTIVE.load(Ordering::Relaxed) {
+        crate::commands::consume_spinner_line();
+    }
+
+    // Re-enters the alternate screen when the TUI is active and flags a
+    // full repaint so the next `Terminal::draw` rewrites everything.
+    struct TuiScreenGuard(bool);
+    impl Drop for TuiScreenGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                let _ = crossterm::execute!(
+                    std::io::stdout(),
+                    crossterm::terminal::EnterAlternateScreen
+                );
+                crate::commands::TUI_NEEDS_REDRAW.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+    let _tui_guard = TuiScreenGuard(tui_active);
+
     // Risk → label + color. Color leaks through to the panel border so the
     // operator gets a visual cue at a glance.
     let (risk_label, risk_color) = match request.risk_level {
@@ -100,18 +131,24 @@ pub fn prompt_confirmation(request: &ConfirmationRequest) -> Option<Confirmation
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
     }
 
-    /// Restores raw mode + hidden cursor on scope exit (incl. early
-    /// returns from the match arms below).
-    struct RawModeGuard(bool);
+    /// Restores raw mode + cursor on scope exit (incl. early
+    /// returns from the match arms below). The cursor is re-hidden for
+    /// the REPL (which hides it in raw mode) but left visible for the
+    /// TUI.
+    struct RawModeGuard(bool, bool);
     impl Drop for RawModeGuard {
         fn drop(&mut self) {
             if self.0 {
-                let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Hide);
+                if self.1 {
+                    let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Hide);
+                } else {
+                    let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
+                }
                 let _ = crossterm::terminal::enable_raw_mode();
             }
         }
     }
-    let _raw_guard = RawModeGuard(was_raw);
+    let _raw_guard = RawModeGuard(was_raw, !tui_active);
 
     loop {
         let mut input = String::new();
@@ -121,10 +158,30 @@ pub fn prompt_confirmation(request: &ConfirmationRequest) -> Option<Confirmation
 
         let input = input.trim().to_lowercase();
         match input.as_str() {
-            "y" | "yes" => return Some(ConfirmationResponse::Yes),
-            "n" | "no" => return Some(ConfirmationResponse::No),
-            "a" | "always" => return Some(ConfirmationResponse::Always),
-            "q" | "quit" => return Some(ConfirmationResponse::Quit),
+            "y" | "yes" => {
+                if crate::commands::SPINNER_ACTIVE.load(Ordering::Relaxed) {
+                    crate::commands::commit_spinner_placeholder();
+                }
+                return Some(ConfirmationResponse::Yes);
+            }
+            "n" | "no" => {
+                if crate::commands::SPINNER_ACTIVE.load(Ordering::Relaxed) {
+                    crate::commands::commit_spinner_placeholder();
+                }
+                return Some(ConfirmationResponse::No);
+            }
+            "a" | "always" => {
+                if crate::commands::SPINNER_ACTIVE.load(Ordering::Relaxed) {
+                    crate::commands::commit_spinner_placeholder();
+                }
+                return Some(ConfirmationResponse::Always);
+            }
+            "q" | "quit" => {
+                if crate::commands::SPINNER_ACTIVE.load(Ordering::Relaxed) {
+                    crate::commands::commit_spinner_placeholder();
+                }
+                return Some(ConfirmationResponse::Quit);
+            }
             _ => {
                 inline::print_line(&Line::from(vec![
                     Span::raw("  "),

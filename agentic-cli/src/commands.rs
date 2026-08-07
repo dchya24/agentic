@@ -3,12 +3,15 @@ use comfy_table::{
     modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color as TColor, Table,
 };
 use core_agentic::{Config, Orchestrator, ToolRegistry};
+use crossterm::cursor::{MoveToColumn, MoveUp};
+use crossterm::terminal::{Clear, ClearType};
+use crossterm::ExecutableCommand;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, MultiSelect, Select};
 use ratatui::style::{Color as RColor, Modifier as RModifier, Style as RStyle};
 use ratatui::text::{Line as RLine, Span as RSpan};
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
 use crate::cli::{ConfigAction, OutputFormat, SkillAction};
@@ -19,6 +22,35 @@ use crate::widgets::{components, inline};
 
 static ALWAYS_CONFIRM: AtomicBool = AtomicBool::new(false);
 static COLOR_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// True while `Commands::run`'s streaming renderer thread is alive (REPL
+/// mode). The question handler only does the consume/re-arm spinner dance
+/// when this is set; in TUI mode the progress indicator lives in the app
+/// frame instead.
+pub(crate) static SPINNER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// True while the full-screen TUI owns the terminal. The question (and
+/// confirmation) handler checks this to leave / re-enter the alternate
+/// screen around its prompt so dialoguer renders on a clean primary
+/// screen instead of on top of a frozen TUI frame.
+pub(crate) static TUI_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Set by the interactive handlers after re-entering the alternate
+/// screen; the TUI main loop does a full repaint (`terminal::clear`)
+/// before its next draw so dialoguer's artifacts are never left behind
+/// (ratatui only diffs against its last frame).
+pub(crate) static TUI_NEEDS_REDRAW: AtomicBool = AtomicBool::new(false);
+
+/// Serializes writes to the terminal between the streaming renderer
+/// thread (spawned by `Commands::run`) / the TUI main loop and the
+/// `question` tool's interactive prompt.
+///
+/// While the question handler holds this gate the renderer parks instead
+/// of touching the terminal, so its `MoveUp`/`Clear` spinner redraws
+/// can't land on top of the dialoguer option list — and on Windows the
+/// two writers racing over cursor control is what looks like a flickering
+/// dim lamp.
+pub(crate) static RENDER_GATE: Mutex<()> = Mutex::new(());
 
 // ── Interactive tool handlers ───────────────────────────────
 
@@ -35,6 +67,73 @@ impl core_agentic::QuestionHandler for CliQuestionHandler {
         &self,
         questions: &[core_agentic::QuestionPrompt],
     ) -> Vec<core_agentic::QuestionAnswer> {
+        // Pause the streaming renderer for the whole prompt sequence.
+        // The spinner thread spawned by `Commands::run` redraws the
+        // "Thinking…" line every 80ms with MoveUp+Clear+print; if it kept
+        // writing here its cursor moves would land on top of the
+        // dialoguer list (messy options), then erase the answer badge
+        // after submission — and on Windows the two writers racing over
+        // the console is what looks like a flickering dim lamp.
+        let _render_gate = RENDER_GATE.lock().unwrap();
+        let tui_active = TUI_ACTIVE.load(Ordering::Relaxed);
+        if tui_active {
+            // Drop the alternate screen so the prompt renders on the
+            // primary screen instead of over a frozen TUI frame.
+            let _ =
+                crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+        }
+        if SPINNER_ACTIVE.load(Ordering::Relaxed) {
+            consume_spinner_line();
+        }
+
+        // The REPL / TUI run with crossterm raw mode enabled. dialoguer's
+        // own key handling enables raw mode again through the `console`
+        // crate, which on Windows re-issues SetConsoleMode calls that
+        // force a repaint (the "flip"). Flip to cooked mode for the
+        // duration of the prompts, then restore raw mode afterwards so
+        // the REPL keeps working (same pattern as `prompt_confirmation`).
+        let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+        if was_raw {
+            let _ = crossterm::terminal::disable_raw_mode();
+            let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
+        }
+
+        /// Restores raw mode on scope exit (incl. early returns from the
+        /// match arms below). The cursor is re-hidden for the REPL (which
+        /// hides it in raw mode) but left visible for the TUI.
+        struct RawModeGuard(bool, bool);
+        impl Drop for RawModeGuard {
+            fn drop(&mut self) {
+                if self.0 {
+                    if self.1 {
+                        let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Hide);
+                    } else {
+                        let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
+                    }
+                    let _ = crossterm::terminal::enable_raw_mode();
+                }
+            }
+        }
+        let _raw_guard = RawModeGuard(was_raw, !tui_active);
+
+        /// Re-enters the alternate screen when the TUI is active and
+        /// flags a full repaint so the next `Terminal::draw` rewrites
+        /// everything (ratatui would otherwise only diff against its
+        /// pre-question frame and leave the screen half-blank).
+        struct TuiScreenGuard(bool);
+        impl Drop for TuiScreenGuard {
+            fn drop(&mut self) {
+                if self.0 {
+                    let _ = crossterm::execute!(
+                        std::io::stdout(),
+                        crossterm::terminal::EnterAlternateScreen
+                    );
+                    TUI_NEEDS_REDRAW.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+        let _tui_guard = TuiScreenGuard(tui_active);
+
         let mut answers = Vec::with_capacity(questions.len());
 
         for q in questions {
@@ -133,6 +232,14 @@ impl core_agentic::QuestionHandler for CliQuestionHandler {
             answers.extend(answer);
         }
 
+        // Re-arm a transient spinner line under the cursor so the
+        // renderer's invariant ("spinner is the last printed line, cursor
+        // directly below it") still holds when it wakes up. Its next
+        // tick replaces this placeholder with the real progress line.
+        if SPINNER_ACTIVE.load(Ordering::Relaxed) {
+            commit_spinner_placeholder();
+        }
+
         answers
     }
 }
@@ -179,6 +286,34 @@ fn render_answer(text: &str) {
     inline::print_blank();
     inline::print_line(&components::success_badge(&format!("Answered: {}", text)));
     inline::print_blank();
+}
+
+/// Erase the transient spinner line that `Commands::run`'s renderer
+/// thread keeps on screen. The renderer's invariant is that the spinner
+/// is the last printed line with the cursor directly below it, so one
+/// `MoveUp` lands on it.
+pub(crate) fn consume_spinner_line() {
+    if !inline::is_stdout_tty() {
+        return;
+    }
+    let mut stdout = std::io::stdout();
+    let _ = stdout.execute(MoveUp(1));
+    let _ = stdout.execute(MoveToColumn(0));
+    let _ = stdout.execute(Clear(ClearType::FromCursorDown));
+}
+
+/// Print a fresh "Thinking…" line under the current cursor. Used by the
+/// question handler to restore the renderer's "spinner is the last line"
+/// invariant after a prompt; the renderer replaces it with the real
+/// progress line on its next tick.
+pub(crate) fn commit_spinner_placeholder() {
+    if !inline::is_stdout_tty() {
+        return;
+    }
+    let mut p = crate::widgets::progress::ProgressState::new();
+    p.start();
+    p.set_message("Thinking…".to_string());
+    inline::print_line(&crate::widgets::spinner::compact_progress_line(&p, 18));
 }
 
 /// Renders todo list changes inline. Fires after every `todowrite` call.
@@ -1697,6 +1832,11 @@ impl Commands {
         }));
         let stop_flag = std::sync::Arc::new(AtomicBool::new(false));
 
+        // Mark the spinner renderer as alive before spawning it: the
+        // question handler reads this to decide whether it must consume
+        // / re-arm the transient spinner line around its prompt.
+        SPINNER_ACTIVE.store(true, Ordering::Relaxed);
+
         // Renderer state machine.
         //
         // Strategy: NEVER write streamed chunks to stdout.  Only the
@@ -1738,10 +1878,14 @@ impl Commands {
                         p.tick();
                         spinner::compact_progress_line(&p, 18)
                     };
+                    // Overwrite in place (the line is fixed-width) instead
+                    // of Clear(CurrentLine) + repaint. The erase-then-draw
+                    // cycle makes the line blink on Windows conhost (the
+                    // "dim lamp flicker") — a plain overwrite of the same
+                    // width is seamless everywhere.
                     let mut s = std::io::stdout();
                     let _ = s.execute(MoveUp(1));
                     let _ = s.execute(MoveToColumn(0));
-                    let _ = s.execute(Clear(ClearType::CurrentLine));
                     inline::print_line(&line);
                 };
                 let consume_spinner = || {
@@ -1768,6 +1912,13 @@ impl Commands {
 
                     // Sleep 80ms between spinner ticks.
                     std::thread::sleep(std::time::Duration::from_millis(80));
+
+                    // Hold the render gate for the whole terminal-touching
+                    // phase. While the `question` handler is prompting the
+                    // user it owns this gate and we park here without
+                    // writing, so the dialoguer list never races the
+                    // spinner's MoveUp/Clear redraws.
+                    let _render_gate = RENDER_GATE.lock().unwrap();
 
                     if !r_stop.load(Ordering::Relaxed) {
                         redraw_spinner();
@@ -1841,6 +1992,10 @@ impl Commands {
         stop_flag.store(true, Ordering::Relaxed);
 
         let render_final = renderer.join().expect("renderer thread panicked");
+        // The question handler only does its spinner consume/re-arm dance
+        // while this flag is set, so it never touches the screen in modes
+        // where no transient spinner exists (e.g. the full-screen TUI).
+        SPINNER_ACTIVE.store(false, Ordering::Relaxed);
         progress.lock().unwrap().stop();
 
         // Cursor cleanup + final result.  The renderer always runs in

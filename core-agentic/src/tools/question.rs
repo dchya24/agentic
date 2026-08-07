@@ -64,6 +64,15 @@ pub struct QuestionAnswer {
 /// same number of answers. Implementations may show them one at a time
 /// or batched, synchronously or via a UI loop — that's the caller's
 /// concern.
+///
+/// **Important for host integrations**: `handle` is invoked from the
+/// middle of a tool execution while the host may still be rendering
+/// progress elsewhere (e.g. the CLI's streaming "Thinking…" spinner
+/// thread). Implementations that present an interactive prompt must
+/// suspend that other rendering for the duration of the prompt, or the
+/// two writers will corrupt each other's output. The CLI handler does
+/// this by parking the spinner thread behind a gate while dialoguer is
+/// on screen.
 pub trait QuestionHandler: Send + Sync {
     fn handle(&self, questions: &[QuestionPrompt]) -> Vec<QuestionAnswer>;
 }

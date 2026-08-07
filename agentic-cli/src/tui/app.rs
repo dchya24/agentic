@@ -23,6 +23,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex};
@@ -1879,6 +1880,7 @@ pub async fn run_tui(commands: Arc<tokio::sync::Mutex<Commands>>) -> Result<()> 
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    crate::commands::TUI_ACTIVE.store(true, Ordering::Relaxed);
 
     // Create app
     let mut app = App::new(commands);
@@ -1888,15 +1890,46 @@ pub async fn run_tui(commands: Arc<tokio::sync::Mutex<Commands>>) -> Result<()> 
     let mut last_tick = Instant::now();
 
     loop {
-        // Draw UI
-        terminal.draw(|f| ui::draw(f, &mut app))?;
+        // ── Terminal-touching phase ──
+        // Guarded by RENDER_GATE so a concurrent `question` / confirmation
+        // prompt owns the screen while it is on display: we park here
+        // without drawing or reading keys, so dialoguer's UI is never
+        // overwritten and its keystrokes are never stolen.
+        let key = {
+            let _render_gate = crate::commands::RENDER_GATE.lock().unwrap();
 
-        // Handle events
-        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                handle_key_event(&mut app, key).await;
+            // After an interactive prompt re-entered the alternate screen,
+            // ratatui's diff would only repaint cells that changed vs its
+            // pre-question frame — the rest would stay blank. Force a full
+            // clear (which also resets the internal buffer) first.
+            if crate::commands::TUI_NEEDS_REDRAW.swap(false, Ordering::Relaxed) {
+                terminal.clear()?;
+                // The operator just spent time reading/answering the
+                // prompt — restart the loading watchdog so that elapsed
+                // time doesn't count as a hung agent.
+                if app.is_loading {
+                    app.loading_started = Some(Instant::now());
+                }
             }
+
+            // Draw UI
+            terminal.draw(|f| ui::draw(f, &mut app))?;
+
+            // Handle events
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            if event::poll(timeout)? {
+                if let Event::Key(key) = event::read()? {
+                    Some(key)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(key) = key {
+            handle_key_event(&mut app, key).await;
         }
 
         // Tick for animations
@@ -1917,6 +1950,7 @@ pub async fn run_tui(commands: Arc<tokio::sync::Mutex<Commands>>) -> Result<()> 
     }
 
     // Restore terminal
+    crate::commands::TUI_ACTIVE.store(false, Ordering::Relaxed);
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
