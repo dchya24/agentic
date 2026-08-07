@@ -87,7 +87,20 @@ impl<T: Transport> RuntimeEngine<T> {
             },
         );
 
-        while let Some(request) = self.transport.read_request() {
+        loop {
+            let request = match self.transport.read_request() {
+                Ok(Some(request)) => request,
+                Ok(None) => break,
+                Err(error) => {
+                    self.emit(
+                        None,
+                        Event::Error {
+                            message: format!("protocol_error: {error}"),
+                        },
+                    );
+                    continue;
+                }
+            };
             if request.v != PROTOCOL_VERSION {
                 self.emit(
                     Some(request.id),

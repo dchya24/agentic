@@ -3,7 +3,7 @@ use std::io;
 use std::sync::{mpsc, Mutex};
 
 pub trait Transport: Send + Sync + 'static {
-    fn read_request(&self) -> Option<ProtocolRequest>;
+    fn read_request(&self) -> io::Result<Option<ProtocolRequest>>;
     fn write_event(&self, event: &ProtocolEvent) -> io::Result<()>;
 }
 
@@ -25,8 +25,11 @@ impl MemoryTransport {
 }
 
 impl Transport for MemoryTransport {
-    fn read_request(&self) -> Option<ProtocolRequest> {
-        self.request_rx.lock().unwrap().recv().ok()
+    fn read_request(&self) -> io::Result<Option<ProtocolRequest>> {
+        match self.request_rx.lock().unwrap().recv() {
+            Ok(request) => Ok(Some(request)),
+            Err(_) => Ok(None),
+        }
     }
 
     fn write_event(&self, event: &ProtocolEvent) -> io::Result<()> {

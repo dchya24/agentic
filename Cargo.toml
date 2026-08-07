@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "core-agentic",
     "agentic-cli",
+    "agentic-runtime",
 ]
 
 [workspace.package]
