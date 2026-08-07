@@ -60,6 +60,18 @@ pub enum Request {
         attachments: Vec<Attachment>,
     },
     Cancel,
+    ResetSession,
+    SearchMemory {
+        query: String,
+    },
+    AddSystemMessage {
+        content: String,
+    },
+    Plan {
+        goal: String,
+        #[serde(default = "default_true")]
+        require_approval: bool,
+    },
     ConfirmResponse {
         #[serde(rename = "requestId", default)]
         request_id: Option<String>,
@@ -72,6 +84,10 @@ pub enum Request {
         answers: Vec<QuestionAnswer>,
     },
     Shutdown,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

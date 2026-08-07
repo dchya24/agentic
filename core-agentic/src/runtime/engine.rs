@@ -143,6 +143,59 @@ impl<T: Transport> RuntimeEngine<T> {
                         orchestrator.cancel_handle().store(true, Ordering::SeqCst);
                     }
                 }
+                Request::ResetSession => {
+                    if let Some(orchestrator) = self.orchestrator.as_ref() {
+                        orchestrator.clear_memory();
+                        orchestrator.reset_cancel();
+                        orchestrator.clear_event_handlers();
+                        self.emit(Some(request.id), Event::SessionReset);
+                    } else {
+                        self.emit(
+                            Some(request.id),
+                            Event::Error {
+                                message: "runtime is not initialized".to_string(),
+                            },
+                        );
+                    }
+                }
+                Request::SearchMemory { query } => {
+                    let matches = self
+                        .orchestrator
+                        .as_ref()
+                        .map(|orchestrator| {
+                            orchestrator
+                                .search_memory(&query)
+                                .into_iter()
+                                .map(|(role, content)| crate::events::MemorySearchMatch {
+                                    role: role.as_str().to_string(),
+                                    content,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.emit(
+                        Some(request.id),
+                        Event::MemorySearchResult { query, matches },
+                    );
+                }
+                Request::AddSystemMessage { content } => {
+                    if let Some(orchestrator) = self.orchestrator.as_ref() {
+                        orchestrator.add_system_message(content);
+                    } else {
+                        self.emit(
+                            Some(request.id),
+                            Event::Error {
+                                message: "runtime is not initialized".to_string(),
+                            },
+                        );
+                    }
+                }
+                Request::Plan { .. } => self.emit(
+                    Some(request.id),
+                    Event::Error {
+                        message: "planning is not available through the runtime yet".to_string(),
+                    },
+                ),
                 Request::Shutdown => break,
                 Request::QuestionResponse { answers, .. } => {
                     if let Some(sender) = self.pending_question.lock().unwrap().take() {

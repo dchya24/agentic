@@ -461,6 +461,8 @@ const PROVIDER_PRESETS: &[ProviderPreset] = &[
 pub struct Commands {
     config: Config,
     orchestrator: Option<Orchestrator>,
+    runtime_client: Option<crate::client::RuntimeClient>,
+    runtime_config_path: Option<String>,
     color_enabled: bool,
     debug_enabled: bool,
     permission_mode: core_agentic::PermissionMode,
@@ -501,6 +503,8 @@ impl Commands {
         Self {
             config,
             orchestrator: None,
+            runtime_client: None,
+            runtime_config_path: None,
             color_enabled: true,
             debug_enabled: false,
             permission_mode: core_agentic::PermissionMode::Default,
@@ -512,6 +516,25 @@ impl Commands {
             active_skill: None,
             mock_provider: None,
         }
+    }
+
+    pub fn with_runtime_config_path(mut self, path: Option<String>) -> Self {
+        self.runtime_config_path = path;
+        self
+    }
+
+    async fn ensure_runtime(&mut self) -> Result<()> {
+        if self.runtime_client.is_some() {
+            return Ok(());
+        }
+        let overrides = core_agentic::runtime::protocol::InitOverrides {
+            config_path: self.runtime_config_path.clone(),
+            permission_mode: Some(self.permission_mode),
+            model: self.config.active_model().map(|model| model.model.clone()),
+            system_prompt: self.config.system_prompt.clone(),
+        };
+        self.runtime_client = Some(crate::client::RuntimeClient::spawn(overrides).await?);
+        Ok(())
     }
 
     pub fn with_color(mut self, enabled: bool) -> Self {
@@ -1082,6 +1105,7 @@ impl Commands {
 
         // Reset orchestrator so it reinitializes with new model
         self.orchestrator = None;
+        self.runtime_client = None;
 
         Ok((active_provider, active_model))
     }
@@ -1732,6 +1756,15 @@ impl Commands {
     pub async fn run(&mut self, task: &str) -> Result<()> {
         use crate::widgets::{components, inline, markdown as md_widget, progress, spinner};
 
+        #[cfg(test)]
+        if self.mock_provider.is_some() {
+            self.ensure_orchestrator()?;
+            let orchestrator = self.orchestrator.as_ref().unwrap();
+            orchestrator.reset_cancel();
+            let result = orchestrator.run_stream(task, |_| {}).await;
+            return result.map(|_| ()).map_err(Into::into);
+        }
+
         // When --mode plan is active, route through the planner agent
         // instead of the regular orchestrator loop. This creates a real
         // plan, shows it, and executes approved steps.
@@ -1766,42 +1799,11 @@ impl Commands {
             }
         }
 
-        self.ensure_orchestrator()?;
+        self.ensure_runtime().await?;
 
-        let orchestrator = self
-            .orchestrator
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Orchestrator not initialized"))?;
-
-        // Fresh run: clear any pending cancel from a previous invocation.
-        orchestrator.reset_cancel();
-        // Drop event handlers from any previous run so we don't accumulate
-        // subscribers across invocations.
-        orchestrator.clear_event_handlers();
-
-        // Subscribe to runtime events (tool calls, results) so we can
-        // render them between spinner ticks. Gated by config.output.show_tool_calls.
+        // Runtime events are forwarded to the existing single-writer renderer.
         let show_tool_calls = self.config.output.show_tool_calls;
-        // Verbose body for tool results piggybacks on `show_thoughts`:
-        // it's the same intent (render the agent's internal trace, not
-        // just the final answer).
         let (event_tx, event_rx) = std::sync::mpsc::channel::<core_agentic::Event>();
-        // Always forward runtime events (tool calls / outputs) to the
-        // renderer. We need them even when `show_tool_calls` is off: the
-        // renderer uses tool-boundary events to reset its streaming-text
-        // state between turns. The panel rendering itself is gated on
-        // `show_tool_calls` inside the renderer.
-        orchestrator.on_event(move |event| {
-            // Skip Thought events: their text is already streamed in
-            // real-time via the chunk callback, so surfacing them again
-            // would duplicate the content on screen.
-            if matches!(event, core_agentic::Event::Thinking { .. }) {
-                return;
-            }
-            // Best-effort send: if the receiver is dropped (run finished),
-            // silently ignore.
-            let _ = event_tx.send(event);
-        });
 
         // ── Live rendering strategy (single writer) ───────────
         //
@@ -1982,26 +1984,51 @@ impl Commands {
             })
             .expect("failed to spawn renderer thread");
 
-        // Forward streaming deltas to the renderer (NO direct stdout write).
-        let result = orchestrator
-            .run_stream_with_attachments(task, attachments, |chunk| {
-                if !chunk.is_empty() {
-                    let _ = chunk_tx.send(chunk);
-                }
-            })
+        let runtime = self
+            .runtime_client
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Runtime not initialized"))?;
+        let result = runtime
+            .run(
+                task.to_string(),
+                attachments,
+                |chunk| {
+                    if !chunk.is_empty() {
+                        let _ = chunk_tx.send(chunk.to_string());
+                    }
+                },
+                |event| {
+                    if !matches!(event, core_agentic::Event::Thinking { .. }) {
+                        let _ = event_tx.send(event);
+                    }
+                },
+                |event| match &event.event {
+                    core_agentic::Event::ConfirmationRequest { description, .. } => {
+                        let approved = Confirm::with_theme(&ColorfulTheme::default())
+                            .with_prompt(description)
+                            .default(false)
+                            .interact()
+                            .unwrap_or(false);
+                        Some(core_agentic::runtime::protocol::Request::ConfirmResponse {
+                            request_id: event.request_id.clone(),
+                            approved,
+                        })
+                    }
+                    core_agentic::Event::QuestionRequest { questions } => {
+                        let answers =
+                            core_agentic::QuestionHandler::handle(&CliQuestionHandler, questions);
+                        Some(core_agentic::runtime::protocol::Request::QuestionResponse {
+                            request_id: event.request_id.clone(),
+                            answers,
+                        })
+                    }
+                    _ => None,
+                },
+            )
             .await;
 
-        // run_stream returned → its on_chunk closure is dropped, but the
-        // closure only captured chunk_tx BY REFERENCE (it's not a `move`
-        // closure), so the Sender itself is still owned by this function.
-        // The renderer only sees `Disconnected` once every Sender is gone;
-        // leaving chunk_tx alive means `chunk_rx.try_recv()` returns `Empty`
-        // forever, `chunks_done` never flips, and `renderer.join()` below
-        // deadlocks with the spinner frozen on screen. Drop it explicitly.
         drop(chunk_tx);
-        // Drop the event handler so event_tx is dropped and event_rx gets
-        // Disconnected. The renderer thread exits once both are drained.
-        orchestrator.clear_event_handlers();
+        drop(event_tx);
         stop_flag.store(true, Ordering::Relaxed);
 
         let render_final = renderer.join().expect("renderer thread panicked");
@@ -2069,29 +2096,76 @@ impl Commands {
         C: FnMut(&str),
         E: Fn(core_agentic::Event) + Send + Sync + 'static,
     {
-        let expanded = crate::file_ref::expand_file_refs(task);
-        let task = &expanded;
+        #[cfg(test)]
+        if self.mock_provider.is_some() {
+            let expanded = crate::file_ref::expand_file_refs(task);
+            self.ensure_orchestrator()?;
+            let orchestrator = self.orchestrator.as_ref().unwrap();
+            orchestrator.reset_cancel();
+            orchestrator.clear_event_handlers();
+            orchestrator.on_event(on_event);
+            let result = orchestrator
+                .run_stream(&expanded, |chunk| on_chunk(&chunk))
+                .await;
+            orchestrator.clear_event_handlers();
+            return Ok(result?);
+        }
 
-        self.ensure_orchestrator()?;
+        let expanded = crate::file_ref::expand_with_attachments(task);
+        self.ensure_runtime().await?;
+        let runtime = self
+            .runtime_client
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Runtime not initialized"))?;
 
-        let orchestrator = self
-            .orchestrator
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Orchestrator not initialized"))?;
-        orchestrator.reset_cancel();
-        // Subscribers from a previous run shouldn't leak into this one.
-        orchestrator.clear_event_handlers();
-        orchestrator.on_event(on_event);
-
-        let result = orchestrator
-            .run_stream(task, |chunk| on_chunk(&chunk))
+        let mut event_callback = Some(on_event);
+        let result = runtime
+            .run(
+                expanded.text,
+                expanded.attachments,
+                |chunk| on_chunk(chunk),
+                |event| {
+                    if let Some(callback) = event_callback.as_mut() {
+                        callback(event);
+                    }
+                },
+                |event| match &event.event {
+                    core_agentic::Event::ConfirmationRequest { description, .. } => {
+                        let approved = prompt_confirmation(&core_agentic::ConfirmationRequest {
+                            action: "runtime".to_string(),
+                            description: description.clone(),
+                            risk_level: core_agentic::RiskLevel::Medium,
+                            risk_score: 0.5,
+                            reason: description.clone(),
+                            timestamp: chrono::Utc::now(),
+                            preview_diff: None,
+                        })
+                        .map(|response| {
+                            matches!(
+                                response,
+                                ConfirmationResponse::Yes | ConfirmationResponse::Always
+                            )
+                        })
+                        .unwrap_or(false);
+                        Some(core_agentic::runtime::protocol::Request::ConfirmResponse {
+                            request_id: event.request_id.clone(),
+                            approved,
+                        })
+                    }
+                    core_agentic::Event::QuestionRequest { questions } => {
+                        let answers =
+                            core_agentic::QuestionHandler::handle(&CliQuestionHandler, questions);
+                        Some(core_agentic::runtime::protocol::Request::QuestionResponse {
+                            request_id: event.request_id.clone(),
+                            answers,
+                        })
+                    }
+                    _ => None,
+                },
+            )
             .await;
 
-        // Drop our subscriber once the run completes so its captured
-        // sender doesn't keep the receiver open forever.
-        orchestrator.clear_event_handlers();
-
-        Ok(result?)
+        result
     }
 
     // ── Config dispatch ─────────────────────────────────────

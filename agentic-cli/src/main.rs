@@ -4,6 +4,7 @@
 mod tests;
 
 mod cli;
+mod client;
 mod commands;
 mod confirmation;
 mod error;
@@ -250,6 +251,7 @@ async fn main() -> Result<()> {
     };
 
     let mut commands = Commands::new(config)
+        .with_runtime_config_path(cli.config.clone())
         .with_color(color_enabled)
         .with_debug(cli.debug)
         .with_permission_mode(cli.mode.into());

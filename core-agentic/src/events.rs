@@ -84,6 +84,15 @@ pub enum Event {
     #[serde(rename = "todo_changed")]
     TodoChanged { todos: Vec<crate::tools::TodoItem> },
 
+    #[serde(rename = "session_reset")]
+    SessionReset,
+
+    #[serde(rename = "memory_search_result")]
+    MemorySearchResult {
+        query: String,
+        matches: Vec<MemorySearchMatch>,
+    },
+
     #[serde(rename = "error")]
     Error { message: String },
 
@@ -190,6 +199,13 @@ pub enum Event {
     SessionFailed { message: String },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySearchMatch {
+    pub role: String,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
     Thinking,
@@ -206,6 +222,8 @@ pub enum EventType {
     ConfirmationRequest,
     QuestionRequest,
     TodoChanged,
+    SessionReset,
+    MemorySearchResult,
     Error,
     Done,
     System,
@@ -242,6 +260,8 @@ impl Event {
             Event::ConfirmationRequest { .. } => EventType::ConfirmationRequest,
             Event::QuestionRequest { .. } => EventType::QuestionRequest,
             Event::TodoChanged { .. } => EventType::TodoChanged,
+            Event::SessionReset => EventType::SessionReset,
+            Event::MemorySearchResult { .. } => EventType::MemorySearchResult,
             Event::Error { .. } => EventType::Error,
             Event::Done { .. } => EventType::Done,
             Event::System { .. } => EventType::System,
