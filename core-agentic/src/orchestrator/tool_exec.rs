@@ -78,7 +78,7 @@ impl Orchestrator {
 
     /// Execute a tool with live `ToolDelta` emission (sync path).
     fn execute_tool_live(&self, id: &str, name: &str, args: &serde_json::Value) -> SlotOutcome {
-        self.events.emit(Event::ToolStart {
+        self.events.emit(Event::ToolStarted {
             tool_call_id: id.to_string(),
             tool_name: name.to_string(),
             arguments: args.clone(),
@@ -243,7 +243,7 @@ impl Orchestrator {
                 // follow).
                 for &i in &members {
                     if let Slot::Pending { name, id, args } = &slots[i] {
-                        self.events.emit(Event::ToolStart {
+                        self.events.emit(Event::ToolStarted {
                             tool_call_id: id.clone(),
                             tool_name: name.clone(),
                             arguments: args.clone(),
@@ -489,7 +489,7 @@ impl Orchestrator {
                 // stream, so no delta forwarder is needed.
                 for &i in &members {
                     if let Slot::Pending { name, id, args } = &slots[i] {
-                        self.events.emit(Event::ToolStart {
+                        self.events.emit(Event::ToolStarted {
                             tool_call_id: id.clone(),
                             tool_name: name.clone(),
                             arguments: args.clone(),
@@ -581,7 +581,7 @@ impl Orchestrator {
                     })
                     .expect("spawn delta forwarder");
 
-                self.events.emit(Event::ToolStart {
+                self.events.emit(Event::ToolStarted {
                     tool_call_id: id.clone(),
                     tool_name: name.clone(),
                     arguments: args.clone(),

@@ -1,21 +1,32 @@
-//! `AgentRuntime` / `AgentLoop` split (P1-1).
+//! Agent runtime subsystem (P1-1) + headless runtime protocol (PRD).
 //!
-//! Prinsip dari rencana pematangan: **Runtime mengelola lifecycle,
-//! loop mengelola decision.**
+//! - [`AgentRuntime`] / [`AgentLoop`] — lifecycle owner around an
+//!   orchestrator with a pluggable decision loop.
+//! - [`protocol`] — transport-neutral wire types (versioned requests
+//!   and events) for headless frontends.
 //!
-//! - [`AgentRuntime`] — lifecycle: sessions, event envelope,
-//!   checkpoints, cancel, pause/resume, status. Frontends (CLI, daemon
-//!   JSONL, TUI, kanban) memanggil runtime, bukan orchestrator.
-//! - [`AgentLoop`] — decision: bagaimana model didorong menuju jawaban.
-//!   [`StandardLoop`] mendelegasikan ke loop LLM→tool→observation yang
-//!   sudah teruji; varian lain (`PlanningLoop`, `InteractiveLoop`, …)
-//!   tinggal di-plug tanpa conditional di runtime.
-//!
-//! ```text
-//! Frontend ──► AgentRuntime ──► AgentLoop ──► Orchestrator internals
-//!                  │                             (tools/safety/memory)
-//!                  └── events/checkpoints/cancel/pause
-//! ```
+//! Engine + transport land with the decoupling commits that follow.
+
+pub mod protocol;
+
+// `AgentRuntime` / `AgentLoop` split (P1-1).
+//
+// Prinsip dari rencana pematangan: **Runtime mengelola lifecycle,
+// loop mengelola decision.**
+//
+// - [`AgentRuntime`] — lifecycle: sessions, event envelope,
+//   checkpoints, cancel, pause/resume, status. Frontends (CLI, daemon
+//   JSONL, TUI, kanban) memanggil runtime, bukan orchestrator.
+// - [`AgentLoop`] — decision: bagaimana model didorong menuju jawaban.
+//   [`StandardLoop`] mendelegasikan ke loop LLM→tool→observation yang
+//   sudah teruji; varian lain (`PlanningLoop`, `InteractiveLoop`, …)
+//   tinggal di-plug tanpa conditional di runtime.
+//
+// ```text
+// Frontend ──► AgentRuntime ──► AgentLoop ──► Orchestrator internals
+//                  │                             (tools/safety/memory)
+//                  └── events/checkpoints/cancel/pause
+// ```
 
 use std::future::Future;
 use std::pin::Pin;

@@ -667,7 +667,7 @@ fn tool_lifecycle_events_emitted_in_order() {
     let events = seen.lock().unwrap();
     let starts = events
         .iter()
-        .filter(|e| matches!(e, Event::ToolStart { .. }))
+        .filter(|e| matches!(e, Event::ToolStarted { .. }))
         .count();
     let deltas = events
         .iter()
@@ -738,7 +738,9 @@ async fn tool_lifecycle_events_stream_path() {
     assert_eq!(out, "stream done");
 
     let events = seen.lock().unwrap();
-    assert!(events.iter().any(|e| matches!(e, Event::ToolStart { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::ToolStarted { .. })));
     assert!(
         events.iter().any(|e| matches!(e, Event::ToolDelta { .. })),
         "expected ToolDelta on stream path"

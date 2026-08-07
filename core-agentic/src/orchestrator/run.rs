@@ -194,7 +194,7 @@ impl Orchestrator {
                 // Emit the LLM's text content as a Thought event so the user
                 // can see what the model is thinking/planning before tool execution.
                 if !content.is_empty() {
-                    self.events.emit(crate::events::Event::Thought {
+                    self.events.emit(crate::events::Event::Thinking {
                         content: content.clone(),
                     });
                 }
@@ -480,7 +480,7 @@ impl Orchestrator {
                 // Emit the LLM's text content as a Thought event so the user
                 // can see what the model is thinking/planning before tool execution.
                 if !content_buf.is_empty() {
-                    self.events.emit(crate::events::Event::Thought {
+                    self.events.emit(crate::events::Event::Thinking {
                         content: content_buf.clone(),
                     });
                 }

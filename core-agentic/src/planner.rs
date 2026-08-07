@@ -771,7 +771,7 @@ impl PlannerAgent {
         }
         plan.touch();
 
-        self.events.emit(crate::events::Event::Completed {
+        self.events.emit(crate::events::Event::Done {
             result: format!(
                 "Plan {}: {} completed, {} failed, {} skipped",
                 plan.status, completed, failed, skipped

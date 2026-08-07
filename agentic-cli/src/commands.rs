@@ -1804,7 +1804,7 @@ impl Commands {
             // Skip Thought events: their text is already streamed in
             // real-time via the chunk callback, so surfacing them again
             // would duplicate the content on screen.
-            if matches!(event, core_agentic::Event::Thought { .. }) {
+            if matches!(event, core_agentic::Event::Thinking { .. }) {
                 return;
             }
             // Best-effort send: if the receiver is dropped (run finished),
@@ -3227,7 +3227,7 @@ fn render_event(event: &core_agentic::Event) {
         } => {
             inline::print_line(&tool_call::render_call_compact(tool_name, arguments));
         }
-        core_agentic::Event::ToolStart {
+        core_agentic::Event::ToolStarted {
             tool_name, arguments, ..
         } => {
             // Running header: "  ⟳ run_command" — live progress begins.
@@ -3318,7 +3318,7 @@ fn render_event(event: &core_agentic::Event) {
             }
             let _ = tool_name;
         }
-        core_agentic::Event::Thought { content }
+        core_agentic::Event::Thinking { content }
             // Display the LLM's thinking/reasoning before tool execution
             // with DIM styling so it's visually distinct from the final response.
             if !content.is_empty() => {

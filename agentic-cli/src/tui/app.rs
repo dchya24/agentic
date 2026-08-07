@@ -890,7 +890,7 @@ impl App {
                                 arguments,
                             });
                         }
-                        core_agentic::Event::ToolStart { .. } => {
+                        core_agentic::Event::ToolStarted { .. } => {
                             // ToolCall (just above) already surfaces the
                             // running marker — ToolStart is a no-op here.
                         }
@@ -921,7 +921,7 @@ impl App {
                         core_agentic::Event::Error { message } => {
                             let _ = event_tx.send(AppMessage::Error(message));
                         }
-                        core_agentic::Event::Thought { .. } => {
+                        core_agentic::Event::Thinking { .. } => {
                             // Skip — text was already streamed via on_chunk.
                             // A separate Thought message would duplicate content.
                         }
@@ -1426,7 +1426,7 @@ impl App {
                                 arguments,
                             });
                         }
-                        core_agentic::Event::ToolStart { .. } => {
+                        core_agentic::Event::ToolStarted { .. } => {
                             // ToolCall (just above) already surfaces the
                             // running marker — ToolStart is a no-op here.
                         }
@@ -1457,7 +1457,7 @@ impl App {
                         core_agentic::Event::Error { message } => {
                             let _ = event_tx.send(AppMessage::Error(message));
                         }
-                        core_agentic::Event::Thought { .. } => {
+                        core_agentic::Event::Thinking { .. } => {
                             // Skip — text was already streamed via on_chunk.
                             // A separate Thought message would duplicate content.
                         }

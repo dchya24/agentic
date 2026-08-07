@@ -1,4 +1,4 @@
-//! Event types for agentic runtime
+//! Event types for the agentic runtime.
 
 use std::sync::Mutex;
 
@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Event {
-    #[serde(rename = "thought")]
-    Thought { content: String },
+    #[serde(rename = "thinking")]
+    Thinking { content: String },
 
     #[serde(rename = "tool_call")]
     ToolCall {
@@ -17,9 +17,9 @@ pub enum Event {
     },
 
     /// Emitted right before a tool actually executes (after safety passes).
-    #[serde(rename = "tool_start")]
+    #[serde(rename = "tool_started")]
     #[serde(rename_all = "camelCase")]
-    ToolStart {
+    ToolStarted {
         tool_call_id: String,
         tool_name: String,
         arguments: serde_json::Value,
@@ -46,6 +46,23 @@ pub enum Event {
         truncated: bool,
     },
 
+    #[serde(rename = "tool_finished")]
+    #[serde(rename_all = "camelCase")]
+    ToolFinished {
+        tool_call_id: String,
+        tool_name: String,
+        success: bool,
+    },
+
+    #[serde(rename = "assistant_delta")]
+    AssistantDelta { content: String },
+
+    #[serde(rename = "planning")]
+    Planning { task: String },
+
+    #[serde(rename = "warning")]
+    Warning { message: String },
+
     #[serde(rename = "confirmation_request")]
     ConfirmationRequest {
         action: String,
@@ -53,11 +70,19 @@ pub enum Event {
         risk_level: String,
     },
 
+    #[serde(rename = "question_request")]
+    QuestionRequest {
+        questions: Vec<crate::tools::QuestionPrompt>,
+    },
+
+    #[serde(rename = "todo_changed")]
+    TodoChanged { todos: Vec<crate::tools::TodoItem> },
+
     #[serde(rename = "error")]
     Error { message: String },
 
-    #[serde(rename = "completed")]
-    Completed { result: String },
+    #[serde(rename = "done")]
+    Done { result: String },
 
     #[serde(rename = "system")]
     System { message: String },
@@ -161,14 +186,20 @@ pub enum Event {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
-    Thought,
+    Thinking,
     ToolCall,
-    ToolStart,
+    ToolStarted,
     ToolDelta,
     ToolOutput,
+    ToolFinished,
+    AssistantDelta,
+    Planning,
+    Warning,
     ConfirmationRequest,
+    QuestionRequest,
+    TodoChanged,
     Error,
-    Completed,
+    Done,
     System,
     PlanProgress,
     PlanReplanned,
@@ -189,14 +220,20 @@ pub enum EventType {
 impl Event {
     pub fn event_type(&self) -> EventType {
         match self {
-            Event::Thought { .. } => EventType::Thought,
+            Event::Thinking { .. } => EventType::Thinking,
             Event::ToolCall { .. } => EventType::ToolCall,
-            Event::ToolStart { .. } => EventType::ToolStart,
+            Event::ToolStarted { .. } => EventType::ToolStarted,
             Event::ToolDelta { .. } => EventType::ToolDelta,
             Event::ToolOutput { .. } => EventType::ToolOutput,
+            Event::ToolFinished { .. } => EventType::ToolFinished,
+            Event::AssistantDelta { .. } => EventType::AssistantDelta,
+            Event::Planning { .. } => EventType::Planning,
+            Event::Warning { .. } => EventType::Warning,
             Event::ConfirmationRequest { .. } => EventType::ConfirmationRequest,
+            Event::QuestionRequest { .. } => EventType::QuestionRequest,
+            Event::TodoChanged { .. } => EventType::TodoChanged,
             Event::Error { .. } => EventType::Error,
-            Event::Completed { .. } => EventType::Completed,
+            Event::Done { .. } => EventType::Done,
             Event::System { .. } => EventType::System,
             Event::PlanProgress { .. } => EventType::PlanProgress,
             Event::PlanReplanned { .. } => EventType::PlanReplanned,
@@ -216,7 +253,6 @@ impl Event {
     }
 }
 
-/// Event handler: a boxed closure invoked for every emitted `Event`.
 type EventHandler = Box<dyn Fn(Event) + Send + Sync>;
 
 pub struct EventEmitter {
@@ -230,12 +266,6 @@ impl EventEmitter {
         }
     }
 
-    /// Register a handler. Multiple handlers may be registered; they are
-    /// called in registration order.
-    ///
-    /// Takes `&self` because handlers are stored behind a `Mutex`, so the
-    /// emitter can sit behind a shared reference (e.g. inside an `Arc` or
-    /// as a non-mut field of a longer-lived struct).
     pub fn on<F>(&self, handler: F)
     where
         F: Fn(Event) + Send + Sync + 'static,
@@ -244,15 +274,12 @@ impl EventEmitter {
     }
 
     pub fn emit(&self, event: Event) {
-        // Clone the event for each handler so we don't move it twice.
         let handlers = self.handlers.lock().unwrap();
         for handler in handlers.iter() {
             handler(event.clone());
         }
     }
 
-    /// Drop all registered handlers. Useful between runs in long-lived
-    /// orchestrators that get re-subscribed each invocation.
     #[allow(dead_code)]
     pub fn clear(&self) {
         self.handlers.lock().unwrap().clear();
@@ -271,12 +298,12 @@ mod tests {
 
     #[test]
     fn new_lifecycle_variants_map_to_type() {
-        let start = Event::ToolStart {
+        let start = Event::ToolStarted {
             tool_call_id: "c1".into(),
             tool_name: "run_command".into(),
             arguments: serde_json::json!({ "command": "echo hi" }),
         };
-        assert_eq!(start.event_type(), EventType::ToolStart);
+        assert_eq!(start.event_type(), EventType::ToolStarted);
 
         let delta = Event::ToolDelta {
             tool_call_id: "c1".into(),
