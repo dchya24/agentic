@@ -7,6 +7,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Event {
+    #[serde(rename = "ready")]
+    Ready { protocol: String, version: u32 },
+
+    #[serde(rename = "init_ok")]
+    InitOk { protocol: String, version: u32 },
+
     #[serde(rename = "thinking")]
     Thinking { content: String },
 
@@ -187,6 +193,8 @@ pub enum Event {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
     Thinking,
+    Ready,
+    InitOk,
     ToolCall,
     ToolStarted,
     ToolDelta,
@@ -221,6 +229,8 @@ impl Event {
     pub fn event_type(&self) -> EventType {
         match self {
             Event::Thinking { .. } => EventType::Thinking,
+            Event::Ready { .. } => EventType::Ready,
+            Event::InitOk { .. } => EventType::InitOk,
             Event::ToolCall { .. } => EventType::ToolCall,
             Event::ToolStarted { .. } => EventType::ToolStarted,
             Event::ToolDelta { .. } => EventType::ToolDelta,

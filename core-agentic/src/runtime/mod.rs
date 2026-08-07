@@ -7,7 +7,9 @@
 //!
 //! Engine + transport land with the decoupling commits that follow.
 
+pub mod engine;
 pub mod protocol;
+pub mod transport;
 
 // `AgentRuntime` / `AgentLoop` split (P1-1).
 //
