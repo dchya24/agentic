@@ -82,10 +82,8 @@ pub use skills::{
 
 // Re-export tool implementations
 pub use tools::{
-    clear_todo_change_handler,
     clear_todos,
     current_todos,
-    set_todo_change_handler,
     ApplyPatchTool,
     EditFileTool,
     FetchTool,
@@ -110,6 +108,7 @@ pub use tools::{
     TodoPriority,
     TodoStatus,
     TodowriteTool,
+    ToolDeps,
     UpdateMemoryTool,
     WebSearchTool,
     WriteFileTool,

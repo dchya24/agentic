@@ -591,8 +591,16 @@ impl Commands {
         }
 
         let tracker = Arc::new(core_agentic::file_tracker::FileTracker::new());
+        let mut tool_deps = core_agentic::ToolDeps::new()
+            .with_tracker(tracker)
+            .with_url_policy(url_policy);
+        if self.interactive_mode {
+            tool_deps.question_handler = Some(Arc::new(CliQuestionHandler));
+        }
+        tool_deps.todo_handler = Some(Box::new(CliTodoRenderer));
+
         let tools = ToolRegistry::new();
-        for tool in core_agentic::tools::builtin_tools_with(tracker, url_policy) {
+        for tool in core_agentic::tools::builtin_tools_with_deps(tool_deps) {
             tools.register(tool);
         }
 
@@ -715,27 +723,10 @@ impl Commands {
         });
 
         // ── Interactive tool handlers ─────────────────────
-        // P2-4: the question handler is wired per-instance into THIS
-        // orchestrator's registry. In non-interactive `agentic run`,
-        // `None` installs the skip-all fallback so the agent proceeds
-        // without blocking on stdin.
-        let question_handler: Option<std::sync::Arc<dyn core_agentic::QuestionHandler>> =
-            if self.interactive_mode {
-                Some(std::sync::Arc::new(CliQuestionHandler))
-            } else {
-                None
-            };
-        // P2-4: the registry lives inside the orchestrator now — install
-        // through its accessor.
-        core_agentic::tools::install_question_handler(
-            orchestrator.tool_registry(),
-            question_handler,
-        );
-
-        // Register the todo change handler in all modes. Even in
-        // non-interactive `agentic run`, the user benefits from seeing
-        // task progress rendered inline.
-        core_agentic::set_todo_change_handler(Box::new(CliTodoRenderer));
+        // Handlers are wired per-instance at registry construction via
+        // ToolDeps (question handler only in interactive mode; the todo
+        // renderer runs in all modes so `agentic run` still surfaces
+        // task progress).
 
         self.orchestrator = Some(orchestrator);
         Ok(())

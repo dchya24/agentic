@@ -153,22 +153,7 @@ pub trait TodoChangeHandler: Send + Sync {
     fn on_change(&self, todos: &[TodoItem]);
 }
 
-/// Global handler for todo changes (optional, for UI rendering).
-pub(crate) static TODO_CHANGE_HANDLER: std::sync::LazyLock<
-    Mutex<Option<Box<dyn TodoChangeHandler>>>,
-> = std::sync::LazyLock::new(|| Mutex::new(None));
-
-/// Register a todo change handler.
-pub fn set_todo_change_handler(handler: Box<dyn TodoChangeHandler>) {
-    let mut slot = TODO_CHANGE_HANDLER.lock().unwrap();
-    *slot = Some(handler);
-}
-
-/// Clear the registered handler.
-pub fn clear_todo_change_handler() {
-    let mut slot = TODO_CHANGE_HANDLER.lock().unwrap();
-    *slot = None;
-}
+/// Callback handler is owned by a `TodowriteTool` instance.
 
 /// Get a snapshot of the current todo list.
 pub fn current_todos() -> Vec<TodoItem> {
@@ -184,11 +169,18 @@ pub fn clear_todos() {
 // Tool implementation
 // ---------------------------------------------------------------------------
 
-pub struct TodowriteTool;
+pub struct TodowriteTool {
+    handler: Option<Box<dyn TodoChangeHandler>>,
+}
 
 impl TodowriteTool {
     pub fn new() -> Self {
-        Self
+        Self { handler: None }
+    }
+
+    pub fn with_change_handler(mut self, handler: Box<dyn TodoChangeHandler>) -> Self {
+        self.handler = Some(handler);
+        self
     }
 }
 
@@ -289,13 +281,10 @@ impl Tool for TodowriteTool {
             *list = todos;
         }
 
-        // Notify UI handler if registered.
-        {
+        // Notify the instance handler if present.
+        if let Some(handler) = self.handler.as_ref() {
             let list = TODO_LIST.lock().unwrap();
-            let handler = TODO_CHANGE_HANDLER.lock().unwrap();
-            if let Some(ref h) = *handler {
-                h.on_change(&list);
-            }
+            handler.on_change(&list);
         }
 
         let progress_pct = if total > 0 {
@@ -335,9 +324,8 @@ impl Tool for TodowriteTool {
 mod tests {
     use super::*;
 
-    /// Serializes tests that touch the process-global `TODO_LIST` /
-    /// `TODO_CHANGE_HANDLER` (which can't be safely accessed from parallel
-    /// test threads). Every test in this module acquires it.
+    /// Serializes tests that touch the process-global `TODO_LIST`.
+    /// Every test in this module acquires it.
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Acquire the test lock, recovering from poisoning (a panicked
@@ -462,9 +450,7 @@ mod tests {
             }
         }
 
-        set_todo_change_handler(Box::new(TestHandler));
-
-        let tool = TodowriteTool::new();
+        let tool = TodowriteTool::new().with_change_handler(Box::new(TestHandler));
         tool.execute(serde_json::json!({
             "todos": [{"content": "tracked task"}]
         }))
@@ -472,7 +458,6 @@ mod tests {
 
         assert!(unsafe { CALLED }, "change handler should have been called");
 
-        clear_todo_change_handler();
         clear_todos();
     }
 
