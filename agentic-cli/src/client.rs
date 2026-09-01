@@ -74,6 +74,16 @@ impl RuntimeClient {
         Ok(event)
     }
 
+    pub async fn send_and_wait(&mut self, request: Request) -> Result<ProtocolEvent> {
+        let id = self.send(request).await?;
+        loop {
+            let event = self.next_event().await?;
+            if event.request_id.as_deref() == Some(&id) {
+                return Ok(event);
+            }
+        }
+    }
+
     pub async fn run<C, E, R>(
         &mut self,
         task: String,

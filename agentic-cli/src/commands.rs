@@ -1013,11 +1013,16 @@ impl Commands {
     /// the user does NOT pay the re-init cost (or another wizard prompt).
     ///
     /// No-op when the orchestrator hasn't been initialized yet.
-    pub fn restart_session(&mut self) {
-        if let Some(orch) = self.orchestrator.as_ref() {
-            orch.clear_memory();
-            orch.reset_cancel();
-            orch.clear_event_handlers();
+    pub async fn restart_session(&mut self) -> Result<()> {
+        self.ensure_runtime().await?;
+        let runtime = self.runtime_client.as_mut().unwrap();
+        let event = runtime
+            .send_and_wait(core_agentic::runtime::protocol::Request::ResetSession)
+            .await?;
+        match event.event {
+            core_agentic::Event::SessionReset => Ok(()),
+            core_agentic::Event::Error { message } => Err(anyhow::anyhow!(message)),
+            other => Err(anyhow::anyhow!("unexpected reset response: {other:?}")),
         }
     }
 
@@ -1397,7 +1402,7 @@ impl Commands {
     /// Render a `/search <query>` result against the current orchestrator's
     /// conversation memory. No-op (with a hint) if the orchestrator hasn't
     /// been initialized yet — i.e. before the first turn.
-    pub fn search_memory_inline(&self, query: &str) {
+    pub async fn search_memory_inline(&mut self, query: &str) {
         let query = query.trim();
         if query.is_empty() {
             inline::print_blank();
@@ -1405,67 +1410,36 @@ impl Commands {
             inline::print_blank();
             return;
         }
-
-        let orch = match self.orchestrator.as_ref() {
-            Some(o) => o,
-            None => {
-                inline::print_blank();
-                inline::print_line(&components::warning_badge(
-                    "No conversation history yet — send a message first.",
-                ));
-                inline::print_blank();
-                return;
-            }
-        };
-
-        let hits = orch.search_memory(query);
-
-        inline::print_blank();
-        inline::print_line(&components::section_header(
-            "🔍",
-            &format!("Memory search: \"{}\" — {} match(es)", query, hits.len()),
-            RColor::Cyan,
-        ));
-        inline::print_blank();
-
-        if hits.is_empty() {
-            inline::print_line(&components::warning_badge(
-                "No messages match. Try a shorter query or different keyword.",
-            ));
-            inline::print_blank();
+        if let Err(error) = self.ensure_runtime().await {
+            inline::print_line(&components::error_badge(&error.to_string()));
             return;
         }
-
-        let bold = RStyle::default().add_modifier(RModifier::BOLD);
-        let dim = RStyle::default().add_modifier(RModifier::DIM);
-
-        for (i, (role, content)) in hits.iter().enumerate() {
-            let (role_label, role_color) = match role {
-                core_agentic::MessageRole::User => ("user", RColor::Cyan),
-                core_agentic::MessageRole::Assistant => ("assistant", RColor::Green),
-                core_agentic::MessageRole::System => ("system", RColor::Yellow),
-                core_agentic::MessageRole::Tool { tool_name, .. } => {
-                    (tool_name.as_str(), RColor::Magenta)
+        let response = self
+            .runtime_client
+            .as_mut()
+            .unwrap()
+            .send_and_wait(core_agentic::runtime::protocol::Request::SearchMemory {
+                query: query.to_string(),
+            })
+            .await;
+        match response {
+            Ok(event) => {
+                if let core_agentic::Event::MemorySearchResult { query, matches } = event.event {
+                    inline::print_blank();
+                    inline::print_line(&components::section_header(
+                        "🔍",
+                        &format!("Memory search: \"{}\" — {} match(es)", query, matches.len()),
+                        RColor::Cyan,
+                    ));
+                    inline::print_blank();
+                    for (index, hit) in matches.iter().enumerate() {
+                        inline::print_line(&RLine::from(format!("  [{}] {}", index + 1, hit.role)));
+                        inline::print_line(&RLine::from(format!("      {}", hit.content)));
+                    }
+                    inline::print_blank();
                 }
-            };
-
-            inline::print_line(&RLine::from(vec![
-                RSpan::styled(format!("  [{}] ", i + 1), dim),
-                RSpan::styled(
-                    role_label.to_string(),
-                    RStyle::default()
-                        .fg(role_color)
-                        .add_modifier(RModifier::BOLD),
-                ),
-            ]));
-
-            for snippet in extract_match_snippets(content, query, 80, 2) {
-                inline::print_line(&RLine::from(vec![
-                    RSpan::raw("      "),
-                    RSpan::styled(snippet, bold),
-                ]));
             }
-            inline::print_blank();
+            Err(error) => inline::print_line(&components::error_badge(&error.to_string())),
         }
     }
 
