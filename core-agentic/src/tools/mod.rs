@@ -24,10 +24,8 @@ pub use git_query::{GitDiffTool, GitStatusTool};
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use list_files::ListFilesTool;
-#[allow(deprecated)]
 pub use question::{
-    clear_question_handler, install_question_handler, set_question_handler, QuestionAnswer,
-    QuestionHandler, QuestionPrompt, QuestionTool,
+    install_question_handler, QuestionAnswer, QuestionHandler, QuestionPrompt, QuestionTool,
 };
 pub use read_file::ReadFileTool;
 pub use run_command::RunCommandTool;

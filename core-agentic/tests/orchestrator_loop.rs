@@ -771,7 +771,7 @@ fn session_lifecycle_events_fire_in_order() {
         tools.register(t);
     }
 
-    let mut orch = Orchestrator::new(provider, tools);
+    let orch = Orchestrator::new(provider, tools);
     orch.set_permission_mode(PermissionMode::Yolo);
 
     let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
@@ -850,7 +850,7 @@ fn session_failed_event_fires_on_provider_error() {
         tools.register(t);
     }
 
-    let mut orch = Orchestrator::new(Arc::new(ExplodingProvider), tools);
+    let orch = Orchestrator::new(Arc::new(ExplodingProvider), tools);
     orch.set_permission_mode(PermissionMode::Yolo);
 
     let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
@@ -879,7 +879,7 @@ fn session_failed_event_fires_on_provider_error() {
 /// sees the restored history.
 #[test]
 fn checkpoint_and_resume_restores_conversation() {
-    use core_agentic::{AgentSession, SessionStore};
+    use core_agentic::SessionStore;
 
     let dir = support::tempdir();
     let path = dir.join("resume-me.txt");
@@ -984,7 +984,7 @@ fn runs_without_store_are_untracked() {
     for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
         tools.register(t);
     }
-    let mut orch = Orchestrator::new(provider, tools);
+    let orch = Orchestrator::new(provider, tools);
     orch.set_permission_mode(PermissionMode::Yolo);
     let answer = orch.run("go").unwrap();
     assert_eq!(answer, "ok");

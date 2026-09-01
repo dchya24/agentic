@@ -480,6 +480,9 @@ pub struct Commands {
     interactive_mode: bool,
     /// Shared skill index for the skill tool, populated at orchestrator init.
     skill_index: Option<std::sync::Arc<std::sync::RwLock<core_agentic::SkillIndex>>>,
+    /// Skill currently active for THIS session (per-instance state
+    /// replacing the removed process-global, Fase D).
+    active_skill: Option<String>,
     /// Mock provider for testing. When set, `ensure_orchestrator` uses
     /// this instead of constructing a real provider from config.
     /// Only settable via `with_mock_provider` (gated to `#[cfg(test)]`).
@@ -506,6 +509,7 @@ impl Commands {
             pending_attachments: Vec::new(),
             interactive_mode: false,
             skill_index: None,
+            active_skill: None,
             mock_provider: None,
         }
     }
@@ -2293,6 +2297,27 @@ Instructions the agent follows when this skill is loaded.
         Ok(())
     }
 
+    /// Name of the skill active for this session, if any.
+    pub fn active_skill_name(&self) -> Option<String> {
+        self.active_skill.clone()
+    }
+
+    /// Available skills for this session (name, description) from the
+    /// discovered index — per-instance replacement for the removed
+    /// global `list_skills`.
+    pub fn available_skills(&self) -> Vec<(String, String)> {
+        match &self.skill_index {
+            Some(index) => index
+                .read()
+                .unwrap()
+                .all()
+                .into_iter()
+                .map(|s| (s.name().to_string(), s.description().to_string()))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// Load a skill by name and inject its instructions into the orchestrator's
     /// conversation context as a system message. The next LLM call will see the
     /// skill instructions alongside the user's message.
@@ -2329,6 +2354,10 @@ Instructions the agent follows when this skill is loaded.
                 }
             }
         }
+
+        // Track the active skill on this session (Fase D: per-instance,
+        // replacing the removed process-global).
+        self.active_skill = Some(skill.name().to_string());
 
         // Inject into orchestrator context as a system message
         // so the next LLM call includes the skill instructions.

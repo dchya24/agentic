@@ -161,28 +161,11 @@ pub trait Tool: Send + Sync {
     /// Static capability metadata. The scheduler consumes this for
     /// batching, risk floors, and side-effect classification.
     ///
-    /// Defaults derive from [`Self::is_read_only`] for backward
-    /// compatibility: read-only tools get `ReadOnly + ParallelSafe`,
-    /// everything else `Mutating + Exclusive`. Tools that want richer
-    /// signal (side effects, risk floor, exclusive-but-read-only like
-    /// `question`) override this directly — and should also override
-    /// [`Self::is_read_only`] to stay consistent.
+    /// The single source of truth (Fase D: `is_read_only` removed).
+    /// Every implementation declares its own contract — conservative
+    /// default is `Mutating + Exclusive`, never assume safety.
     fn metadata(&self) -> ToolMetadata {
-        if self.is_read_only() {
-            ToolMetadata::read_only()
-        } else {
-            ToolMetadata::default()
-        }
-    }
-
-    /// Whether this tool only reads state (no filesystem writes, no shell
-    /// commands, no network mutations). Read-only tools may be executed
-    /// concurrently with other read-only tools by the orchestrator.
-    ///
-    /// Defaults to `false` (assume mutating). Override in tools that are
-    /// known to be safe for parallel execution.
-    fn is_read_only(&self) -> bool {
-        false
+        ToolMetadata::default()
     }
 
     /// Stream progressive output to `on_progress` as the tool runs.

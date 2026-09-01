@@ -44,16 +44,6 @@ impl SkillTool {
         }
     }
 
-    /// Create a `SkillTool` that uses the global [`SkillLoader`] for
-    /// resolution and activation.
-    pub fn with_loader() -> Self {
-        Self {
-            index: None,
-            loader: None,
-            events: None,
-        }
-    }
-
     /// Attach a custom [`SkillLoader`] to this tool.
     pub fn with_skill_loader(mut self, loader: Box<dyn SkillLoader>) -> Self {
         self.loader = Some(loader);
@@ -123,7 +113,8 @@ impl Tool for SkillTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        // Try to resolve via loader first, then via index.
+        // Resolve via the per-instance loader first, then the index.
+        // Neither attached → the skill system is not configured.
         let result = if let Some(loader) = &self.loader {
             loader.resolve(name)
         } else if let Some(index) = &self.index {
@@ -151,8 +142,7 @@ impl Tool for SkillTool {
                 content
             })
         } else {
-            // Fallback: resolve through the global loader
-            crate::skills::resolve_skill_global(name)
+            None
         };
 
         match result {
@@ -167,17 +157,21 @@ impl Tool for SkillTool {
                 // reaching the model.
                 let mut activated = false;
                 if activate {
-                    let activation_result = if let Some(loader) = &self.loader {
-                        loader.activate(name)
+                    if let Some(loader) = &self.loader {
+                        match loader.activate(name) {
+                            Ok(_) => activated = true,
+                            Err(ref e) => {
+                                tracing::warn!(
+                                    skill = name,
+                                    error = %e,
+                                    "Skill found but activation failed (best-effort)"
+                                );
+                            }
+                        }
                     } else {
-                        crate::skills::activate_skill_global(name)
-                    };
-                    activated = activation_result.is_ok();
-                    if let Err(ref e) = activation_result {
-                        tracing::warn!(
+                        tracing::debug!(
                             skill = name,
-                            error = %e,
-                            "Skill found but activation failed (best-effort)"
+                            "no SkillLoader attached; content-only load (activation skipped)"
                         );
                     }
                     if activated {
@@ -202,10 +196,6 @@ impl Tool for SkillTool {
                 name
             ))),
         }
-    }
-
-    fn is_read_only(&self) -> bool {
-        true
     }
 
     fn metadata(&self) -> ToolMetadata {
@@ -248,6 +238,7 @@ mod tests {
 
         let dir = std::env::temp_dir().join("skill_tool_emit_test");
         let _ = std::fs::create_dir_all(&dir);
+        let index = make_index_with_skills(vec![make_skill("postgres", &dir)]);
 
         // A loader whose activate() always succeeds.
         struct OkLoader;
@@ -275,7 +266,7 @@ mod tests {
         }
 
         // Loader-backed tool: resolve + activate both go through OkLoader.
-        let tool = SkillTool::with_loader()
+        let tool = SkillTool::new(index)
             .with_skill_loader(Box::new(OkLoader))
             .with_events(events);
 
@@ -420,6 +411,9 @@ mod tests {
     fn skill_tool_is_read_only() {
         let index = make_index_with_skills(Vec::new());
         let tool = SkillTool::new(index);
-        assert!(tool.is_read_only());
+        assert_eq!(
+            tool.metadata().mutability,
+            crate::tool::Mutability::ReadOnly
+        );
     }
 }

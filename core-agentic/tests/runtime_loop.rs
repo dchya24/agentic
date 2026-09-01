@@ -26,8 +26,7 @@ fn tools() -> ToolRegistry {
 
 fn scripted_orchestrator(responses: Vec<ChatResponse>) -> Orchestrator {
     let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(responses));
-    let mut orch = Orchestrator::new(provider, tools());
-    core_agentic::safety::PermissionMode::Yolo.clone();
+    let orch = Orchestrator::new(provider, tools());
     orch.set_permission_mode(core_agentic::safety::PermissionMode::Yolo);
     orch
 }
@@ -39,7 +38,7 @@ fn runtime_standard_loop_runs_tool_turn_end_to_end() {
     let path = dir.join("note.txt");
     std::fs::write(&path, "payload\n").unwrap();
 
-    let mut orch = scripted_orchestrator(vec![
+    let orch = scripted_orchestrator(vec![
         tool_call_response(
             "c1",
             "read_file",
@@ -126,7 +125,7 @@ async fn runtime_streams_deltas_through_envelope() {
         Arc::new(StreamingScriptedProvider::new(vec![text_response(
             "streamed answer",
         )]));
-    let mut orch = Orchestrator::new(provider, tools());
+    let orch = Orchestrator::new(provider, tools());
     orch.set_permission_mode(core_agentic::safety::PermissionMode::Yolo);
 
     let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
@@ -199,7 +198,7 @@ fn cancel_releases_parked_loop_with_cancelled_error() {
 /// The P1-2 `on_state_change` handler observes the transition sequence.
 #[test]
 fn on_state_change_observes_transitions() {
-    let mut orch = scripted_orchestrator(vec![text_response("ok")]);
+    let orch = scripted_orchestrator(vec![text_response("ok")]);
 
     let states: Arc<Mutex<Vec<OrchestratorState>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = states.clone();

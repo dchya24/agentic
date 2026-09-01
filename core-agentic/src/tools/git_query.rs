@@ -136,10 +136,6 @@ impl Tool for GitStatusTool {
         }))
     }
 
-    fn is_read_only(&self) -> bool {
-        true
-    }
-
     fn metadata(&self) -> ToolMetadata {
         let mut m = ToolMetadata::read_only();
         m.side_effects = SideEffects::FsRead;
@@ -383,10 +379,6 @@ impl Tool for GitDiffTool {
             "truncated": truncated_flag,
             "original_chars": original_len,
         }))
-    }
-
-    fn is_read_only(&self) -> bool {
-        true
     }
 
     fn metadata(&self) -> ToolMetadata {

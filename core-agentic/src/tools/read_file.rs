@@ -36,10 +36,6 @@ impl Tool for ReadFileTool {
         "read_file"
     }
 
-    fn is_read_only(&self) -> bool {
-        true
-    }
-
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::read_only()
     }

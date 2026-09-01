@@ -67,13 +67,6 @@ impl ToolRegistry {
         tools.contains_key(name)
     }
 
-    /// Returns whether the named tool advertises itself as read-only.
-    /// Unknown tools are treated as mutating (safer default).
-    pub fn is_read_only(&self, name: &str) -> bool {
-        let tools = self.tools.read();
-        tools.get(name).map(|t| t.is_read_only()).unwrap_or(false)
-    }
-
     /// Static capability metadata for the named tool. Unknown tools
     /// default to the conservative `Mutating + Exclusive` contract.
     pub fn metadata(&self, name: &str) -> crate::tool::ToolMetadata {
@@ -408,8 +401,8 @@ mod tests {
         fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ToolError> {
             Ok(serde_json::json!({"ok": true}))
         }
-        fn is_read_only(&self) -> bool {
-            true
+        fn metadata(&self) -> crate::tool::ToolMetadata {
+            crate::tool::ToolMetadata::read_only()
         }
     }
 
@@ -427,7 +420,6 @@ mod tests {
         fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ToolError> {
             Ok(serde_json::json!({"ok": true}))
         }
-        // No is_read_only override → defaults to false.
         // Declares the same contract as the builtin write_file tool.
         fn metadata(&self) -> crate::tool::ToolMetadata {
             crate::tool::ToolMetadata {
@@ -446,14 +438,24 @@ mod tests {
         reg.register(Box::new(ReadTool));
         reg.register(Box::new(WriteTool));
 
-        assert!(reg.is_read_only("reader"));
-        assert!(!reg.is_read_only("writer"));
+        assert_eq!(
+            reg.metadata("reader").mutability,
+            crate::tool::Mutability::ReadOnly
+        );
+        assert_eq!(
+            reg.metadata("writer").mutability,
+            crate::tool::Mutability::Mutating
+        );
     }
 
     #[test]
     fn unknown_tool_treated_as_mutating() {
         let reg = ToolRegistry::new();
-        assert!(!reg.is_read_only("nonexistent"));
+        assert_eq!(
+            reg.metadata("nonexistent").mutability,
+            crate::tool::Mutability::Mutating,
+            "unknown tools default to the conservative contract"
+        );
     }
 
     #[test]
@@ -463,10 +465,20 @@ mod tests {
             reg.register(tool);
         }
         for name in ["read_file", "list_files", "glob", "grep", "search_files"] {
-            assert!(reg.is_read_only(name), "{} should be read-only", name);
+            assert_eq!(
+                reg.metadata(name).mutability,
+                crate::tool::Mutability::ReadOnly,
+                "{} should be read-only",
+                name
+            );
         }
         for name in ["write_file", "edit_file", "run_command", "run_script"] {
-            assert!(!reg.is_read_only(name), "{} should be mutating", name);
+            assert_eq!(
+                reg.metadata(name).mutability,
+                crate::tool::Mutability::Mutating,
+                "{} should be mutating",
+                name
+            );
         }
     }
 
@@ -565,24 +577,36 @@ mod tests {
     }
 
     #[test]
-    fn metadata_defaults_derive_from_read_only() {
+    fn trait_metadata_default_is_conservative() {
+        // Fase D: no is_read_only derivation — a tool without an
+        // explicit metadata() override gets Mutating + Exclusive, so
+        // forgetting to declare a contract can never grant parallelism.
+        struct UndeclaredTool;
+        impl Tool for UndeclaredTool {
+            fn name(&self) -> &str {
+                "undeclared"
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn schema(&self) -> ToolSchema {
+                ToolSchema::new("undeclared", "")
+            }
+            fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+                Ok(serde_json::json!({}))
+            }
+        }
+
+        let meta = UndeclaredTool.metadata();
+        assert_eq!(meta.mutability, crate::tool::Mutability::Mutating);
+        assert_eq!(meta.concurrency, crate::tool::Concurrency::Exclusive);
+
         let reg = ToolRegistry::new();
-        reg.register(Box::new(ReadTool));
-        reg.register(Box::new(WriteTool));
-
-        // read-only tool → ReadOnly + ParallelSafe
-        let read_meta = reg.metadata("reader");
-        assert_eq!(read_meta.mutability, crate::tool::Mutability::ReadOnly);
+        reg.register(Box::new(UndeclaredTool));
         assert_eq!(
-            read_meta.concurrency,
-            crate::tool::Concurrency::ParallelSafe
+            reg.concurrency_class("undeclared"),
+            crate::tool::Concurrency::Exclusive
         );
-        assert!(read_meta.idempotent);
-
-        // mutating tool → Mutating + Exclusive
-        let write_meta = reg.metadata("writer");
-        assert_eq!(write_meta.mutability, crate::tool::Mutability::Mutating);
-        assert_eq!(write_meta.concurrency, crate::tool::Concurrency::Exclusive);
     }
 
     #[test]
@@ -805,9 +829,6 @@ mod tests {
             }
             fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ToolError> {
                 Ok(serde_json::json!({ "data": "x".repeat(10_000) }))
-            }
-            fn is_read_only(&self) -> bool {
-                true
             }
         }
 

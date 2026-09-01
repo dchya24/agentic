@@ -300,6 +300,39 @@ deprecation sementara (jika dipakai CLI) → migrasi CLI → hapus.
 
 ---
 
+## Fase D — migrasi CLI + clean cutover
+
+> **Status (2026-08-31): SELESAI.**
+
+- **Global question handler dihapus total**: static `QUESTION_HANDLER`,
+  `set_question_handler`, `clear_question_handler`, dan accessor
+  internalnya hilang dari core. `QuestionTool` hanya menerima handler
+  per-instance (`with_handler` / `install_question_handler`); tanpa
+  handler → skip-all fallback (kontrak non-interaktif tetap).
+- **Global skill loader dihapus total**: static `SKILL_LOADER`,
+  `set_skill_loader`, `clear_skill_loader`, `resolve_skill`,
+  `activate_skill`, `deactivate_skill`, `active_skill`, `list_skills`,
+  dan konstruktor `SkillTool::with_loader` dihapus. `SkillTool` kini
+  wajib index atau per-instance loader (`with_skill_loader`); tanpa
+  loader, aktivasi bersifat best-effort skip (content-only load).
+- **Migrasi CLI**: `Commands` kini melacak `active_skill` per-sesi
+  (di-set oleh `load_and_activate_skill`) dan mengekspos
+  `active_skill_name()` + `available_skills()` dari index miliknya;
+  banner/ModelInfo TUI membaca dari situ — bukan lagi dari global yang
+  (faktanya) tak pernah terisi.
+- **`Tool::is_read_only()` dihapus** (P0-2 cutover): `metadata()` adalah
+  satu-satunya sumber kontrak tool; default trait kini konservatif
+  `Mutating + Exclusive` (test mem-pin: lupa mendeklarasikan kontrak
+  tidak pernah memberi paralelisme). `ToolRegistry::is_read_only`
+  ikut dihapus; seluruh mock/impl tool dinyatakan eksplisit.
+- Prinsip "clean cutover, tanpa shim" terpenuhi — tidak ada jalur
+  global tersisa di core.
+- Catatan: branch `feature/runtime-cli-decoupling` (PRD headless
+  runtime/JSONL, 5 commit + stash) berada di jalur terpisah dan perlu
+  di-rebase ke dev sebelum dilanjutkan — bukan bagian Fase D.
+
+---
+
 ## Urutan pengerjaan yang disarankan
 
 ```text

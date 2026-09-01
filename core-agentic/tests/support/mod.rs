@@ -271,8 +271,8 @@ impl core_agentic::tool::Tool for SlowReadTool {
         std::thread::sleep(self.sleep);
         Ok(serde_json::json!({"ok": true, "name": self.name}))
     }
-    fn is_read_only(&self) -> bool {
-        true
+    fn metadata(&self) -> core_agentic::tool::ToolMetadata {
+        core_agentic::tool::ToolMetadata::read_only()
     }
 }
 
@@ -319,7 +319,7 @@ impl core_agentic::tool::Tool for ConcurrentReadTool {
         self.current.fetch_sub(1, Ordering::SeqCst);
         Ok(serde_json::json!({ "ok": true, "name": self.name }))
     }
-    fn is_read_only(&self) -> bool {
-        true
+    fn metadata(&self) -> core_agentic::tool::ToolMetadata {
+        core_agentic::tool::ToolMetadata::read_only()
     }
 }

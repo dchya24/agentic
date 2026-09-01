@@ -75,21 +75,16 @@ pub use tool::{
 pub use tool_registry::{CapabilityAnalysis, ToolRegistry};
 
 // Re-export skill system types
-#[allow(deprecated)]
 pub use skills::{
-    activate_skill, active_skill, clear_skill_loader, deactivate_skill, discover_skills,
-    list_skills, resolve_skill, set_skill_loader, DiscoveryConfig, Skill, SkillIndex, SkillLoader,
-    SkillMetadata, SkillTool,
+    discover_skills, DiscoveryConfig, Skill, SkillIndex, SkillLoader, SkillMetadata, SkillRegistry,
+    SkillTool,
 };
 
 // Re-export tool implementations
-#[allow(deprecated)]
 pub use tools::{
-    clear_question_handler,
     clear_todo_change_handler,
     clear_todos,
     current_todos,
-    set_question_handler,
     set_todo_change_handler,
     ApplyPatchTool,
     EditFileTool,

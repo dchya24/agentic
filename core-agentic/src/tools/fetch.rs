@@ -255,10 +255,6 @@ impl Tool for FetchTool {
         }))
     }
 
-    fn is_read_only(&self) -> bool {
-        true
-    }
-
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata {
             mutability: Mutability::ReadOnly,

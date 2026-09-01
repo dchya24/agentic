@@ -1374,6 +1374,8 @@ struct ModelInfo {
     memory_md_loaded: bool,
     vision_capable: bool,
     active_skill: Option<String>,
+    /// Session skill list (per-instance, Fase D) for the banner.
+    available_skills: Vec<(String, String)>,
 }
 
 fn get_model_info(commands: &Commands) -> ModelInfo {
@@ -1389,7 +1391,8 @@ fn get_model_info(commands: &Commands) -> ModelInfo {
         agent_md_name,
         memory_md_loaded: commands.memory_md_loaded(),
         vision_capable: commands.active_model_capabilities().vision,
-        active_skill: core_agentic::active_skill(),
+        active_skill: commands.active_skill_name(),
+        available_skills: commands.available_skills(),
     }
 }
 
@@ -1513,7 +1516,7 @@ fn print_banner(model_info: &ModelInfo, stats: &SessionStats) {
         info_lines.push(Line::from(spans));
     }
 
-    let skills = core_agentic::list_skills();
+    let skills = &model_info.available_skills;
     if !skills.is_empty() {
         const MAX_SKILL_NAMES: usize = 5;
         let mut skill_names: Vec<String> = skills

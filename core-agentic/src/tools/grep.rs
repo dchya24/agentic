@@ -24,10 +24,6 @@ impl Tool for GrepTool {
         "grep"
     }
 
-    fn is_read_only(&self) -> bool {
-        true
-    }
-
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::read_only()
     }
