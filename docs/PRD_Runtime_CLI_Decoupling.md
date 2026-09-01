@@ -1,7 +1,13 @@
 # PRD: Decoupling Agent Runtime from CLI
 
 ## Status
-Draft v1
+Draft v1 — Implementation largely landed on
+`feature/runtime-cli-decoupling` (rebased onto dev post-P0-P2):
+Phase 1-3 done (protocol events, headless runtime engine +
+`agentic-runtime` stdio JSONL daemon, Node demo). Phase 4 (CLI as pure
+renderer) is in progress: run/callback paths consume the headless
+runtime; remaining async migration completed from the recovered WIP.
+Phase 5 (Node/Bun CLI) is a demo only (`scripts/protocol-demo.js`).
 
 ## Goal
 
