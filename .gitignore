@@ -36,6 +36,9 @@ Thumbs.db
 .claude/
 CLAUDE.md
 
+# Session tool artifacts
+omp-session-*.html
+
 logs/
 
 .worktrees
