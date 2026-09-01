@@ -430,3 +430,82 @@ fn plan_request_runs_creation_approval_and_execution() {
     drop(request_tx);
     worker.join().unwrap();
 }
+
+/// Golden event-stream test: verify the daemon produces the expected
+/// event sequence for a simple text-only run (no tools).
+#[test]
+fn golden_event_stream_text_only_run() {
+    let provider = support::StreamingScriptedProvider::new(vec![support::text_response(
+        "Hello from the agent!",
+    )]);
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let (event_tx, event_rx) = std::sync::mpsc::channel();
+    let mut engine = RuntimeEngine::with_provider(
+        MemoryTransport::new(request_rx, event_tx),
+        std::sync::Arc::new(provider),
+    );
+    let worker = std::thread::spawn(move || engine.run());
+
+    request_tx
+        .send(ProtocolRequest::new(
+            "init-1",
+            Request::Init {
+                overrides: Default::default(),
+            },
+        ))
+        .unwrap();
+    request_tx
+        .send(ProtocolRequest::new(
+            "run-1",
+            Request::Run {
+                task: "say hello".into(),
+                attachments: vec![],
+            },
+        ))
+        .unwrap();
+    drop(request_tx);
+    worker.join().unwrap();
+
+    let events: Vec<_> = event_rx.try_iter().collect();
+
+    // Filter to only our request's events
+    let relevant: Vec<&str> = events
+        .iter()
+        .filter(|e| e.request_id.as_deref() == Some("run-1"))
+        .filter_map(|e| match &e.event {
+            Event::AssistantDelta { content } => Some("delta"),
+            Event::Done { result } => Some("done"),
+            Event::Error { .. } => Some("error"),
+            Event::SessionStarted => Some("session_started"),
+            Event::SessionCompleted { .. } => Some("session_completed"),
+            _ => None,
+        })
+        .collect();
+
+    // Golden sequence: SessionStarted → StateChanged → delta(s) → StateChanged →
+    // SessionCompleted → Done. SessionStarted and SessionCompleted bracket
+    // the run; assistant delta carries the text; Done signals completion.
+    assert!(
+        relevant.contains(&"session_started"),
+        "expected SessionStarted, got: {:?}",
+        relevant
+    );
+    assert!(
+        relevant.contains(&"done"),
+        "expected Done, got: {:?}",
+        relevant
+    );
+    assert!(
+        relevant.contains(&"delta"),
+        "expected AssistantDelta, got: {:?}",
+        relevant
+    );
+    assert!(
+        relevant.contains(&"session_completed"),
+        "expected SessionCompleted, got: {:?}",
+        relevant
+    );
+    // SessionStarted must come first; Done must come last
+    assert_eq!(relevant.first(), Some(&"session_started"));
+    assert_eq!(relevant.last(), Some(&"done"));
+}

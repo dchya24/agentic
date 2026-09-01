@@ -2,7 +2,7 @@ use anyhow::Result;
 use comfy_table::{
     modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color as TColor, Table,
 };
-use core_agentic::{Config, Orchestrator, ToolRegistry};
+use core_agentic::Config;
 use crossterm::cursor::{MoveToColumn, MoveUp};
 use crossterm::terminal::{Clear, ClearType};
 use crossterm::ExecutableCommand;
@@ -11,7 +11,7 @@ use ratatui::style::{Color as RColor, Modifier as RModifier, Style as RStyle};
 use ratatui::text::{Line as RLine, Span as RSpan};
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
 use crate::cli::{ConfigAction, OutputFormat, SkillAction};
@@ -460,7 +460,8 @@ const PROVIDER_PRESETS: &[ProviderPreset] = &[
 
 pub struct Commands {
     config: Config,
-    orchestrator: Option<Orchestrator>,
+    // orchestrator removed (P1-1 DoD: no Orchestrator::new in CLI —
+    // all agent runs go through the agentic-runtime daemon).
     runtime_client: Option<crate::client::RuntimeClient>,
     runtime_config_path: Option<String>,
     color_enabled: bool,
@@ -502,7 +503,7 @@ impl Commands {
     pub fn new(config: Config) -> Self {
         Self {
             config,
-            orchestrator: None,
+
             runtime_client: None,
             runtime_config_path: None,
             color_enabled: true,
@@ -576,183 +577,15 @@ impl Commands {
         self
     }
 
-    /// Lazily initialize the orchestrator when needed (run/interactive)
-    fn ensure_orchestrator(&mut self) -> Result<()> {
-        if self.orchestrator.is_some() {
-            return Ok(());
+    /// One-time session metadata init: filesystem-derived state that
+    /// was previously set inside the removed `ensure_orchestrator`.
+    fn init_session_metadata(&mut self) {
+        if self.agent_md_path.is_some() || self.memory_md_loaded {
+            return; // already initialized
         }
-
-        let provider: Arc<dyn core_agentic::LLMProvider>;
-        let model_name: String;
-
-        if let Some(mock) = self.mock_provider.clone() {
-            provider = mock;
-            model_name = self
-                .config
-                .active_model()
-                .map(|m| m.model.clone())
-                .unwrap_or_else(|| "gpt-4o-mini".to_string());
-        } else {
-            let provider_config = self
-                .config
-                .to_provider_config()
-                .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
-            model_name = provider_config.default_model.clone();
-            provider = Arc::new(core_agentic::OpenAIProvider::new(provider_config));
-        }
-
-        // Build URL allowlist policy from the user config (defaults to
-        // unrestricted when neither `safety.allowed_domains` nor
-        // `safety.block_ip_urls` is set).
-        let url_policy = self.config.url_policy();
-        if !url_policy.is_unrestricted() {
-            tracing::info!(
-                domains = ?url_policy.allowed_domains,
-                block_ip_urls = url_policy.block_ip_urls,
-                "URL allowlist active"
-            );
-        }
-
-        let tracker = Arc::new(core_agentic::file_tracker::FileTracker::new());
-        let mut tool_deps = core_agentic::ToolDeps::new()
-            .with_tracker(tracker)
-            .with_url_policy(url_policy);
-        if self.interactive_mode {
-            tool_deps.question_handler = Some(Arc::new(CliQuestionHandler));
-        }
-        tool_deps.todo_handler = Some(Box::new(CliTodoRenderer));
-
-        let tools = ToolRegistry::new();
-        for tool in core_agentic::tools::builtin_tools_with_deps(tool_deps) {
-            tools.register(tool);
-        }
-
-        // Register the subagent tool. It needs the provider + tool registry
-        // (so subagents inherit the same toolset) and the parent's cancel
-        // flag (so a Ctrl+C kills children too).
-        let subagent = core_agentic::SpawnSubagentTool::new(
-            provider.clone(),
-            tools.clone(),
-            model_name.clone(),
-        )
-        .with_mode(self.permission_mode)
-        .with_cancel(crate::cancel_flag());
-        tools.register(Box::new(subagent));
-
-        // Discover skills and build the shared skill index before registering
-        // the skill tool (so the tool has the index available immediately).
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let discovery_config: core_agentic::DiscoveryConfig = (&self.config.skills).into();
-        let skill_index = core_agentic::discover_skills(&discovery_config);
-        let skill_index_arc = std::sync::Arc::new(std::sync::RwLock::new(skill_index));
-        self.skill_index = Some(skill_index_arc.clone());
-
-        // Shared event emitter: the skill tool and the orchestrator
-        // emit onto the SAME stream, so `SkillActivated` reaches the
-        // session event log alongside tool/lifecycle events (P0-3).
-        let shared_events = std::sync::Arc::new(core_agentic::events::EventEmitter::new());
-
-        // Register the skill tool.
-        tools.register(Box::new(
-            core_agentic::SkillTool::new(skill_index_arc).with_events(shared_events.clone()),
-        ));
-
-        let mut orchestrator = Orchestrator::new(provider, tools);
-        orchestrator.set_model(model_name);
-        orchestrator.set_event_emitter(shared_events);
-
-        // Wire the process-global cancel flag so Ctrl+C in main.rs flips
-        // the same atomic the orchestrator polls between turns.
-        orchestrator.set_cancel_handle(crate::cancel_flag());
-
-        // Assemble effective system prompt:
-        //   default baseline  +  AGENT.md from cwd  +  skills section  +  config-provided override
-        let project_instructions =
-            core_agentic::load_project_instructions(&cwd).map(|(path, content)| {
-                tracing::info!(
-                    path = %path.display(),
-                    bytes = content.len(),
-                    "Loaded project instructions"
-                );
-                self.agent_md_path = Some(path);
-                content
-            });
-
-        // Generate skills section for system prompt from the discovered index.
-        let skills_section = {
-            let idx = self.skill_index.as_ref().unwrap().read().unwrap();
-            let skill_pairs: Vec<(&str, &str)> = idx
-                .all()
-                .iter()
-                .map(|s| (s.name(), s.description()))
-                .collect();
-            core_agentic::skills_system_section(&skill_pairs)
-        };
-
-        let assembled = core_agentic::assemble_system_prompt(
-            None, // use DEFAULT_SYSTEM_PROMPT
-            project_instructions.as_deref(),
-            skills_section.as_deref(),
-            self.config.system_prompt.as_deref(),
-        );
-
-        // Append cross-session memory (user-global + project-local) if present.
-        let memory_section = core_agentic::assemble_memory_section(&cwd);
-        self.memory_md_loaded = memory_section.is_some();
-        let final_prompt = match memory_section {
-            Some(mem) => format!("{}\n\n---\n# Persistent Memory\n\n{}", assembled, mem),
-            None => assembled,
-        };
-        orchestrator.set_system_prompt(final_prompt);
-
-        // Apply permission mode (Default / Plan / Yolo).
-        orchestrator.set_permission_mode(self.permission_mode);
-        if self.permission_mode != core_agentic::PermissionMode::Default {
-            tracing::info!(
-                mode = %self.permission_mode,
-                "Permission mode active"
-            );
-        }
-
-        // Apply agent-loop knobs from config: LLM-based autocompact +
-        // optional summarizer model override. When neither is set the
-        // orchestrator's compiled-in defaults (heuristic compaction,
-        // main model as summarizer) apply.
-        if self.config.agent.auto_compact_with_llm {
-            orchestrator.set_auto_compact_with_llm(true);
-            tracing::info!("LLM-based autocompact enabled");
-        }
-        if let Some(ref summarizer) = self.config.agent.summarizer_model {
-            orchestrator.set_summarizer_model(summarizer.clone());
-            tracing::info!(model = %summarizer, "Summarizer model override");
-        }
-        if let Some(max_iter) = self.config.agent.max_iterations {
-            orchestrator.set_max_iterations(max_iter);
-            tracing::info!(max_iterations = max_iter, "Max iterations override");
-        }
-
-        orchestrator.set_confirmation_handler(|request| {
-            if ALWAYS_CONFIRM.load(Ordering::Relaxed) {
-                return true;
-            }
-            match prompt_confirmation(&request) {
-                Some(ConfirmationResponse::Yes) => true,
-                Some(ConfirmationResponse::Always) => {
-                    ALWAYS_CONFIRM.store(true, Ordering::Relaxed);
-                    true
-                }
-                Some(ConfirmationResponse::No) | Some(ConfirmationResponse::Quit) | None => false,
-            }
-        });
-
-        // ── Interactive tool handlers ─────────────────────
-        // Handlers are wired per-instance at registry construction via
-        // ToolDeps (question handler only in interactive mode; the todo
-        // renderer runs in all modes so `agentic run` still surfaces
-        // task progress).
-
-        self.orchestrator = Some(orchestrator);
-        Ok(())
+        let cwd = std::env::current_dir().unwrap_or_default();
+        self.agent_md_path = core_agentic::load_project_instructions(&cwd).map(|(path, _)| path);
+        self.memory_md_loaded = core_agentic::assemble_memory_section(&cwd).is_some();
     }
 
     // ── Status ──────────────────────────────────────────────
@@ -1095,7 +928,7 @@ impl Commands {
         self.persist_config()?;
 
         // Reset orchestrator so it reinitializes with new model
-        self.orchestrator = None;
+
         self.runtime_client = None;
 
         Ok((active_provider, active_model))
@@ -1655,15 +1488,6 @@ impl Commands {
     pub async fn run(&mut self, task: &str) -> Result<()> {
         use crate::widgets::{components, inline, markdown as md_widget, progress, spinner};
 
-        #[cfg(test)]
-        if self.mock_provider.is_some() {
-            self.ensure_orchestrator()?;
-            let orchestrator = self.orchestrator.as_ref().unwrap();
-            orchestrator.reset_cancel();
-            let result = orchestrator.run_stream(task, |_| {}).await;
-            return result.map(|_| ()).map_err(Into::into);
-        }
-
         // When --mode plan is active, route through the planner agent
         // instead of the regular orchestrator loop. This creates a real
         // plan, shows it, and executes approved steps.
@@ -1995,21 +1819,6 @@ impl Commands {
         C: FnMut(&str),
         E: Fn(core_agentic::Event) + Send + Sync + 'static,
     {
-        #[cfg(test)]
-        if self.mock_provider.is_some() {
-            let expanded = crate::file_ref::expand_file_refs(task);
-            self.ensure_orchestrator()?;
-            let orchestrator = self.orchestrator.as_ref().unwrap();
-            orchestrator.reset_cancel();
-            orchestrator.clear_event_handlers();
-            orchestrator.on_event(on_event);
-            let result = orchestrator
-                .run_stream(&expanded, |chunk| on_chunk(&chunk))
-                .await;
-            orchestrator.clear_event_handlers();
-            return Ok(result?);
-        }
-
         let expanded = crate::file_ref::expand_with_attachments(task);
         self.ensure_runtime().await?;
         let runtime = self
@@ -3501,6 +3310,7 @@ mod search_snippet_tests {
 
 #[cfg(test)]
 mod e2e_tests {
+    use std::sync::Arc;
     use super::*;
     use core_agentic::providers::{
         ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, LLMProvider, ProviderError,
@@ -3592,6 +3402,7 @@ mod e2e_tests {
     }
 
     #[tokio::test]
+    #[ignore = "mock-provider path removed in Phase 4 (full daemon); covered by runtime_engine tests"]
     async fn smoke_run_executes_tool_and_returns_final_answer() {
         // ── Provider: tool call → final text ──────────────
         let provider = Arc::new(ScriptedProvider::new(vec![
