@@ -11,22 +11,6 @@ use crate::tool::{
     Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolResult, ToolSchema,
 };
 
-#[cfg(test)]
-mod tests {
-    use super::mcp_tool_metadata;
-
-    /// P0-2: external MCP tools must never be batched — verify the
-    /// shared conservative contract (no live MCP server needed).
-    #[test]
-    fn mcp_metadata_is_conservative() {
-        let meta = mcp_tool_metadata();
-        assert_eq!(meta.mutability, crate::tool::Mutability::Mutating);
-        assert_eq!(meta.concurrency, crate::tool::Concurrency::Exclusive);
-        assert_eq!(meta.side_effects, crate::tool::SideEffects::Network);
-        assert!(!meta.idempotent);
-        assert!(meta.risk > 0);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Sync adapter (original)
@@ -198,5 +182,22 @@ pub(crate) fn mcp_tool_metadata() -> ToolMetadata {
         idempotent: false,
         risk: 10,
         side_effects: SideEffects::Network,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mcp_tool_metadata;
+
+    /// P0-2: external MCP tools must never be batched — verify the
+    /// shared conservative contract (no live MCP server needed).
+    #[test]
+    fn mcp_metadata_is_conservative() {
+        let meta = mcp_tool_metadata();
+        assert_eq!(meta.mutability, crate::tool::Mutability::Mutating);
+        assert_eq!(meta.concurrency, crate::tool::Concurrency::Exclusive);
+        assert_eq!(meta.side_effects, crate::tool::SideEffects::Network);
+        assert!(!meta.idempotent);
+        assert!(meta.risk > 0);
     }
 }

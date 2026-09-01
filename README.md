@@ -57,6 +57,14 @@ Default destinations:
 - Linux/macOS: `${AGENTIC_INSTALL_DIR:-$HOME/.local/bin}`
 - Windows: `%LOCALAPPDATA%\Programs\agentic\bin`
 
+The installer installs **two** binaries into the same directory:
+
+- `agentic` — the CLI (parser, renderer, REPL/TUI)
+- `agentic-runtime` — the headless agent daemon the CLI spawns for every
+  run (protocol: JSON Lines over stdin/stdout). The CLI looks for the
+  runtime next to its own binary, or via the `AGENTIC_RUNTIME_BIN`
+  environment variable.
+
 ### Linux and macOS
 
 Download and inspect the installer first (recommended):

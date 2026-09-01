@@ -260,7 +260,7 @@ fn confirmation_request_waits_for_client_approval() {
 fn list_tools_replies_with_tool_list() {
     let (request_tx, request_rx) = std::sync::mpsc::channel();
     let (event_tx, event_rx) = std::sync::mpsc::channel();
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
     registry.register(Box::new(support::SlowReadTool::new(
         "probe_tool",
         std::time::Duration::from_millis(1),
@@ -386,15 +386,14 @@ fn plan_request_runs_creation_approval_and_execution() {
     // Read events until the approval gate opens, then approve.
     let approval: Option<(String, Vec<PlanStepInfo>)> = loop {
         let event = event_rx.recv().unwrap();
-        match event.request_id.as_deref() {
-            Some("plan-1") => match &event.event {
+        if event.request_id.as_deref() == Some("plan-1") {
+            match &event.event {
                 Event::PlanApprovalRequest { plan_id, steps, .. } => {
                     break Some((plan_id.clone(), steps.clone()));
                 }
                 Event::Error { message } => panic!("plan error: {message}"),
                 _ => {}
-            },
-            _ => {}
+            }
         }
     };
     assert!(approval.is_some(), "approval gate must open");
@@ -473,8 +472,8 @@ fn golden_event_stream_text_only_run() {
         .iter()
         .filter(|e| e.request_id.as_deref() == Some("run-1"))
         .filter_map(|e| match &e.event {
-            Event::AssistantDelta { content } => Some("delta"),
-            Event::Done { result } => Some("done"),
+            Event::AssistantDelta { .. } => Some("delta"),
+            Event::Done { .. } => Some("done"),
             Event::Error { .. } => Some("error"),
             Event::SessionStarted => Some("session_started"),
             Event::SessionCompleted { .. } => Some("session_completed"),

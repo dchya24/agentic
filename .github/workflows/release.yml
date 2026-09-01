@@ -8,16 +8,19 @@ name: Release
 #
 # Produces, per platform:
 #   linux   : agentic-linux-x86_64            (raw binary for self-update)
+#             agentic-runtime-linux-x86_64    (headless daemon — CLI requires it)
 #             agentic-linux-x86_64.deb        (cargo-deb)
 #             agentic-linux-x86_64.rpm        (cargo-generate-rpm)
-#             agentic-linux-x86_64.tar.gz
+#             agentic-linux-x86_64.tar.gz     (contains both binaries)
 #   windows : agentic-windows-x86_64          (raw binary for self-update)
+#             agentic-runtime-windows-x86_64.exe (headless daemon)
 #             agentic-windows-x86_64.exe
-#             agentic-windows-x86_64.zip
+#             agentic-windows-x86_64.zip      (contains both binaries)
 #             agentic-windows-x86_64.msi      (cargo-wix / WiX)
 #   macos   : agentic-macos-x86_64            (raw binary for self-update)
 #             agentic-macos-aarch64
-#             agentic-macos-<arch>.tar.gz
+#             agentic-runtime-macos-<arch>    (headless daemon)
+#             agentic-macos-<arch>.tar.gz     (contains both binaries)
 #   plus a per-platform checksums-*.txt
 #
 # Asset names follow the updater's expectation in
@@ -56,8 +59,10 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build release binary
-        run: cargo build --release -p agentic-cli
+      - name: Build release binaries
+        run: |
+          cargo build --release -p agentic-cli
+          cargo build --release -p agentic-runtime
       - name: Install packaging tools
         run: cargo install cargo-deb cargo-generate-rpm --locked
       - name: Build .deb
@@ -68,9 +73,10 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/agentic dist/agentic-linux-x86_64
+          cp target/release/agentic-runtime dist/agentic-runtime-linux-x86_64
           cp target/debian/*.deb dist/agentic-linux-x86_64.deb
           cp target/generate-rpm/*.rpm dist/agentic-linux-x86_64.rpm
-          tar -czf dist/agentic-linux-x86_64.tar.gz -C target/release agentic
+          tar -czf dist/agentic-linux-x86_64.tar.gz -C target/release agentic agentic-runtime
           cd dist && sha256sum * > checksums-linux.txt
       - uses: actions/upload-artifact@v4
         with:
@@ -93,18 +99,21 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build release binary
-        run: cargo build --release -p agentic-cli
+      - name: Build release binaries
+        run: |
+          cargo build --release -p agentic-cli
+          cargo build --release -p agentic-runtime
       - name: Stage exe + zip
         shell: bash
         run: |
           mkdir -p dist
           cp target/release/agentic.exe dist/agentic-windows-x86_64          # updater-compatible name
           cp target/release/agentic.exe dist/agentic-windows-x86_64.exe      # user-friendly name
-      - name: Zip exe
+          cp target/release/agentic-runtime.exe dist/agentic-runtime-windows-x86_64.exe  # daemon (CLI requires it)
+      - name: Zip binaries
         shell: pwsh
         run: |
-          Compress-Archive -Path dist/agentic-windows-x86_64.exe -DestinationPath dist/agentic-windows-x86_64.zip -Force
+          Compress-Archive -Path dist/agentic-windows-x86_64.exe,dist/agentic-runtime-windows-x86_64.exe -DestinationPath dist/agentic-windows-x86_64.zip -Force
       - name: Build .msi (cargo-wix)
         run: |
           cargo install cargo-wix --locked
@@ -138,14 +147,18 @@ jobs:
         run: |
           rustup target add x86_64-apple-darwin aarch64-apple-darwin
           cargo build --release -p agentic-cli --target x86_64-apple-darwin
+          cargo build --release -p agentic-runtime --target x86_64-apple-darwin
           cargo build --release -p agentic-cli --target aarch64-apple-darwin
+          cargo build --release -p agentic-runtime --target aarch64-apple-darwin
       - name: Stage assets
         run: |
           mkdir -p dist
           cp target/x86_64-apple-darwin/release/agentic dist/agentic-macos-x86_64
           cp target/aarch64-apple-darwin/release/agentic dist/agentic-macos-aarch64
-          tar -czf dist/agentic-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release agentic
-          tar -czf dist/agentic-macos-aarch64.tar.gz -C target/aarch64-apple-darwin/release agentic
+          cp target/x86_64-apple-darwin/release/agentic-runtime dist/agentic-runtime-macos-x86_64
+          cp target/aarch64-apple-darwin/release/agentic-runtime dist/agentic-runtime-macos-aarch64
+          tar -czf dist/agentic-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release agentic agentic-runtime
+          tar -czf dist/agentic-macos-aarch64.tar.gz -C target/aarch64-apple-darwin/release agentic agentic-runtime
           cd dist && shasum -a 256 * > checksums-macos.txt
       - uses: actions/upload-artifact@v4
         with:

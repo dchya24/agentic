@@ -56,12 +56,20 @@ maintainer = "dchya24 <cahyadinar241@gmail.com>"
 copyright = "2026 dchya24 <cahyadinar241@gmail.com>"
 section = "utils"
 priority = "optional"
-extended-description = "AI agent orchestration CLI with an interactive REPL, full-screen TUI, agent safety controls, skill system, and MCP support."
+extended-description = """AI agent orchestration CLI with an interactive REPL, full-screen TUI, agent safety controls, skill system, and MCP support.
+
+Requires the agentic-runtime headless daemon companion binary (installed
+alongside the CLI as /usr/bin/agentic-runtime)."""
+assets = [
+    { source = "target/release/agentic", dest = "usr/bin/agentic", mode = "755" },
+    { source = "target/release/agentic-runtime", dest = "usr/bin/agentic-runtime", mode = "755" },
+]
 
 [package.metadata.generate-rpm]
 bindir = "/usr/bin"
 assets = [
     { source = "target/release/agentic", dest = "/usr/bin/agentic", mode = "755" },
+    { source = "target/release/agentic-runtime", dest = "/usr/bin/agentic-runtime", mode = "755" },
 ]
 
 [dev-dependencies]

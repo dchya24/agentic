@@ -250,7 +250,7 @@ mod tests {
         let store = SessionStore::new(&dir);
 
         let mut older = sample_session("older");
-        older.updated_at = older.updated_at - chrono::Duration::seconds(30);
+        older.updated_at -= chrono::Duration::seconds(30);
         store.save(&older).unwrap();
         store.save(&sample_session("newer")).unwrap();
 

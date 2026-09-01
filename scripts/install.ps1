@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 $Repository = 'dchya24/agentic'
 $DefaultReleaseBaseUrl = "https://github.com/$Repository/releases/latest/download"
 $Asset = 'agentic-windows-x86_64.zip'
+$RuntimeAsset = 'agentic-runtime-windows-x86_64.exe'
 $ChecksumAsset = 'checksums-windows.txt'
 
 function Fail([string]$Message) {
@@ -67,23 +68,32 @@ $StageDir = Join-Path $TempDir 'stage'
 try {
     New-Item -ItemType Directory -Path $StageDir -Force | Out-Null
 
+    # The headless runtime daemon is a hard dependency of the CLI (it spawns
+    # it for every run) - download it separately (raw asset) with checksum.
+    $RuntimePath = Join-Path $TempDir $RuntimeAsset
+
     Write-Host "Downloading $Asset..."
     Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseBaseUrl/$Asset" -OutFile $ArchivePath
+    Write-Host "Downloading $RuntimeAsset..."
+    Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseBaseUrl/$RuntimeAsset" -OutFile $RuntimePath
     Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseBaseUrl/$ChecksumAsset" -OutFile $ChecksumPath
 
-    $EscapedAsset = [Regex]::Escape($Asset)
-    $ChecksumLine = Get-Content -LiteralPath $ChecksumPath |
-        Where-Object { $_ -match "^([A-Fa-f0-9]{64})\s+\*?$EscapedAsset$" } |
-        Select-Object -First 1
-    if (-not $ChecksumLine) {
-        Fail "Checksum entry for $Asset was not found in $ChecksumAsset."
+    foreach ($Entry in @($Asset, $RuntimeAsset)) {
+        $EscapedAsset = [Regex]::Escape($Entry)
+        $ChecksumLine = Get-Content -LiteralPath $ChecksumPath |
+            Where-Object { $_ -match "^([A-Fa-f0-9]{64})\s+\*?$EscapedAsset$" } |
+            Select-Object -First 1
+        if (-not $ChecksumLine) {
+            Fail "Checksum entry for $Entry was not found in $ChecksumAsset."
+        }
+        $ExpectedHash = ([Regex]::Match($ChecksumLine, '^([A-Fa-f0-9]{64})')).Groups[1].Value
+        $FilePath = if ($Entry -eq $Asset) { $ArchivePath } else { $RuntimePath }
+        $ActualHash = (Get-FileHash -LiteralPath $FilePath -Algorithm SHA256).Hash
+        if (-not $ActualHash.Equals($ExpectedHash, [StringComparison]::OrdinalIgnoreCase)) {
+            Fail "Checksum mismatch for $Entry."
+        }
     }
-    $ExpectedHash = ([Regex]::Match($ChecksumLine, '^([A-Fa-f0-9]{64})')).Groups[1].Value
-    $ActualHash = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash
-    if (-not $ActualHash.Equals($ExpectedHash, [StringComparison]::OrdinalIgnoreCase)) {
-        Fail "Checksum mismatch for $Asset."
-    }
-    Write-Host 'Checksum verified.'
+    Write-Host 'Checksums verified.'
 
     Expand-Archive -LiteralPath $ArchivePath -DestinationPath $StageDir -Force
     $StagedBinary = Join-Path $StageDir 'agentic-windows-x86_64.exe'
@@ -93,10 +103,13 @@ try {
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     $Destination = Join-Path $InstallDir 'agentic.exe'
+    $RuntimeDestination = Join-Path $InstallDir 'agentic-runtime.exe'
     $DestinationTemp = Join-Path $InstallDir ('.agentic.install.' + [Guid]::NewGuid().ToString('N') + '.exe')
     Copy-Item -LiteralPath $StagedBinary -Destination $DestinationTemp -Force
     Move-Item -LiteralPath $DestinationTemp -Destination $Destination -Force
+    Copy-Item -LiteralPath $RuntimePath -Destination $RuntimeDestination -Force
     Write-Host "Agentic installed successfully: $Destination"
+    Write-Host "Runtime daemon installed:       $RuntimeDestination"
 
     $ConfigPath = Join-Path $env:USERPROFILE '.config\agentic\config.json'
     if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {

@@ -56,6 +56,7 @@ case "$(uname -m)" in
 esac
 
 ASSET="agentic-$OS-$ARCH.tar.gz"
+RUNTIME_ASSET="agentic-runtime-$OS-$ARCH"
 CHECKSUMS="checksums-$OS.txt"
 RELEASE_BASE_URL=${AGENTIC_RELEASE_BASE_URL:-$DEFAULT_RELEASE_BASE_URL}
 
@@ -100,6 +101,8 @@ CHECKSUM_PATH="$TMP_DIR/$CHECKSUMS"
 STAGE_DIR="$TMP_DIR/stage"
 mkdir -p "$STAGE_DIR"
 
+RUNTIME_PATH="$TMP_DIR/$RUNTIME_ASSET"
+
 printf 'Downloading %s...\n' "$ASSET"
 curl --fail --location --silent --show-error --output "$ARCHIVE_PATH" "$RELEASE_BASE_URL/$ASSET"
 curl --fail --location --silent --show-error --output "$CHECKSUM_PATH" "$RELEASE_BASE_URL/$CHECKSUMS"
@@ -110,18 +113,33 @@ ACTUAL_HASH=$(sha256_file "$ARCHIVE_PATH")
 [ "$ACTUAL_HASH" = "$EXPECTED_HASH" ] || fail "Checksum mismatch for $ASSET"
 printf 'Checksum verified.\n'
 
+# The headless runtime daemon is a hard dependency of the CLI (it spawns
+# it for every run). Download it separately (raw asset, not in the archive).
+printf 'Downloading %s...\n' "$RUNTIME_ASSET"
+curl --fail --location --silent --show-error --output "$RUNTIME_PATH" "$RELEASE_BASE_URL/$RUNTIME_ASSET"
+EXPECTED_RUNTIME_HASH=$(awk -v asset="$RUNTIME_ASSET" '$2 == asset || $2 == "*" asset { print $1; exit }' "$CHECKSUM_PATH")
+[ -n "$EXPECTED_RUNTIME_HASH" ] || fail "Checksum entry for $RUNTIME_ASSET was not found in $CHECKSUMS"
+ACTUAL_RUNTIME_HASH=$(sha256_file "$RUNTIME_PATH")
+[ "$ACTUAL_RUNTIME_HASH" = "$EXPECTED_RUNTIME_HASH" ] || fail "Checksum mismatch for $RUNTIME_ASSET"
+printf 'Checksum verified.\n'
+
 tar -xzf "$ARCHIVE_PATH" -C "$STAGE_DIR"
 [ -f "$STAGE_DIR/agentic" ] || fail "Downloaded archive does not contain the agentic binary"
 mkdir -p "$INSTALL_DIR"
-DEST_TMP="$INSTALL_DIR/.agentic.install.$$"
-cp "$STAGE_DIR/agentic" "$DEST_TMP"
-chmod 755 "$DEST_TMP"
-
-# Stage the final file inside the destination filesystem, then rename it over
-# the old executable. This keeps checksum/extraction failures from touching the
-# current install and makes the final replacement atomic on the target volume.
-mv -f "$DEST_TMP" "$INSTALL_DIR/agentic"
+install_binary() {
+  src=$1
+  dest_name=$2
+  dest_tmp="$INSTALL_DIR/.${dest_name}.install.$$"
+  cp "$src" "$dest_tmp"
+  chmod 755 "$dest_tmp"
+  # Stage inside the destination filesystem, then rename atomically over
+  # the old executable.
+  mv -f "$dest_tmp" "$INSTALL_DIR/$dest_name"
+}
+install_binary "$STAGE_DIR/agentic" "agentic"
+install_binary "$RUNTIME_PATH" "agentic-runtime"
 printf 'Agentic installed successfully: %s\n' "$INSTALL_DIR/agentic"
+printf 'Runtime daemon installed:       %s\n' "$INSTALL_DIR/agentic-runtime"
 
 CONFIG_PATH="${HOME:?HOME is not set}/.config/agentic/config.json"
 if [ -f "$CONFIG_PATH" ]; then
