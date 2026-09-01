@@ -254,3 +254,179 @@ fn confirmation_request_waits_for_client_approval() {
     worker.join().unwrap();
     assert!(saw_confirmation);
 }
+
+/// `Request::ListTools` replies with the daemon's registered tools.
+#[test]
+fn list_tools_replies_with_tool_list() {
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let (event_tx, event_rx) = std::sync::mpsc::channel();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(support::SlowReadTool::new(
+        "probe_tool",
+        std::time::Duration::from_millis(1),
+    )));
+    let mut engine = RuntimeEngine::with_session(
+        MemoryTransport::new(request_rx, event_tx),
+        std::sync::Arc::new(TextProvider),
+        registry,
+    );
+    let worker = std::thread::spawn(move || engine.run());
+
+    request_tx
+        .send(ProtocolRequest::new(
+            "init-1",
+            Request::Init {
+                overrides: Default::default(),
+            },
+        ))
+        .unwrap();
+    request_tx
+        .send(ProtocolRequest::new("tools-1", Request::ListTools))
+        .unwrap();
+    drop(request_tx);
+    worker.join().unwrap();
+
+    let events: Vec<_> = event_rx.try_iter().collect();
+    let listing = events.iter().find_map(|e| match &e.event {
+        Event::ToolList { tools } => Some(tools.clone()),
+        _ => None,
+    });
+    let tools = listing.expect("expected ToolList reply");
+    assert!(tools.iter().any(|t| t.name == "probe_tool"));
+    assert!(tools.iter().all(|t| !t.description.is_empty()));
+}
+
+/// `Request::SkillActivate` without a discovered index answers a clean
+/// negative (no panic, activated=false).
+#[test]
+fn skill_activate_without_index_answers_negative() {
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let (event_tx, event_rx) = std::sync::mpsc::channel();
+    let mut engine = RuntimeEngine::with_session(
+        MemoryTransport::new(request_rx, event_tx),
+        std::sync::Arc::new(TextProvider),
+        ToolRegistry::new(),
+    );
+    let worker = std::thread::spawn(move || engine.run());
+
+    request_tx
+        .send(ProtocolRequest::new(
+            "init-1",
+            Request::Init {
+                overrides: Default::default(),
+            },
+        ))
+        .unwrap();
+    request_tx
+        .send(ProtocolRequest::new(
+            "skill-1",
+            Request::SkillActivate {
+                name: "nope".into(),
+            },
+        ))
+        .unwrap();
+    drop(request_tx);
+    worker.join().unwrap();
+
+    let events: Vec<_> = event_rx.try_iter().collect();
+    let reply = events.iter().find_map(|e| match &e.event {
+        Event::SkillActivatedResult {
+            skill,
+            activated,
+            message,
+            ..
+        } => Some((skill.clone(), *activated, message.clone())),
+        _ => None,
+    });
+    let (skill, activated, message) = reply.expect("expected SkillActivatedResult");
+    assert_eq!(skill, "nope");
+    assert!(!activated);
+    assert!(message.unwrap().contains("no skills discovered"));
+}
+
+/// `Request::Plan` full cycle: LLM plan creation → approval gate
+/// (PlanApprovalRequest answered via ConfirmResponse) → execution →
+/// Done, with planner lifecycle events streaming in between.
+#[test]
+fn plan_request_runs_creation_approval_and_execution() {
+    use core_agentic::events::PlanStepInfo;
+
+    // The LLM "plans" by answering create_plan with a JSON step array,
+    // then (after approval) the execution phase runs tool-less steps.
+    let provider = support::ScriptedProvider::new(vec![
+        support::text_response(r#"[{"description": "Step A"}, {"description": "Step B"}]"#),
+        support::text_response("executed"),
+    ]);
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let (event_tx, event_rx) = std::sync::mpsc::channel();
+    let mut engine = RuntimeEngine::with_provider(
+        MemoryTransport::new(request_rx, event_tx),
+        std::sync::Arc::new(provider),
+    );
+    let worker = std::thread::spawn(move || engine.run());
+
+    request_tx
+        .send(ProtocolRequest::new(
+            "init-1",
+            Request::Init {
+                overrides: Default::default(),
+            },
+        ))
+        .unwrap();
+    request_tx
+        .send(ProtocolRequest::new(
+            "plan-1",
+            Request::Plan {
+                goal: "do the thing".into(),
+                require_approval: true,
+            },
+        ))
+        .unwrap();
+
+    // Read events until the approval gate opens, then approve.
+    let approval: Option<(String, Vec<PlanStepInfo>)> = loop {
+        let event = event_rx.recv().unwrap();
+        match event.request_id.as_deref() {
+            Some("plan-1") => match &event.event {
+                Event::PlanApprovalRequest { plan_id, steps, .. } => {
+                    break Some((plan_id.clone(), steps.clone()));
+                }
+                Event::Error { message } => panic!("plan error: {message}"),
+                _ => {}
+            },
+            _ => {}
+        }
+    };
+    assert!(approval.is_some(), "approval gate must open");
+    request_tx
+        .send(ProtocolRequest::new(
+            "confirm-1",
+            Request::ConfirmResponse {
+                request_id: Some("plan-1".into()),
+                approved: true,
+            },
+        ))
+        .unwrap();
+
+    // Drain until Done; planner lifecycle events must have streamed.
+    let mut done = false;
+    let mut saw_progress = false;
+    while !done {
+        let event = event_rx.recv().unwrap();
+        if event.request_id.as_deref() != Some("plan-1") {
+            continue;
+        }
+        match event.event {
+            Event::Done { result } => {
+                assert!(result.contains("completed"), "summary: {result}");
+                done = true;
+            }
+            Event::Error { message } => panic!("plan error: {message}"),
+            Event::PlanProgress { .. } | Event::StepStarted { .. } => saw_progress = true,
+            _ => {}
+        }
+    }
+    assert!(saw_progress, "planner lifecycle events must stream");
+    drop(request_tx);
+    worker.join().unwrap();
+}

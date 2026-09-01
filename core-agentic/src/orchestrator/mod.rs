@@ -311,6 +311,12 @@ impl Orchestrator {
         self.memory.lock().unwrap().max_tokens = max_tokens;
     }
 
+    /// Shared provider handle (runtime daemon builds its planner on
+    /// the same provider the orchestrator uses).
+    pub fn provider(&self) -> Arc<dyn crate::providers::LLMProvider> {
+        self.provider.clone()
+    }
+
     /// Override the maximum number of agent loop iterations.
     pub fn set_max_iterations(&mut self, max: u32) {
         self.max_iterations = max.max(1);

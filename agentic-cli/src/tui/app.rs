@@ -779,7 +779,7 @@ impl App {
         match &self.commands {
             Some(cmds_arc) => {
                 let mut cmds = cmds_arc.lock().await;
-                match cmds.load_and_activate_skill(name) {
+                match cmds.load_and_activate_skill(name).await {
                     Ok(body) => {
                         let mut lines = format!("✅ **Skill '{}' activated** — instructions injected into agent context.\n\n", name);
 

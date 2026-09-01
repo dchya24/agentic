@@ -5,8 +5,20 @@ Draft v1 — Implementation largely landed on
 `feature/runtime-cli-decoupling` (rebased onto dev post-P0-P2):
 Phase 1-3 done (protocol events, headless runtime engine +
 `agentic-runtime` stdio JSONL daemon, Node demo). Phase 4 (CLI as pure
-renderer) is in progress: run/callback paths consume the headless
-runtime; remaining async migration completed from the recovered WIP.
+renderer) is in progress per the agreed staged plan (full daemon,
+option A):
+
+- Stage 1 (done): REPL `/tools`, `/skill <name>`, and `/plan` route
+  through the daemon (`Request::ListTools`, `Request::SkillActivate`,
+  `Request::Plan` with the approval gate answered via
+  `Request::ConfirmResponse`); new events `tool_list`,
+  `skill_activated_result`, `plan_approval_request`.
+- Stage 2 (next): interactive REPL prompt + TUI run path fully daemon;
+  TUI `run_with_callbacks` orchestrator path removed; session state
+  snapshot (agent.md / memory.md status) via protocol.
+- Stage 3: drop `ensure_orchestrator` (no `Orchestrator::new` in the
+  CLI crate) + golden event-stream tests.
+
 Phase 5 (Node/Bun CLI) is a demo only (`scripts/protocol-demo.js`).
 
 ## Goal

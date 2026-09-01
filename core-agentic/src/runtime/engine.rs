@@ -12,6 +12,9 @@ use std::sync::{mpsc, Arc, Mutex};
 pub struct RuntimeEngine<T: Transport> {
     transport: Arc<T>,
     orchestrator: Option<Arc<Orchestrator>>,
+    /// Discovered skill index — populated by [`Self::initialize`], used
+    /// by `Request::SkillActivate` (resolve + inject).
+    skill_index: Option<Arc<std::sync::RwLock<crate::SkillIndex>>>,
     running: Arc<AtomicBool>,
     current_request_id: Arc<Mutex<Option<String>>>,
     pending_question: Arc<Mutex<Option<mpsc::Sender<Vec<QuestionAnswer>>>>>,
@@ -24,6 +27,7 @@ impl<T: Transport> RuntimeEngine<T> {
         Self {
             transport: Arc::new(transport),
             orchestrator: None,
+            skill_index: None,
             running: Arc::new(AtomicBool::new(false)),
             current_request_id: Arc::new(Mutex::new(None)),
             pending_question: Arc::new(Mutex::new(None)),
@@ -190,12 +194,33 @@ impl<T: Transport> RuntimeEngine<T> {
                         );
                     }
                 }
-                Request::Plan { .. } => self.emit(
-                    Some(request.id),
-                    Event::Error {
-                        message: "planning is not available through the runtime yet".to_string(),
-                    },
-                ),
+                Request::ListTools => {
+                    let tools = self
+                        .orchestrator
+                        .as_ref()
+                        .map(|orchestrator| {
+                            orchestrator
+                                .tool_registry()
+                                .list()
+                                .into_iter()
+                                .map(|schema| crate::events::ToolInfo {
+                                    name: schema.name,
+                                    description: schema.description,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.emit(Some(request.id), Event::ToolList { tools });
+                }
+                Request::SkillActivate { name } => {
+                    self.handle_skill_activate(request.id, name);
+                }
+                Request::Plan {
+                    goal,
+                    require_approval,
+                } => {
+                    self.handle_plan(request.id, goal, require_approval);
+                }
                 Request::Shutdown => break,
                 Request::QuestionResponse { answers, .. } => {
                     if let Some(sender) = self.pending_question.lock().unwrap().take() {
@@ -260,6 +285,7 @@ impl<T: Transport> RuntimeEngine<T> {
         let skill_index = Arc::new(std::sync::RwLock::new(crate::discover_skills(
             &discovery_config,
         )));
+        self.skill_index = Some(skill_index.clone());
         tools.register(Box::new(SkillTool::new(skill_index.clone())));
 
         let project_instructions = crate::load_project_instructions(&cwd).map(|(_, text)| text);
@@ -337,6 +363,183 @@ impl<T: Transport> RuntimeEngine<T> {
             ));
             receiver.recv().unwrap_or(false)
         });
+    }
+
+    /// `Request::SkillActivate`: resolve the skill from the daemon's
+    /// discovered index, inject its instructions as a system message,
+    /// and report the outcome.
+    fn handle_skill_activate(&mut self, request_id: String, name: String) {
+        let Some(orchestrator) = self.orchestrator.as_ref() else {
+            self.emit(
+                Some(request_id),
+                Event::Error {
+                    message: "runtime is not initialized".to_string(),
+                },
+            );
+            return;
+        };
+        let Some(index) = self.skill_index.as_ref() else {
+            self.emit(
+                Some(request_id),
+                Event::SkillActivatedResult {
+                    skill: name.clone(),
+                    activated: false,
+                    message: Some("no skills discovered in this session".to_string()),
+                    content: String::new(),
+                },
+            );
+            return;
+        };
+
+        let skill = index.read().unwrap().get(&name).cloned();
+        match skill {
+            None => {
+                self.emit(
+                    Some(request_id),
+                    Event::SkillActivatedResult {
+                        skill: name.clone(),
+                        activated: false,
+                        message: Some(format!("skill '{name}' not found")),
+                        content: String::new(),
+                    },
+                );
+            }
+            Some(skill) => {
+                // Full content: SKILL.md body + referenced files, same
+                // policy the CLI used in-process.
+                let mut content = skill.body.clone();
+                if let Ok(entries) = std::fs::read_dir(&skill.dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            if fname == "SKILL.md" {
+                                continue;
+                            }
+                            if let Ok(text) = std::fs::read_to_string(&path) {
+                                content.push_str(&format!(
+                                    "\n\n---\n# Referenced file: {}\n\n{}",
+                                    fname, text
+                                ));
+                            }
+                        }
+                    }
+                }
+                orchestrator.add_system_message(format!(
+                    "---\n# Active Skill: {} — {}\n\n{}",
+                    skill.name(),
+                    skill.description(),
+                    content
+                ));
+                self.emit(
+                    Some(request_id),
+                    Event::SkillActivatedResult {
+                        skill: name.clone(),
+                        activated: true,
+                        message: None,
+                        content,
+                    },
+                );
+            }
+        }
+    }
+
+    /// `Request::Plan`: full planner cycle on its own thread — LLM plan
+    /// creation, approval gate (routed through the standard
+    /// confirmation channel when `require_approval`), then execution.
+    /// Planner events stream to the transport tagged with the request id.
+    fn handle_plan(&mut self, request_id: String, goal: String, require_approval: bool) {
+        let Some(orchestrator) = self.orchestrator.clone() else {
+            self.emit(
+                Some(request_id),
+                Event::Error {
+                    message: "runtime is not initialized".to_string(),
+                },
+            );
+            return;
+        };
+
+        let provider = orchestrator.provider();
+        let tools = orchestrator.tool_registry().clone();
+        let transport = self.transport.clone();
+        let pending_confirmation = self.pending_confirmation.clone();
+        let current_request_id = self.current_request_id.clone();
+        let running = self.running.clone();
+
+        *self.current_request_id.lock().unwrap() = Some(request_id.clone());
+
+        let handle = std::thread::spawn(move || {
+            let write = |event: crate::events::Event| {
+                let _ = transport.write_event(&ProtocolEvent::new(
+                    current_request_id.lock().unwrap().clone(),
+                    event,
+                ));
+            };
+
+            let planner = crate::PlannerAgent::new(provider).with_config(crate::PlannerConfig {
+                require_approval,
+                ..Default::default()
+            });
+
+            // Forward planner lifecycle events to the transport.
+            {
+                let transport = transport.clone();
+                let current_request_id = current_request_id.clone();
+                planner.on(move |event| {
+                    let _ = transport.write_event(&ProtocolEvent::new(
+                        current_request_id.lock().unwrap().clone(),
+                        event,
+                    ));
+                });
+            }
+
+            // Approval gate: surface the rendered plan through the same
+            // confirmation channel the CLI already answers.
+            if require_approval {
+                let pending = pending_confirmation.clone();
+                let transport = transport.clone();
+                let current_request_id = current_request_id.clone();
+                planner.set_approval_callback(move |plan| {
+                    let steps = plan
+                        .steps
+                        .iter()
+                        .map(|step| crate::events::PlanStepInfo {
+                            id: step.id.clone(),
+                            description: step.description.clone(),
+                        })
+                        .collect();
+                    let _ = transport.write_event(&ProtocolEvent::new(
+                        current_request_id.lock().unwrap().clone(),
+                        Event::PlanApprovalRequest {
+                            plan_id: plan.id.clone(),
+                            goal: plan.goal.clone(),
+                            steps,
+                        },
+                    ));
+                    let (sender, receiver) = mpsc::channel();
+                    *pending.lock().unwrap() = Some(sender);
+                    receiver.recv().unwrap_or(false)
+                });
+            }
+
+            let result = planner
+                .create_plan(&goal, &tools)
+                .and_then(|mut plan| planner.execute_plan(&mut plan, &tools));
+
+            match result {
+                Ok(plan_result) => write(Event::Done {
+                    result: format!(
+                        "plan '{}': {} step(s) completed, {} failed",
+                        goal, plan_result.steps_completed, plan_result.steps_failed
+                    ),
+                }),
+                Err(error) => write(Event::Error {
+                    message: error.to_string(),
+                }),
+            }
+            running.store(false, Ordering::SeqCst);
+        });
+        self.run_threads.push(handle);
     }
 
     fn start_run(&mut self, request_id: String, task: String, attachments: Vec<crate::Attachment>) {

@@ -93,6 +93,34 @@ pub enum Event {
         matches: Vec<MemorySearchMatch>,
     },
 
+    /// Reply to `Request::ListTools`: the daemon's registered tool set
+    /// (name + description), for `/tools` in daemon-driven frontends.
+    #[serde(rename = "tool_list")]
+    ToolList { tools: Vec<ToolInfo> },
+
+    /// Reply to `Request::SkillActivate`: activation outcome (content
+    /// is already injected by the daemon's orchestrator).
+    #[serde(rename = "skill_activated_result")]
+    SkillActivatedResult {
+        skill: String,
+        activated: bool,
+        message: Option<String>,
+        /// Full injected content (body + referenced files) for
+        /// frontend preview.
+        content: String,
+    },
+
+    /// Reply to `Request::Plan`: the rendered plan awaiting the user's
+    /// approve/reject decision (decision flows back via
+    /// `Request::ConfirmResponse`).
+    #[serde(rename = "plan_approval_request")]
+    PlanApprovalRequest {
+        #[serde(rename = "planId")]
+        plan_id: String,
+        goal: String,
+        steps: Vec<PlanStepInfo>,
+    },
+
     #[serde(rename = "error")]
     Error { message: String },
 
@@ -206,6 +234,22 @@ pub struct MemorySearchMatch {
     pub content: String,
 }
 
+/// One entry of a `ToolList` reply.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolInfo {
+    pub name: String,
+    pub description: String,
+}
+
+/// One step of a plan awaiting approval.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanStepInfo {
+    pub id: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
     Thinking,
@@ -224,6 +268,9 @@ pub enum EventType {
     TodoChanged,
     SessionReset,
     MemorySearchResult,
+    ToolList,
+    SkillActivatedResult,
+    PlanApprovalRequest,
     Error,
     Done,
     System,
@@ -262,6 +309,9 @@ impl Event {
             Event::TodoChanged { .. } => EventType::TodoChanged,
             Event::SessionReset => EventType::SessionReset,
             Event::MemorySearchResult { .. } => EventType::MemorySearchResult,
+            Event::ToolList { .. } => EventType::ToolList,
+            Event::SkillActivatedResult { .. } => EventType::SkillActivatedResult,
+            Event::PlanApprovalRequest { .. } => EventType::PlanApprovalRequest,
             Event::Error { .. } => EventType::Error,
             Event::Done { .. } => EventType::Done,
             Event::System { .. } => EventType::System,

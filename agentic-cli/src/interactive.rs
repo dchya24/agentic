@@ -1055,7 +1055,7 @@ async fn handle_repl_action(
         }
 
         ReplAction::Tools => {
-            commands.list_tools();
+            commands.list_tools().await;
         }
 
         ReplAction::Stats => {
@@ -1241,7 +1241,7 @@ async fn handle_repl_action(
             inline::print_blank();
 
             // Load & activate: inject instructions into orchestrator context
-            match commands.load_and_activate_skill(name) {
+            match commands.load_and_activate_skill(name).await {
                 Ok(body) => {
                     // Success — show activation badge + preview
                     inline::print_line(&Line::from(vec![

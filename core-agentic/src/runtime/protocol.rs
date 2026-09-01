@@ -64,6 +64,12 @@ pub enum Request {
     SearchMemory {
         query: String,
     },
+    /// Ask the daemon for its registered tool set (for `/tools`).
+    ListTools,
+    /// Activate a skill in the daemon's orchestrator (for `/skill`).
+    SkillActivate {
+        name: String,
+    },
     AddSystemMessage {
         content: String,
     },

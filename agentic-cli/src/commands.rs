@@ -1026,56 +1026,42 @@ impl Commands {
         }
     }
 
-    pub fn list_tools(&self) {
-        let tools = core_agentic::ToolRegistry::new();
-        for tool in core_agentic::tools::builtin_tools() {
-            tools.register(tool);
+    pub async fn list_tools(&mut self) {
+        if let Err(e) = self.ensure_runtime().await {
+            inline::print_line(&components::error_badge(&e.to_string()));
+            return;
         }
+        let runtime = self.runtime_client.as_mut().unwrap();
+        let reply = match runtime
+            .send_and_wait(core_agentic::runtime::protocol::Request::ListTools)
+            .await
+        {
+            Ok(reply) => reply,
+            Err(e) => {
+                inline::print_line(&components::error_badge(&e.to_string()));
+                return;
+            }
+        };
 
-        let tool_list = tools.list();
-
-        inline::print_blank();
-        inline::print_line(&components::section_header(
-            "🔧",
-            &format!("Available Tools ({})", tool_list.len()),
-            RColor::Cyan,
-        ));
-        inline::print_blank();
-
-        for t in &tool_list {
-            inline::print_line(&RLine::from(vec![
-                RSpan::raw("  "),
-                RSpan::styled(
-                    t.name.to_string(),
-                    RStyle::default().add_modifier(RModifier::BOLD),
-                ),
-            ]));
-            inline::print_line(&RLine::from(vec![
-                RSpan::raw("    "),
-                RSpan::raw(t.description.to_string()),
-            ]));
-            if !t.parameters.is_empty() {
-                let params: Vec<String> = t
-                    .parameters
-                    .keys()
-                    .map(|p| {
-                        let is_required = t.required.contains(p);
-                        format!(
-                            "{}{}{}",
-                            p,
-                            if is_required { "*" } else { "" },
-                            if is_required {
-                                " (required)"
-                            } else {
-                                " (optional)"
-                            }
-                        )
-                    })
-                    .collect();
+        if let core_agentic::Event::ToolList { tools } = reply.event {
+            inline::print_blank();
+            inline::print_line(&components::section_header(
+                "🔧",
+                &format!("Available Tools ({})", tools.len()),
+                RColor::Cyan,
+            ));
+            inline::print_blank();
+            for t in &tools {
+                inline::print_line(&RLine::from(vec![
+                    RSpan::raw("  "),
+                    RSpan::styled(
+                        t.name.clone(),
+                        RStyle::default().add_modifier(RModifier::BOLD),
+                    ),
+                ]));
                 inline::print_line(&RLine::from(vec![
                     RSpan::raw("    "),
-                    RSpan::styled("Params: ", RStyle::default().add_modifier(RModifier::DIM)),
-                    RSpan::raw(params.join(", ")),
+                    RSpan::raw(t.description.clone()),
                 ]));
             }
             inline::print_blank();
@@ -1462,7 +1448,6 @@ impl Commands {
             return Ok(());
         }
 
-        self.ensure_orchestrator()?;
         self.plan_and_execute(goal, true).await
     }
 
@@ -1478,7 +1463,6 @@ impl Commands {
             return Ok(());
         }
 
-        self.ensure_orchestrator()?;
         // Use require_approval from config (default: true)
         self.plan_and_execute(task, self.config.agent.planner.require_approval)
             .await
@@ -1490,30 +1474,6 @@ impl Commands {
     /// `ask_approval`: when true, render the plan and prompt with
     /// dialoguer. When false, skip the prompt (auto-approve).
     async fn plan_and_execute(&mut self, goal: &str, ask_approval: bool) -> anyhow::Result<()> {
-        // Build a fresh PlannerAgent against the same provider.
-        let provider_config = self
-            .config
-            .to_provider_config()
-            .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
-        let provider: std::sync::Arc<dyn core_agentic::LLMProvider> =
-            std::sync::Arc::new(core_agentic::OpenAIProvider::new(provider_config));
-        let planner = core_agentic::PlannerAgent::from_config(provider, &self.config.agent.planner);
-
-        // Reuse the orchestrator's tool registry so steps see the same
-        // tool surface (including allowlist + tracker).
-        let tools = match self.orchestrator.as_ref() {
-            Some(o) => o.tool_registry().clone(),
-            None => {
-                let tracker = std::sync::Arc::new(core_agentic::file_tracker::FileTracker::new());
-                let registry = ToolRegistry::new();
-                for t in core_agentic::tools::builtin_tools_with(tracker, self.config.url_policy())
-                {
-                    registry.register(t);
-                }
-                registry
-            }
-        };
-
         inline::print_blank();
         inline::print_line(&components::section_header(
             "🗺️",
@@ -1522,69 +1482,66 @@ impl Commands {
         ));
         inline::print_blank();
 
-        let plan = match planner.create_plan(goal, &tools) {
-            Ok(p) => p,
-            Err(e) => {
-                inline::print_line(&components::error_badge(&format!(
-                    "Failed to create plan: {}",
-                    e
-                )));
-                inline::print_blank();
-                return Ok(());
-            }
-        };
-
-        // Render the plan as a numbered list.
-        let dim = RStyle::default().add_modifier(RModifier::DIM);
-        let bold = RStyle::default().add_modifier(RModifier::BOLD);
-        for (i, step) in plan.steps.iter().enumerate() {
-            let mut spans = vec![
-                RSpan::styled(format!("  {:>2}. ", i + 1), dim),
-                RSpan::styled(step.description.clone(), bold),
-            ];
-            if let Some(ref tool) = step.tool {
-                spans.push(RSpan::styled(
-                    format!("  [↳{}]", tool),
-                    RStyle::default().fg(RColor::Cyan),
-                ));
-            }
-            inline::print_line(&RLine::from(spans));
-            if !step.depends_on.is_empty() {
-                inline::print_line(&RLine::from(vec![
-                    RSpan::raw("      "),
-                    RSpan::styled(format!("depends on steps: {:?}", step.depends_on), dim),
-                ]));
-            }
-        }
-        inline::print_blank();
-
-        // Approval: either prompt with dialoguer, or auto-approve.
-        let proceed = if ask_approval {
-            Confirm::with_theme(&ColorfulTheme::default())
-                .with_prompt("Execute this plan?")
-                .default(false)
-                .interact()
-                .unwrap_or(false)
-        } else {
-            inline::print_line(&RLine::from(vec![RSpan::styled(
-                "  Auto-approved (require_approval = false)\n".to_string(),
-                RStyle::default().fg(RColor::DarkGray),
-            )]));
-            true
-        };
-
-        if !proceed {
-            inline::print_line(&components::warning_badge(
-                "Plan rejected. Nothing executed.",
-            ));
-            inline::print_blank();
+        if let Err(e) = self.ensure_runtime().await {
+            inline::print_line(&components::error_badge(&e.to_string()));
             return Ok(());
         }
+        let runtime = self.runtime_client.as_mut().unwrap();
 
-        // Execute with live progress updates via the planner's event bus.
-        let mut plan = plan;
-        planner.on({
-            move |event: core_agentic::Event| match event {
+        // Full planner lifecycle on the daemon: LLM plan creation, the
+        // approval gate (blocking dialoguer prompt is safe here — the
+        // daemon is parked waiting for our ConfirmResponse), then live
+        // execution progress.
+        runtime
+            .send(core_agentic::runtime::protocol::Request::Plan {
+                goal: goal.to_string(),
+                require_approval: ask_approval,
+            })
+            .await?;
+
+        loop {
+            let event = runtime.next_event().await?.event;
+            match event {
+                core_agentic::Event::PlanApprovalRequest { steps, .. } => {
+                    let dim = RStyle::default().add_modifier(RModifier::DIM);
+                    let bold = RStyle::default().add_modifier(RModifier::BOLD);
+                    for (i, step) in steps.iter().enumerate() {
+                        inline::print_line(&RLine::from(vec![
+                            RSpan::styled(format!("  {:>2}. ", i + 1), dim),
+                            RSpan::styled(step.description.clone(), bold),
+                        ]));
+                    }
+                    inline::print_blank();
+
+                    let proceed = if ask_approval {
+                        Confirm::with_theme(&ColorfulTheme::default())
+                            .with_prompt("Execute this plan?")
+                            .default(false)
+                            .interact()
+                            .unwrap_or(false)
+                    } else {
+                        inline::print_line(&RLine::from(vec![RSpan::styled(
+                            "  Auto-approved (require_approval = false)\n".to_string(),
+                            RStyle::default().fg(RColor::DarkGray),
+                        )]));
+                        true
+                    };
+
+                    runtime
+                        .send(core_agentic::runtime::protocol::Request::ConfirmResponse {
+                            request_id: None,
+                            approved: proceed,
+                        })
+                        .await?;
+
+                    if !proceed {
+                        inline::print_line(&components::warning_badge(
+                            "Plan rejected. Nothing executed.",
+                        ));
+                        inline::print_blank();
+                        return Ok(());
+                    }
+                }
                 core_agentic::Event::PlanProgress {
                     step_description,
                     step_status,
@@ -1599,81 +1556,49 @@ impl Commands {
                         "failed" => "❌",
                         _ => "⏳",
                     };
+                    let fraction = if steps_total > 0 {
+                        steps_completed as f32 / steps_total as f32
+                    } else {
+                        0.0
+                    };
                     let bar = components::labeled_bar(
-                        &format!("{}/{}", steps_completed, steps_total),
-                        if steps_total > 0 {
-                            steps_completed as f32 / steps_total as f32
-                        } else {
-                            0.0
-                        },
-                        30,
-                        if steps_failed > 0 {
-                            RColor::Red
-                        } else {
-                            RColor::Green
-                        },
-                        RColor::DarkGray,
+                        "progress",
+                        fraction,
+                        20,
+                        RColor::Rgb(46, 204, 113),
+                        RColor::Rgb(60, 60, 80),
                     );
-                    inline::print_line(&bar);
-                    inline::print_line(&RLine::from(vec![RSpan::raw(format!(
-                        "       {}  {}",
-                        icon, step_description
-                    ))]));
-                }
-                core_agentic::Event::PlanReplanned {
-                    reason,
-                    steps_carried_over,
-                    steps_total,
-                    ..
-                } => {
-                    inline::print_blank();
                     inline::print_line(&RLine::from(vec![
+                        RSpan::raw(format!("  {} ", icon)),
                         RSpan::styled(
-                            "       🔄 ".to_string(),
-                            RStyle::default().fg(RColor::Yellow),
+                            step_description.clone(),
+                            RStyle::default().add_modifier(RModifier::DIM),
                         ),
-                        RSpan::styled(
-                            "Re-planning: ".to_string(),
-                            RStyle::default().add_modifier(RModifier::BOLD),
-                        ),
-                        RSpan::styled(reason.clone(), RStyle::default().fg(RColor::Yellow)),
                     ]));
-                    inline::print_line(&RLine::from(vec![RSpan::raw(format!(
-                        "          {} carried over, {} total revised steps",
-                        steps_carried_over, steps_total
-                    ))]));
+                    inline::print_line(&bar);
+                    inline::print_line(&RLine::from(vec![
+                        RSpan::raw("     "),
+                        RSpan::styled(
+                            format!("{} done / {} failed", steps_completed, steps_failed),
+                            RStyle::default().fg(RColor::DarkGray),
+                        ),
+                    ]));
                     inline::print_blank();
+                }
+                core_agentic::Event::Done { result } => {
+                    inline::print_line(&components::success_badge(&result));
+                    inline::print_blank();
+                    return Ok(());
+                }
+                core_agentic::Event::Error { message } => {
+                    inline::print_line(&components::error_badge(&message));
+                    inline::print_blank();
+                    return Ok(());
                 }
                 _ => {}
             }
-        });
-
-        match planner.execute_plan(&mut plan, &tools) {
-            Ok(result) => {
-                inline::print_blank();
-                inline::print_line(&components::section_header(
-                    "✅",
-                    &format!(
-                        "Plan complete — {} succeeded, {} failed",
-                        result.steps_completed, result.steps_failed
-                    ),
-                    RColor::Green,
-                ));
-                inline::print_blank();
-            }
-            Err(e) => {
-                inline::print_blank();
-                inline::print_line(&components::error_badge(&format!(
-                    "Plan execution failed: {}",
-                    e
-                )));
-                inline::print_blank();
-            }
         }
-        Ok(())
     }
-
-    // ── Examples ────────────────────────────────────────────
 
     pub fn examples(&self) {
         let yellow_comment = RStyle::default().fg(RColor::Yellow);
@@ -2362,54 +2287,33 @@ Instructions the agent follows when this skill is loaded.
     /// skill instructions alongside the user's message.
     ///
     /// Returns the skill body content on success.
-    pub fn load_and_activate_skill(&mut self, name: &str) -> Result<String, String> {
-        let discovery_config: core_agentic::DiscoveryConfig =
-            core_agentic::DiscoveryConfig::from(&self.config.skills);
-        let index = core_agentic::discover_skills(&discovery_config);
+    pub async fn load_and_activate_skill(&mut self, name: &str) -> Result<String, String> {
+        if let Err(e) = self.ensure_runtime().await {
+            return Err(e.to_string());
+        }
+        let runtime = self.runtime_client.as_mut().unwrap();
+        let reply = runtime
+            .send_and_wait(core_agentic::runtime::protocol::Request::SkillActivate {
+                name: name.to_string(),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
 
-        let skill = index.get(name).ok_or_else(|| {
-            format!(
-                "Skill '{}' not found. Use /skills to list available skills.",
-                name
-            )
-        })?;
-
-        // Build the full skill instructions with referenced files
-        let mut content = skill.body.clone();
-        if let Ok(entries) = std::fs::read_dir(&skill.dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if fname == "SKILL.md" {
-                        continue;
-                    }
-                    if let Ok(file_content) = std::fs::read_to_string(&path) {
-                        content.push_str(&format!(
-                            "\n\n---\n# Referenced file: {}\n\n{}",
-                            fname, file_content
-                        ));
-                    }
+        match reply.event {
+            core_agentic::Event::SkillActivatedResult {
+                skill,
+                activated,
+                message,
+                content,
+            } => {
+                self.active_skill = if activated { Some(skill) } else { None };
+                match message {
+                    Some(m) => Err(m),
+                    None => Ok(content),
                 }
             }
+            other => Err(format!("unexpected runtime reply: {other:?}")),
         }
-
-        // Track the active skill on this session (Fase D: per-instance,
-        // replacing the removed process-global).
-        self.active_skill = Some(skill.name().to_string());
-
-        // Inject into orchestrator context as a system message
-        // so the next LLM call includes the skill instructions.
-        if let Some(orchestrator) = &self.orchestrator {
-            orchestrator.add_system_message(format!(
-                "---\n# Active Skill: {} — {}\n\n{}",
-                skill.name(),
-                skill.description(),
-                content
-            ));
-        }
-
-        Ok(content)
     }
 
     // ── Config show (json or table) ─────────────────────────
