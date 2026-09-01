@@ -153,8 +153,6 @@ pub trait TodoChangeHandler: Send + Sync {
     fn on_change(&self, todos: &[TodoItem]);
 }
 
-/// Callback handler is owned by a `TodowriteTool` instance.
-
 /// Get a snapshot of the current todo list.
 pub fn current_todos() -> Vec<TodoItem> {
     TODO_LIST.lock().unwrap().clone()

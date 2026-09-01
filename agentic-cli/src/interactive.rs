@@ -858,7 +858,9 @@ async fn handle_input(
                 crate::session::create(&cwd, &model_info.provider, &model_info.model);
             conversation.clear();
             stats.reset();
-            commands.restart_session();
+            if let Err(e) = commands.restart_session().await {
+                tracing::warn!(error = %e, "session reset through runtime failed");
+            }
 
             crossterm::execute!(
                 std::io::stdout(),
@@ -1024,7 +1026,9 @@ async fn handle_repl_action(
                 crate::session::create(&cwd, &model_info.provider, &model_info.model);
             conversation.clear();
             stats.reset();
-            commands.restart_session();
+            if let Err(e) = commands.restart_session().await {
+                tracing::warn!(error = %e, "session reset through runtime failed");
+            }
 
             crossterm::execute!(
                 std::io::stdout(),
@@ -1079,7 +1083,9 @@ async fn handle_repl_action(
                         });
                     }
                     *current_session = loaded;
-                    commands.restart_session();
+                    if let Err(e) = commands.restart_session().await {
+                        tracing::warn!(error = %e, "session reset through runtime failed");
+                    }
                     stats.reset();
 
                     crossterm::execute!(
@@ -1292,7 +1298,7 @@ async fn handle_repl_action(
         }
 
         ReplAction::Search(query) => {
-            commands.search_memory_inline(query);
+            commands.search_memory_inline(query).await;
         }
 
         ReplAction::Image(path) => {

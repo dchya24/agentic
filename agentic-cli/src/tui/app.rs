@@ -269,7 +269,7 @@ impl App {
     }
 
     /// Start a new session (reset all state)
-    fn new_session(&mut self) {
+    async fn new_session(&mut self) {
         // Save current session first
         if !self.session.messages.is_empty() {
             self.save_session();
@@ -293,16 +293,22 @@ impl App {
         self.stats.reset();
         self.image_attachment = None;
 
-        // Restart orchestrator if commands are available
+        // Restart the orchestrator session through the runtime client.
         if let Some(cmds_arc) = &self.commands {
             if let Ok(mut cmds) = cmds_arc.try_lock() {
-                cmds.restart_session();
+                if let Err(e) = cmds.restart_session().await {
+                    self.messages.push(Message {
+                        role: MessageRole::System,
+                        content: format!("⚠ Session reset failed: {}", e),
+                        timestamp: chrono::Local::now(),
+                    });
+                }
             }
         }
     }
 
     /// Resume a session by loading its history
-    fn resume_session(&mut self, session_id: &str) {
+    async fn resume_session(&mut self, session_id: &str) {
         match session::load(session_id) {
             Ok(loaded) => {
                 // Save current session first
@@ -343,10 +349,16 @@ impl App {
                     timestamp: chrono::Local::now(),
                 });
 
-                // Restart orchestrator
+                // Restart the orchestrator session through the runtime.
                 if let Some(cmds_arc) = &self.commands {
                     if let Ok(mut cmds) = cmds_arc.try_lock() {
-                        cmds.restart_session();
+                        if let Err(e) = cmds.restart_session().await {
+                            self.messages.push(Message {
+                                role: MessageRole::Error,
+                                content: format!("⚠ Session reset failed: {}", e),
+                                timestamp: chrono::Local::now(),
+                            });
+                        }
                     }
                 }
             }
@@ -997,7 +1009,7 @@ impl App {
     }
 
     /// Handle key events in session view mode
-    fn handle_session_view_key(&mut self, key: crossterm::event::KeyEvent) {
+    async fn handle_session_view_key(&mut self, key: crossterm::event::KeyEvent) {
         let view = match &mut self.session_view {
             Some(v) => v,
             None => return,
@@ -1014,7 +1026,7 @@ impl App {
                 if let Some(summary) = view.summaries.get(view.selected) {
                     let id = summary.id.clone();
                     let _ = view; // Release borrow before resuming
-                    self.resume_session(&id);
+                    self.resume_session(&id).await;
                 }
             }
             KeyCode::Esc => {
@@ -1532,14 +1544,14 @@ impl App {
                 });
             }
             "/new" | "/n" => {
-                self.new_session();
+                self.new_session().await;
             }
             "/clear" | "/cls" => {
-                self.new_session();
+                self.new_session().await;
             }
             "/sessions" | "/ss" if !arg.is_empty() => {
                 // Resume specific session by ID or index
-                self.resume_session(arg);
+                self.resume_session(arg).await;
             }
             "/sessions" | "/ss" => {
                 self.open_sessions();
@@ -1971,7 +1983,7 @@ async fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) {
     // ── Session view mode ──
     // When session list is open, all keys go to session view handler
     if app.session_view.is_some() {
-        app.handle_session_view_key(key);
+        app.handle_session_view_key(key).await;
         return;
     }
 
