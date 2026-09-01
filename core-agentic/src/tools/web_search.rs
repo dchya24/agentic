@@ -34,7 +34,10 @@ use regex::Regex;
 use serde::Deserialize;
 
 use crate::safety::UrlPolicy;
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult,
+    ToolSchema,
+};
 
 const DEFAULT_MAX_RESULTS: usize = 5;
 const HARD_RESULT_CAP: usize = 20;
@@ -264,6 +267,16 @@ impl Tool for WebSearchTool {
 
     fn is_read_only(&self) -> bool {
         true
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            mutability: Mutability::ReadOnly,
+            concurrency: Concurrency::ParallelSafe,
+            idempotent: true,
+            risk: 0,
+            side_effects: SideEffects::Network,
+        }
     }
 }
 

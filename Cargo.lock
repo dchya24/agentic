@@ -371,6 +371,7 @@ dependencies = [
  "futures",
  "glob",
  "log",
+ "parking_lot",
  "regex",
  "reqwest",
  "serde",

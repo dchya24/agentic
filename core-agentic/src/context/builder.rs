@@ -1,10 +1,11 @@
-//! Pure helpers for shaping the message slice the orchestrator sends
-//! to a provider.
+//! Pure request-shaping helpers — the rules for turning stored messages
+//! into the slice that goes to a provider.
 //!
-//! These functions know about [`Message`] and [`ChatMessageRequest`]
-//! but not about the orchestrator's lock state, safety engine, or LLM
-//! provider — keeping them here makes them easy to unit-test in
-//! isolation and keeps the request-shaping rules in one place.
+//! This is the "builder" layer of the context engine: it knows about
+//! [`Message`] and [`ChatMessageRequest`] but nothing about the
+//! orchestrator's lock state, safety engine, or LLM provider — keeping
+//! the rules here makes them easy to unit-test in isolation and gives
+//! every frontend (CLI, TUI, desktop, server) the same context shape.
 
 use crate::memory::{Message, MessageRole};
 use crate::providers::{ChatMessageRequest, ToolCallFunction, ToolCallResponse};
@@ -17,7 +18,7 @@ pub const CLEARED_TOOL_RESULT_PLACEHOLDER: &str = "[Cleared: older tool result r
 ///
 /// `keep_recent_tool_results == 0` disables the placeholder substitution
 /// entirely (everything passes through verbatim).
-pub(crate) fn build_request_messages(
+pub fn build_request_messages(
     context: &[Message],
     keep_recent_tool_results: usize,
 ) -> Vec<ChatMessageRequest> {
@@ -78,9 +79,7 @@ pub(crate) fn build_request_messages(
 
 /// Convert a list of `(id, name, arguments_json_string)` triples into
 /// `ToolCallResponse`s suitable for storing on an assistant message.
-pub(crate) fn build_tool_call_responses(
-    tool_calls: &[(String, String, String)],
-) -> Vec<ToolCallResponse> {
+pub fn build_tool_call_responses(tool_calls: &[(String, String, String)]) -> Vec<ToolCallResponse> {
     tool_calls
         .iter()
         .map(|(id, name, args)| ToolCallResponse {
@@ -97,7 +96,7 @@ pub(crate) fn build_tool_call_responses(
 /// Truncate a tool result string to `max_chars`, appending a marker note.
 /// Layer 1 of context compression: prevents large tool outputs from blowing
 /// up the context window.
-pub(crate) fn truncate_tool_result(raw: &str, max_chars: usize) -> String {
+pub fn truncate_tool_result(raw: &str, max_chars: usize) -> String {
     if max_chars == 0 || raw.len() <= max_chars {
         return raw.to_string();
     }
@@ -135,7 +134,7 @@ pub(crate) fn truncate_tool_result(raw: &str, max_chars: usize) -> String {
 ///    messages that would otherwise lead the slice.
 ///
 /// All decisions are local: we never invent messages, only drop or trim.
-pub(crate) fn sanitize_for_provider(messages: Vec<ChatMessageRequest>) -> Vec<ChatMessageRequest> {
+pub fn sanitize_for_provider(messages: Vec<ChatMessageRequest>) -> Vec<ChatMessageRequest> {
     use std::collections::HashSet;
 
     if messages.is_empty() {
@@ -257,7 +256,7 @@ pub(crate) fn sanitize_for_provider(messages: Vec<ChatMessageRequest>) -> Vec<Ch
 }
 
 #[cfg(test)]
-mod orchestrator_unit_tests {
+mod tests {
     use super::{
         build_request_messages, sanitize_for_provider, truncate_tool_result,
         CLEARED_TOOL_RESULT_PLACEHOLDER,

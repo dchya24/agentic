@@ -21,7 +21,10 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult,
+    ToolSchema,
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -311,11 +314,16 @@ impl Tool for TodowriteTool {
     }
 
     /// `todowrite` is read-only from the filesystem perspective but
-    /// modifies session state. Return `false` so it doesn't get
-    /// batched with other tools in parallel execution (order matters
-    /// for task tracking).
-    fn is_read_only(&self) -> bool {
-        false
+    /// modifies session state. Keep it exclusive so order matters for
+    /// task tracking and it never shares a batch with other tools.
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            mutability: Mutability::Mutating,
+            concurrency: Concurrency::Exclusive,
+            idempotent: false,
+            risk: 0,
+            side_effects: SideEffects::UserFacing,
+        }
     }
 }
 

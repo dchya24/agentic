@@ -24,16 +24,17 @@ pub use git_query::{GitDiffTool, GitStatusTool};
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use list_files::ListFilesTool;
+#[allow(deprecated)]
 pub use question::{
-    clear_question_handler, set_question_handler, QuestionAnswer, QuestionHandler, QuestionPrompt,
-    QuestionTool,
+    clear_question_handler, install_question_handler, set_question_handler, QuestionAnswer,
+    QuestionHandler, QuestionPrompt, QuestionTool,
 };
 pub use read_file::ReadFileTool;
 pub use run_command::RunCommandTool;
 pub use run_script::RunScriptTool;
 pub use run_tests::RunTestsTool;
 pub use search_files::SearchFilesTool;
-pub use spawn_subagent::{SpawnSubagentTool, DEFAULT_SUBAGENT_MAX_ITERATIONS};
+pub use spawn_subagent::{SpawnSubagentTool, SubagentPolicy, DEFAULT_SUBAGENT_MAX_ITERATIONS};
 pub use todowrite::{
     clear_todo_change_handler, clear_todos, current_todos, set_todo_change_handler,
     TodoChangeHandler, TodoItem, TodoPriority, TodoStatus, TodowriteTool,

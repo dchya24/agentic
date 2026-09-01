@@ -63,6 +63,7 @@ fn index_lookup_roundtrip() {
         metadata: SkillMetadata {
             name: "my-skill".to_string(),
             description: "A test skill".to_string(),
+            ..Default::default()
         },
         dir: PathBuf::from("/tmp/my-skill"),
         content: "---\n...\n---\nbody".to_string(),
@@ -83,6 +84,7 @@ fn index_lookup_roundtrip() {
         metadata: SkillMetadata {
             name: "my-skill".to_string(),
             description: "Duplicate".to_string(),
+            ..Default::default()
         },
         dir: PathBuf::from("/tmp/my-skill-2"),
         content: "---\n...\n---\nother".to_string(),
@@ -101,6 +103,7 @@ fn index_remove_and_blocked() {
         metadata: SkillMetadata {
             name: "to-remove".to_string(),
             description: "Will be removed".to_string(),
+            ..Default::default()
         },
         dir: PathBuf::from("/tmp/to-remove"),
         content: "".to_string(),
@@ -246,6 +249,7 @@ fn skills_system_prompt_section() {
         metadata: SkillMetadata {
             name: "alpha".to_string(),
             description: "First skill".to_string(),
+            ..Default::default()
         },
         dir: PathBuf::from("/tmp/alpha"),
         content: "".to_string(),
@@ -256,6 +260,7 @@ fn skills_system_prompt_section() {
         metadata: SkillMetadata {
             name: "beta".to_string(),
             description: "Second skill".to_string(),
+            ..Default::default()
         },
         dir: PathBuf::from("/tmp/beta"),
         content: "".to_string(),

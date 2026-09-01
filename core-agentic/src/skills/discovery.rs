@@ -187,9 +187,17 @@ fn parse_skill_md(content: &str, dir_name: &str, dir: &Path) -> Result<Skill, St
 /// name: my-skill
 /// description: Does X and Y
 /// ```
+/// Test-only re-export: registry tests exercise frontmatter parsing directly.
+#[cfg(test)]
+pub(crate) fn __test_parse_frontmatter(text: &str) -> Result<SkillMetadata, String> {
+    parse_frontmatter(text)
+}
+
 fn parse_frontmatter(text: &str) -> Result<SkillMetadata, String> {
     let mut name: Option<String> = None;
     let mut description: Option<String> = None;
+    let mut tags: Vec<String> = Vec::new();
+    let mut version: Option<String> = None;
 
     for line in text.lines() {
         let line = line.trim();
@@ -216,6 +224,19 @@ fn parse_frontmatter(text: &str) -> Result<SkillMetadata, String> {
                 return Err("'description' exceeds 1024 characters".to_string());
             }
             description = Some(val);
+        } else if let Some(stripped) = line.strip_prefix("tags:") {
+            // Comma-separated free-form tags (P2-2): `tags: sql, postgres`.
+            for tag in stripped.split(',') {
+                let tag = tag.trim().to_lowercase();
+                if !tag.is_empty() && !tags.contains(&tag) {
+                    tags.push(tag);
+                }
+            }
+        } else if let Some(stripped) = line.strip_prefix("version:") {
+            let val = stripped.trim().to_string();
+            if !val.is_empty() {
+                version = Some(val);
+            }
         }
         // Silently ignore unknown fields for forward compatibility.
     }
@@ -224,7 +245,12 @@ fn parse_frontmatter(text: &str) -> Result<SkillMetadata, String> {
     let description =
         description.ok_or_else(|| "Missing 'description' in frontmatter".to_string())?;
 
-    Ok(SkillMetadata { name, description })
+    Ok(SkillMetadata {
+        name,
+        description,
+        tags,
+        version,
+    })
 }
 
 /// Walk up from `start` looking for a directory named `target`.

@@ -43,7 +43,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult,
+    ToolSchema,
+};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 const MAX_OUTPUT_CHARS: usize = 25_000;
@@ -222,10 +225,14 @@ impl Tool for RunTestsTool {
         }))
     }
 
-    fn is_read_only(&self) -> bool {
-        // Tests can have side effects (write files, hit network); err on
-        // the side of caution and treat as state-changing.
-        false
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            mutability: Mutability::Mutating,
+            concurrency: Concurrency::Exclusive,
+            idempotent: false,
+            risk: 30,
+            side_effects: SideEffects::Shell,
+        }
     }
 }
 

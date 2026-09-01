@@ -612,11 +612,19 @@ impl Commands {
         let skill_index_arc = std::sync::Arc::new(std::sync::RwLock::new(skill_index));
         self.skill_index = Some(skill_index_arc.clone());
 
+        // Shared event emitter: the skill tool and the orchestrator
+        // emit onto the SAME stream, so `SkillActivated` reaches the
+        // session event log alongside tool/lifecycle events (P0-3).
+        let shared_events = std::sync::Arc::new(core_agentic::events::EventEmitter::new());
+
         // Register the skill tool.
-        tools.register(Box::new(core_agentic::SkillTool::new(skill_index_arc)));
+        tools.register(Box::new(
+            core_agentic::SkillTool::new(skill_index_arc).with_events(shared_events.clone()),
+        ));
 
         let mut orchestrator = Orchestrator::new(provider, tools);
         orchestrator.set_model(model_name);
+        orchestrator.set_event_emitter(shared_events);
 
         // Wire the process-global cancel flag so Ctrl+C in main.rs flips
         // the same atomic the orchestrator polls between turns.
@@ -703,12 +711,22 @@ impl Commands {
         });
 
         // ── Interactive tool handlers ─────────────────────
-        // Only register the question handler in interactive mode.
-        // In non-interactive `agentic run`, the tool returns skip-all
-        // so the agent proceeds without blocking on stdin.
-        if self.interactive_mode {
-            core_agentic::set_question_handler(Box::new(CliQuestionHandler));
-        }
+        // P2-4: the question handler is wired per-instance into THIS
+        // orchestrator's registry. In non-interactive `agentic run`,
+        // `None` installs the skip-all fallback so the agent proceeds
+        // without blocking on stdin.
+        let question_handler: Option<std::sync::Arc<dyn core_agentic::QuestionHandler>> =
+            if self.interactive_mode {
+                Some(std::sync::Arc::new(CliQuestionHandler))
+            } else {
+                None
+            };
+        // P2-4: the registry lives inside the orchestrator now — install
+        // through its accessor.
+        core_agentic::tools::install_question_handler(
+            orchestrator.tool_registry(),
+            question_handler,
+        );
 
         // Register the todo change handler in all modes. Even in
         // non-interactive `agentic run`, the user benefits from seeing

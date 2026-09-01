@@ -3,7 +3,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::file_tracker::{FileTracker, Freshness};
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult,
+    ToolSchema,
+};
 
 pub struct EditFileTool {
     tracker: Option<Arc<FileTracker>>,
@@ -190,6 +193,16 @@ impl Tool for EditFileTool {
             }
         }
         result
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            mutability: Mutability::Mutating,
+            concurrency: Concurrency::Exclusive,
+            idempotent: true,
+            risk: 25,
+            side_effects: SideEffects::FsWrite,
+        }
     }
 }
 

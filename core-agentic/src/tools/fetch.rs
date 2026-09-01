@@ -20,7 +20,10 @@ use std::time::Duration;
 use regex::Regex;
 
 use crate::safety::UrlPolicy;
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult,
+    ToolSchema,
+};
 
 const DEFAULT_MAX_CHARS: usize = 25_000;
 const REQUEST_TIMEOUT_SECS: u64 = 20;
@@ -253,8 +256,17 @@ impl Tool for FetchTool {
     }
 
     fn is_read_only(&self) -> bool {
-        // Network read; safe to run alongside other reads.
         true
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            mutability: Mutability::ReadOnly,
+            concurrency: Concurrency::ParallelSafe,
+            idempotent: true,
+            risk: 0,
+            side_effects: SideEffects::Network,
+        }
     }
 }
 

@@ -7,7 +7,10 @@ use std::collections::HashMap;
 use std::io::Write as IoWrite;
 use std::process::Command;
 
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult,
+    ToolSchema,
+};
 
 pub struct RunScriptTool;
 
@@ -87,6 +90,16 @@ impl Tool for RunScriptTool {
         on_progress: &dyn Fn(&str),
     ) -> ToolResult<serde_json::Value> {
         self.run_script_impl(args, Some(on_progress))
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            mutability: Mutability::Mutating,
+            concurrency: Concurrency::Exclusive,
+            idempotent: false,
+            risk: 40,
+            side_effects: SideEffects::Shell,
+        }
     }
 }
 

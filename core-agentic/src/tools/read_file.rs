@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::file_tracker::FileTracker;
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{Tool, ToolError, ToolMetadata, ToolParam, ToolResult, ToolSchema};
 
 pub struct ReadFileTool {
     tracker: Option<Arc<FileTracker>>,
@@ -38,6 +38,10 @@ impl Tool for ReadFileTool {
 
     fn is_read_only(&self) -> bool {
         true
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::read_only()
     }
 
     fn description(&self) -> &str {

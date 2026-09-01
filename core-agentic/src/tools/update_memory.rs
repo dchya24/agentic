@@ -6,7 +6,10 @@
 use std::collections::HashMap;
 
 use crate::memory_file::{append_project_memory, append_user_memory};
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult,
+    ToolSchema,
+};
 
 pub struct UpdateMemoryTool;
 
@@ -111,10 +114,16 @@ impl Tool for UpdateMemoryTool {
         }))
     }
 
-    fn is_read_only(&self) -> bool {
+    fn metadata(&self) -> ToolMetadata {
         // Writes to a file the user controls; treat as mutating so it
         // doesn't get scheduled in a parallel batch with reads.
-        false
+        ToolMetadata {
+            mutability: Mutability::Mutating,
+            concurrency: Concurrency::Exclusive,
+            idempotent: false,
+            risk: 10,
+            side_effects: SideEffects::FsWrite,
+        }
     }
 }
 

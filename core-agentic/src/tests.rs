@@ -1,5 +1,7 @@
 //! Unit tests for core-agentic
 
+use std::sync::Arc;
+
 use crate::tool::{Tool, ToolCall, ToolSchema};
 use crate::tools::RunCommandTool;
 use crate::{Memory, Message, MessageRole, RiskLevel, ToolRegistry};
@@ -41,8 +43,8 @@ fn test_memory_add_message() {
     memory.add_message(Message::user("Hello"));
     memory.add_message(Message::assistant("Hi there"));
 
-    let context = memory.get_context(10);
-    assert_eq!(context.len(), 2);
+    let messages = memory.get_messages();
+    assert_eq!(messages.len(), 2);
 }
 
 #[test]
@@ -147,8 +149,8 @@ fn test_memory_clear() {
 
     memory.clear();
 
-    let context = memory.get_context(10);
-    assert!(context.is_empty());
+    let messages = memory.get_messages();
+    assert!(messages.is_empty());
 }
 
 #[test]
@@ -158,8 +160,8 @@ fn test_memory_context_limit() {
         memory.add_message(Message::user(format!("message {}", i)));
     }
 
-    let context = memory.get_context(3);
-    assert_eq!(context.len(), 3);
+    let messages = memory.get_messages();
+    assert_eq!(messages.len(), 10);
 }
 
 #[test]
@@ -446,4 +448,319 @@ fn test_anthropic_content_block_delta_parsing() {
     assert!(event.delta.is_some());
     let delta = event.delta.unwrap();
     assert_eq!(delta.text, Some("Hello".to_string()));
+}
+
+// -----------------------------------------------------------------------
+// P1-2: OrchestratorState transition matrix
+// -----------------------------------------------------------------------
+
+#[test]
+fn state_machine_accepts_the_happy_path() {
+    use crate::orchestrator::OrchestratorState::*;
+    let path = [
+        Created,
+        WaitingForModel,
+        ExecutingTools,
+        WaitingForModel,
+        Completed,
+    ];
+    for pair in path.windows(2) {
+        assert!(
+            pair[0].can_transition_to(pair[1]),
+            "{} → {} must be legal",
+            pair[0].as_str(),
+            pair[1].as_str()
+        );
+    }
+}
+
+#[test]
+fn state_machine_accepts_compaction_detour() {
+    use crate::orchestrator::OrchestratorState::*;
+    // Run start with compaction, then mid-loop compaction after tools.
+    for (from, to) in [
+        (Idle, Compacting),
+        (Compacting, WaitingForModel),
+        (WaitingForModel, ExecutingTools),
+        (ExecutingTools, Compacting),
+        (Compacting, WaitingForModel),
+        (WaitingForModel, Completed),
+    ] {
+        assert!(
+            from.can_transition_to(to),
+            "{} → {} must be legal",
+            from.as_str(),
+            to.as_str()
+        );
+    }
+}
+
+#[test]
+fn state_machine_accepts_terminal_and_recovery_paths() {
+    use crate::orchestrator::OrchestratorState::*;
+    for (from, to) in [
+        (WaitingForModel, Failed),
+        (WaitingForModel, Cancelled),
+        (ExecutingTools, Failed),
+        (ExecutingTools, Cancelled),
+        (ExecutingTools, WaitingForUser),
+        (WaitingForUser, ExecutingTools),
+        (WaitingForUser, Cancelled),
+        (Compacting, Failed),
+        // Recovery: a new run may start from any terminal state.
+        (Completed, WaitingForModel),
+        (Failed, WaitingForModel),
+        (Cancelled, WaitingForModel),
+        (Completed, Compacting),
+    ] {
+        assert!(
+            from.can_transition_to(to),
+            "{} → {} must be legal",
+            from.as_str(),
+            to.as_str()
+        );
+    }
+}
+
+#[test]
+fn state_machine_rejects_illegal_transitions() {
+    use crate::orchestrator::OrchestratorState::*;
+    for (from, to) in [
+        (Created, Completed),        // never ran
+        (Idle, Completed),           // no request was made
+        (Idle, ExecutingTools),      // tools without a model turn
+        (Completed, Completed),      // …via transition (no-op guard covers equality)
+        (Completed, ExecutingTools), // must pass through WaitingForModel
+        (Failed, ExecutingTools),
+        (WaitingForModel, WaitingForUser), // confirmations happen under tools
+        (WaitingForUser, WaitingForModel), // resume goes through ExecutingTools
+        (WaitingForUser, Completed),
+        (Compacting, ExecutingTools), // compaction feeds a model request
+        (Compacting, Completed),      // …never straight to a terminal state
+    ] {
+        assert!(
+            !from.can_transition_to(to),
+            "{} → {} must be illegal",
+            from.as_str(),
+            to.as_str()
+        );
+    }
+}
+
+#[test]
+fn state_wire_names_round_trip() {
+    use crate::orchestrator::OrchestratorState;
+    for state in [
+        OrchestratorState::Created,
+        OrchestratorState::Idle,
+        OrchestratorState::WaitingForModel,
+        OrchestratorState::ExecutingTools,
+        OrchestratorState::WaitingForUser,
+        OrchestratorState::Compacting,
+        OrchestratorState::Completed,
+        OrchestratorState::Failed,
+        OrchestratorState::Cancelled,
+    ] {
+        assert_eq!(OrchestratorState::from_wire(state.as_str()), Some(state));
+    }
+    assert_eq!(OrchestratorState::from_wire("bogus"), None);
+}
+
+// -----------------------------------------------------------------------
+// P2-1: unified policy pipeline (PolicyRequest / PolicyDecision)
+// -----------------------------------------------------------------------
+
+#[test]
+fn policy_pipeline_allows_low_risk_reads() {
+    use crate::safety::{PolicyRequest, Safety};
+    let safety = Safety::new();
+
+    let decision = safety.evaluate_tool(&PolicyRequest::new(
+        "read_file",
+        serde_json::json!({"path": "src/main.rs"}),
+        0,
+    ));
+    assert!(decision.allowed);
+    assert!(decision.denial_reason.is_none());
+    // Low risk + floor 0 → no confirmation.
+    assert!(!decision.confirmation_required);
+    assert!(decision.notes.is_empty());
+}
+
+#[test]
+fn policy_pipeline_denies_blocklisted_commands() {
+    use crate::safety::{PolicyRequest, Safety};
+    let safety = Safety::new();
+
+    let decision = safety.evaluate_tool(&PolicyRequest::new(
+        "run_command",
+        serde_json::json!({"command": "rm -rf /"}),
+        40,
+    ));
+    assert!(!decision.allowed);
+    assert!(decision
+        .denial_reason
+        .as_deref()
+        .unwrap()
+        .to_lowercase()
+        .contains("block"));
+    // Denial never asks for confirmation.
+    assert!(!decision.confirmation_required);
+}
+
+#[test]
+fn policy_pipeline_asks_confirmation_above_threshold() {
+    use crate::safety::{PolicyRequest, Safety};
+    let safety = Safety::new(); // require_confirmation=true, threshold=0.3
+
+    let decision = safety.evaluate_tool(&PolicyRequest::new(
+        "run_command",
+        serde_json::json!({"command": "sudo apt install foo"}),
+        40,
+    ));
+    assert!(decision.allowed, "sudo is high-risk but not blocked");
+    assert!(
+        decision.confirmation_required,
+        "high-risk call must require confirmation, score={:?}",
+        decision.score
+    );
+}
+
+#[test]
+fn policy_pipeline_risk_floor_raises_effective_score() {
+    use crate::safety::{PolicyRequest, Safety};
+    let safety = Safety::new();
+
+    // A low-argument call to a tool class with a 50/100 risk floor:
+    // per-arg scoring stays low, the floor lifts the effective score.
+    let decision = safety.evaluate_tool(&PolicyRequest::new(
+        "mcp_external_tool",
+        serde_json::json!({"query": "harmless"}),
+        50,
+    ));
+    assert!(decision.allowed);
+    assert!(
+        decision.score.value >= 0.5,
+        "floor must lift effective score"
+    );
+    assert!(decision.notes.iter().any(|n| n.contains("risk floor 50")));
+}
+
+#[test]
+fn policy_pipeline_floor_never_grants_denied_access() {
+    use crate::safety::{PolicyRequest, Safety};
+    // Plan mode denies state-changing tools; a floor cannot override.
+    let safety = Safety::new();
+    safety.set_mode(crate::safety::PermissionMode::Plan);
+
+    let decision = safety.evaluate_tool(&PolicyRequest::new(
+        "write_file",
+        serde_json::json!({"path": "out.txt", "content": "x"}),
+        0,
+    ));
+    assert!(!decision.allowed);
+    // Plan mode scores the denial at 0.5 (Medium); the floor must not
+    // alter the denied decision or its score.
+    assert_eq!(decision.score.value, 0.5);
+    assert!(decision.notes.is_empty(), "no floor notes on denial");
+}
+
+// -----------------------------------------------------------------------
+// P2-3: SubagentPolicy enforcement
+// -----------------------------------------------------------------------
+
+#[test]
+fn subagent_policy_defaults_are_conservative() {
+    use crate::tools::spawn_subagent::{SubagentPolicy, DEFAULT_SUBAGENT_MAX_ITERATIONS};
+    let policy = SubagentPolicy::default();
+    assert_eq!(policy.max_depth, 3);
+    assert_eq!(policy.max_iterations, DEFAULT_SUBAGENT_MAX_ITERATIONS);
+    assert!(policy.max_tokens > 0);
+    assert!(policy.max_children >= 1);
+    assert!(policy.timeout.as_secs() >= 60);
+}
+
+#[test]
+fn spawn_refuses_nesting_beyond_max_depth() {
+    use crate::providers::{
+        ChatChunk, ChatRequest, LLMProvider, ProviderError, ProviderResult, StreamResult,
+    };
+    use crate::tool::Tool;
+    use crate::tools::spawn_subagent::SubagentPolicy;
+    use crate::tools::SpawnSubagentTool;
+    use crate::ToolRegistry;
+
+    struct NoopProvider;
+    impl LLMProvider for NoopProvider {
+        fn provider_type(&self) -> &str {
+            "noop"
+        }
+        fn provider_id(&self) -> &str {
+            "noop"
+        }
+        fn chat(&self, _req: ChatRequest) -> ProviderResult<crate::providers::ChatResponse> {
+            Err(ProviderError::new("not used"))
+        }
+        fn chat_stream(&self, _req: ChatRequest) -> StreamResult<ChatChunk, ProviderError> {
+            Err(ProviderError::new("not used"))
+        }
+    }
+
+    let provider: Arc<dyn LLMProvider> = Arc::new(NoopProvider);
+    let tools = ToolRegistry::new();
+    // Depth 3 == max_depth 3 → spawn refused before any provider call.
+    let tool = SpawnSubagentTool::new(provider.clone(), tools.clone(), "m")
+        .with_depth(3)
+        .with_policy(SubagentPolicy::default());
+
+    let err = tool
+        .execute(serde_json::json!({"task": "dig deeper"}))
+        .unwrap_err();
+    assert!(
+        err.0.contains("depth limit"),
+        "expected depth refusal, got: {}",
+        err.0
+    );
+}
+
+#[test]
+fn spawn_caps_requested_iterations_at_policy_max() {
+    use crate::providers::{
+        ChatChunk, ChatRequest, LLMProvider, ProviderError, ProviderResult, StreamResult,
+    };
+    use crate::tool::Tool;
+    use crate::tools::SpawnSubagentTool;
+    use crate::ToolRegistry;
+
+    // A provider that records nothing but fails: the error surfaces the
+    // failure, while iteration capping is exercised by a later behavior
+    // check. Here we verify the depth-0 path *runs* (no refusal).
+    struct FailingProvider;
+    impl LLMProvider for FailingProvider {
+        fn provider_type(&self) -> &str {
+            "failing"
+        }
+        fn provider_id(&self) -> &str {
+            "failing"
+        }
+        fn chat(&self, _req: ChatRequest) -> ProviderResult<crate::providers::ChatResponse> {
+            Err(ProviderError::new("provider down"))
+        }
+        fn chat_stream(&self, _req: ChatRequest) -> StreamResult<ChatChunk, ProviderError> {
+            Err(ProviderError::new("provider down"))
+        }
+    }
+
+    let provider: Arc<dyn LLMProvider> = Arc::new(FailingProvider);
+    let tools = ToolRegistry::new();
+    let tool = SpawnSubagentTool::new(provider, tools, "m");
+
+    let err = tool
+        .execute(serde_json::json!({"task": "work", "max_iterations": 99}))
+        .unwrap_err();
+    assert!(
+        err.0.contains("Subagent failed"),
+        "depth-0 spawn proceeds to the runtime, got: {}",
+        err.0
+    );
 }

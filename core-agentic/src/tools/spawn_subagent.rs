@@ -20,17 +20,52 @@
 //! 12) to bound runaway token usage.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 
 use crate::providers::LLMProvider;
 use crate::safety::PermissionMode;
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult,
+    ToolSchema,
+};
 use crate::tool_registry::ToolRegistry;
 
 /// Default cap on subagent iterations. Tighter than the main agent's loop
 /// because subagents handle scoped subtasks.
 pub const DEFAULT_SUBAGENT_MAX_ITERATIONS: u32 = 12;
+
+/// Execution limits for a spawned subagent (P2-3). Every limit is a
+/// separate guard so a runaway child can only burn one resource class.
+#[derive(Debug, Clone)]
+pub struct SubagentPolicy {
+    /// Maximum spawn nesting depth. Depth 0 = top-level agent spawns;
+    /// a child at `max_depth` is refused.
+    pub max_depth: u32,
+    /// Hard cap on child loop iterations (the model may still request
+    /// fewer via the `max_iterations` argument — never more).
+    pub max_iterations: u32,
+    /// Child context token budget (memory `max_tokens`), bounding how
+    /// much conversation a child may accumulate.
+    pub max_tokens: u32,
+    /// Maximum children this tool may run *concurrently*.
+    pub max_children: usize,
+    /// Wall-clock timeout for one child run.
+    pub timeout: std::time::Duration,
+}
+
+impl Default for SubagentPolicy {
+    fn default() -> Self {
+        Self {
+            max_depth: 3,
+            max_iterations: DEFAULT_SUBAGENT_MAX_ITERATIONS,
+            max_tokens: 64_000,
+            max_children: 4,
+            timeout: std::time::Duration::from_secs(600),
+        }
+    }
+}
 
 pub struct SpawnSubagentTool {
     provider: Arc<dyn LLMProvider>,
@@ -44,6 +79,12 @@ pub struct SpawnSubagentTool {
     /// subagent too. Matches the architecture doc's "linked abort signal".
     parent_cancel: Option<Arc<AtomicBool>>,
     max_iterations: u32,
+    /// Current spawn depth: 0 when registered on a top-level agent.
+    depth: u32,
+    /// Execution limits (P2-3).
+    policy: SubagentPolicy,
+    /// Concurrently running children (guard for `policy.max_children`).
+    active_children: Arc<AtomicUsize>,
 }
 
 impl SpawnSubagentTool {
@@ -59,7 +100,22 @@ impl SpawnSubagentTool {
             mode: PermissionMode::Default,
             parent_cancel: None,
             max_iterations: DEFAULT_SUBAGENT_MAX_ITERATIONS,
+            depth: 0,
+            policy: SubagentPolicy::default(),
+            active_children: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Spawn depth of this tool instance (0 = top-level registry).
+    pub fn with_depth(mut self, depth: u32) -> Self {
+        self.depth = depth;
+        self
+    }
+
+    /// Replace the default execution policy.
+    pub fn with_policy(mut self, policy: SubagentPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 
     pub fn with_mode(mut self, mode: PermissionMode) -> Self {
@@ -147,30 +203,115 @@ impl Tool for SpawnSubagentTool {
             return Err(ToolError::new("task must not be empty"));
         }
 
-        let max_iter = args_obj
+        let requested = args_obj
             .get("max_iterations")
             .and_then(|v| v.as_u64())
             .map(|v| v as u32)
             .unwrap_or(self.max_iterations);
+        // Policy caps the requested budget (P2-3): the model may ask
+        // for fewer iterations, never more.
+        let max_iter = requested.min(self.policy.max_iterations);
 
-        // Build a fresh orchestrator. We use the synchronous `run()` so we
-        // don't need a Tokio runtime context; spawn_subagent itself runs
-        // inside Tool::execute, which the orchestrator may call from a
-        // spawn_blocking thread.
-        let mut sub =
-            crate::orchestrator::Orchestrator::new(self.provider.clone(), self.tools.clone());
-        sub.set_model(self.model.clone());
-        sub.set_max_iterations(max_iter);
-        sub.set_system_prompt(SUBAGENT_SYSTEM_PROMPT);
-        sub.set_permission_mode(self.mode);
-        if let Some(c) = &self.parent_cancel {
-            sub.set_cancel_handle(c.clone());
+        // Depth guard: refuse spawns beyond the policy's nesting limit.
+        if self.depth >= self.policy.max_depth {
+            return Err(ToolError::new(format!(
+                "Subagent depth limit reached ({}/{}): nested spawn refused",
+                self.depth, self.policy.max_depth
+            )));
         }
 
-        let answer = sub.run(task).map_err(|e| {
-            let preview: String = task.chars().take(80).collect();
-            ToolError::new(format!("Subagent failed: {} (task='{}')", e, preview))
-        })?;
+        // Concurrency guard: bounded children per tool instance.
+        if self.active_children.load(Ordering::SeqCst) >= self.policy.max_children {
+            return Err(ToolError::new(format!(
+                "Subagent concurrency limit reached ({}/{}): spawn refused",
+                self.active_children.load(Ordering::SeqCst),
+                self.policy.max_children
+            )));
+        }
+        self.active_children.fetch_add(1, Ordering::SeqCst);
+
+        // Child registry: rebuild the spawn tool one level deeper so
+        // the depth guard compounds down the tree.
+        let child_tools = self.tools.clone();
+        child_tools.unregister("spawn_subagent");
+        child_tools.register(Box::new(
+            SpawnSubagentTool::new(
+                self.provider.clone(),
+                child_tools.clone(),
+                self.model.clone(),
+            )
+            .with_depth(self.depth + 1)
+            .with_policy(self.policy.clone()),
+        ) as Box<dyn crate::tool::Tool + Send + Sync>);
+
+        // Child cancel flag: shared handle so the timeout (and a
+        // mirrored parent cancel) can abort the child at its next
+        // loop/tool boundary.
+        let child_cancel = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        if let Some(parent) = &self.parent_cancel {
+            let parent = parent.clone();
+            let child_cancel = child_cancel.clone();
+            let done = done.clone();
+            std::thread::spawn(move || loop {
+                if parent.load(Ordering::SeqCst) {
+                    child_cancel.store(true, Ordering::SeqCst);
+                    break;
+                }
+                if done.load(Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            });
+        }
+
+        // Build a fresh child runtime (P1-1): same AgentRuntime path as
+        // top-level runs — lifecycle envelope, pause/cancel plumbing —
+        // with a fresh conversation, inherited toolset, and bounded
+        // iterations. We use the synchronous `run()` so we don't need a
+        // Tokio runtime context; spawn_subagent itself runs inside
+        // Tool::execute, which the orchestrator may call from a
+        // spawn_blocking thread.
+        let spawn_config = crate::runtime::ChildSpawn::new(
+            task,
+            self.model.clone(),
+            SUBAGENT_SYSTEM_PROMPT,
+            self.mode,
+            max_iter,
+        )
+        .with_parent_cancel(Some(child_cancel.clone()))
+        .with_memory_token_budget(self.policy.max_tokens);
+
+        // Timeout guard: run the child on its own thread and impose the
+        // policy's wall-clock limit. On timeout the child's cancel flag
+        // flips so the abandoned thread unwinds at its next boundary.
+        let (tx, rx) = mpsc::channel();
+        let provider = self.provider.clone();
+        let spawn_tools = child_tools;
+
+        let worker_cancel = child_cancel.clone();
+        std::thread::spawn(move || {
+            let result = crate::runtime::AgentRuntime::spawn(provider, spawn_tools, spawn_config);
+            let _ = tx.send(result);
+            done.store(true, Ordering::SeqCst);
+            let _ = worker_cancel;
+        });
+
+        let answer = match rx.recv_timeout(self.policy.timeout) {
+            Ok(result) => result.map_err(|e| {
+                let preview: String = task.chars().take(80).collect();
+                ToolError::new(format!("Subagent failed: {} (task='{}')", e, preview))
+            })?,
+            Err(_) => {
+                child_cancel.store(true, Ordering::SeqCst);
+                return Err(ToolError::new(format!(
+                    "Subagent timed out after {:?} (task='{}')",
+                    self.policy.timeout,
+                    task.chars().take(80).collect::<String>()
+                )));
+            }
+        };
+        self.active_children.fetch_sub(1, Ordering::SeqCst);
 
         Ok(serde_json::json!({
             "success": true,
@@ -179,8 +320,14 @@ impl Tool for SpawnSubagentTool {
         }))
     }
 
-    fn is_read_only(&self) -> bool {
-        false
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            mutability: Mutability::Mutating,
+            concurrency: Concurrency::Exclusive,
+            idempotent: false,
+            risk: 20,
+            side_effects: SideEffects::Shell,
+        }
     }
 }
 

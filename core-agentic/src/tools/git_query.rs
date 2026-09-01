@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult, ToolSchema};
 
 /// Cap on diff output forwarded to the model. Larger diffs are
 /// summarized with the head + tail preserved.
@@ -138,6 +138,12 @@ impl Tool for GitStatusTool {
 
     fn is_read_only(&self) -> bool {
         true
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        let mut m = ToolMetadata::read_only();
+        m.side_effects = SideEffects::FsRead;
+        m
     }
 }
 
@@ -381,6 +387,12 @@ impl Tool for GitDiffTool {
 
     fn is_read_only(&self) -> bool {
         true
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        let mut m = ToolMetadata::read_only();
+        m.side_effects = SideEffects::FsRead;
+        m
     }
 }
 

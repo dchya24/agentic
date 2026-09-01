@@ -12,8 +12,7 @@
 use crate::providers::{ChatMessageRequest, ChatRequest};
 use crate::AgenticError;
 
-use super::messages::build_request_messages;
-use super::Orchestrator;
+use super::{Orchestrator, OrchestratorState};
 
 impl Orchestrator {
     /// Run autocompact if configured and memory is over threshold.
@@ -42,6 +41,8 @@ impl Orchestrator {
                 mem.build_summarization_prompt()
             };
             if let Some(prompt) = prompt {
+                self.set_state(OrchestratorState::Compacting);
+                self.events.emit(crate::events::Event::CompactionStarted);
                 match self.summarize_via_provider(&prompt) {
                     Ok(summary) => {
                         let mut mem = self.memory.lock().unwrap();
@@ -64,6 +65,8 @@ impl Orchestrator {
         // Heuristic path (default and fallback).
         let mut mem = self.memory.lock().unwrap();
         if mem.needs_compaction() {
+            self.set_state(OrchestratorState::Compacting);
+            self.events.emit(crate::events::Event::CompactionStarted);
             let result = mem.compact();
             tracing::info!(
                 summarized = result.summarized_count,
@@ -97,8 +100,8 @@ impl Orchestrator {
     }
 
     pub(super) fn build_messages(&self) -> Vec<ChatMessageRequest> {
-        // Token-budget context builder. Memory::request_budget() applies
-        // the configured context_budget_ratio (default 70%) so we leave
+        // Token-budget context builder. ContextBudget applies the
+        // configured context_budget_ratio (default 70%) so we leave
         // headroom for the system prompt, tool definitions, and the
         // response itself.
         //
@@ -106,12 +109,10 @@ impl Orchestrator {
         // group) so a tool_call/result pair is never split, eliminating
         // the orphan-tool / dangling-tool_calls / no-user-anchor cases
         // that previously produced HTTP 400 from the provider.
-        let token_budget = self.memory.lock().unwrap().request_budget();
-        let context = self
-            .memory
-            .lock()
-            .unwrap()
-            .get_context_for_request(token_budget);
-        build_request_messages(&context, self.keep_recent_tool_results)
+        let memory = self.memory.lock().unwrap();
+        crate::context::ContextEngine::build(
+            &memory,
+            crate::context::BuildOptions::new(&memory, self.keep_recent_tool_results),
+        )
     }
 }

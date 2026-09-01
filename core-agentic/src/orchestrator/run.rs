@@ -30,13 +30,34 @@ impl Orchestrator {
         input: &str,
         attachments: Vec<crate::attachments::Attachment>,
     ) -> Result<String, AgenticError> {
+        self.with_session_lifecycle(|| self.run_with_attachments_inner(input, attachments))
+    }
+
+    /// Session lifecycle envelope shared by the orchestrator's own
+    /// `run*` entry points and [`crate::runtime::AgentRuntime`] (P1-1):
+    /// emits `SessionStarted`, drives the loop, then `SessionCompleted`
+    /// or `SessionFailed` — and lands the terminal state on the P1-2
+    /// machine (`Cancelled` is user-initiated, not a failure).
+    pub(crate) fn with_session_lifecycle<F>(&self, run: F) -> Result<String, AgenticError>
+    where
+        F: FnOnce() -> Result<String, AgenticError>,
+    {
+        self.session_begin();
+        let result = run();
+        self.session_terminal(&result);
+        result
+    }
+
+    /// The run loop body. Session lifecycle wiring lives in
+    /// [`Self::run_with_attachments`]; `AgentLoop::run` (P1-1) drives
+    /// this directly.
+    pub(crate) fn run_with_attachments_inner(
+        &self,
+        input: &str,
+        attachments: Vec<crate::attachments::Attachment>,
+    ) -> Result<String, AgenticError> {
         if !attachments.is_empty() {
             self.check_attachment_capability(&attachments)?;
-        }
-
-        {
-            let mut state = self.state.lock().unwrap();
-            *state = OrchestratorState::Planning;
         }
 
         self.memory
@@ -53,6 +74,9 @@ impl Orchestrator {
 
         loop {
             iteration += 1;
+            // P1-1: iteration boundary — honor pause, then cancellation.
+            self.wait_if_paused();
+            self.set_state(OrchestratorState::WaitingForModel);
             tracing::debug!(
                 iteration,
                 max = self.max_iterations,
@@ -119,6 +143,10 @@ impl Orchestrator {
                 messages.push(Self::wind_down_message());
             }
             Self::log_request(iteration, &self.model, &messages);
+            self.events.emit(crate::events::Event::ModelRequest {
+                model: self.model.clone(),
+                message_count: messages.len(),
+            });
             // On finalization, omit tools entirely so the provider can't
             // return tool calls — the model is forced to answer in text.
             let mut request = ChatRequest::new(&self.model, messages);
@@ -158,10 +186,7 @@ impl Orchestrator {
                     .lock()
                     .unwrap()
                     .add_message(Message::assistant(&content));
-                {
-                    let mut state = self.state.lock().unwrap();
-                    *state = OrchestratorState::Completed;
-                }
+                self.set_state(OrchestratorState::Completed);
                 return Ok(content);
             }
 
@@ -225,10 +250,7 @@ impl Orchestrator {
                     .unwrap()
                     .add_message(Message::assistant(&content));
 
-                {
-                    let mut state = self.state.lock().unwrap();
-                    *state = OrchestratorState::Completed;
-                }
+                self.set_state(OrchestratorState::Completed);
                 return Ok(content);
             }
         }
@@ -249,6 +271,26 @@ impl Orchestrator {
         &self,
         input: &str,
         attachments: Vec<crate::attachments::Attachment>,
+        on_chunk: F,
+    ) -> Result<String, AgenticError>
+    where
+        F: FnMut(String),
+    {
+        self.session_begin();
+        let result = self
+            .run_stream_with_attachments_inner(input, attachments, on_chunk)
+            .await;
+        self.session_terminal(&result);
+        result
+    }
+
+    /// The stream loop body. Session lifecycle wiring lives in
+    /// [`Self::run_stream_with_attachments`]; `AgentLoop::run_stream`
+    /// (P1-1) drives this directly.
+    pub(crate) async fn run_stream_with_attachments_inner<F>(
+        &self,
+        input: &str,
+        attachments: Vec<crate::attachments::Attachment>,
         mut on_chunk: F,
     ) -> Result<String, AgenticError>
     where
@@ -260,11 +302,6 @@ impl Orchestrator {
 
         if !attachments.is_empty() {
             self.check_attachment_capability(&attachments)?;
-        }
-
-        {
-            let mut state = self.state.lock().unwrap();
-            *state = OrchestratorState::Planning;
         }
 
         self.memory
@@ -281,6 +318,9 @@ impl Orchestrator {
 
         loop {
             iteration += 1;
+            // P1-1: iteration boundary — honor pause, then cancellation.
+            self.wait_if_paused();
+            self.set_state(OrchestratorState::WaitingForModel);
             tracing::debug!(
                 iteration,
                 max = self.max_iterations,
@@ -342,6 +382,10 @@ impl Orchestrator {
                 messages.push(Self::wind_down_message());
             }
             Self::log_request(iteration, &self.model, &messages);
+            self.events.emit(crate::events::Event::ModelRequest {
+                model: self.model.clone(),
+                message_count: messages.len(),
+            });
             // On finalization, omit tools entirely so the provider can't
             // return tool calls — the model is forced to answer in text.
             let mut request = ChatRequest::new(&self.model, messages);
@@ -363,6 +407,9 @@ impl Orchestrator {
                             Ok(chunk) => {
                                 if !chunk.delta.is_empty() {
                                     on_chunk(chunk.delta.clone());
+                                    self.events.emit(crate::events::Event::ModelChunk {
+                                        delta: chunk.delta.clone(),
+                                    });
                                     content_buf.push_str(&chunk.delta);
                                 }
                                 for tc in chunk.tool_calls {
@@ -425,10 +472,7 @@ impl Orchestrator {
                     .lock()
                     .unwrap()
                     .add_message(Message::assistant(&content_buf));
-                {
-                    let mut state = self.state.lock().unwrap();
-                    *state = OrchestratorState::Completed;
-                }
+                self.set_state(OrchestratorState::Completed);
                 return Ok(content_buf);
             }
 
@@ -479,10 +523,7 @@ impl Orchestrator {
                 .unwrap()
                 .add_message(Message::assistant(&content_buf));
 
-            {
-                let mut state = self.state.lock().unwrap();
-                *state = OrchestratorState::Completed;
-            }
+            self.set_state(OrchestratorState::Completed);
 
             return Ok(content_buf);
         }
@@ -628,7 +669,7 @@ impl Orchestrator {
     // to memory) so they steer only the request they're appended to.
     // `user` role is used because every provider accepts a trailing user
     // message and the slice is guaranteed well-formed by
-    // `sanitize_for_provider`.
+    // `crate::context::builder::sanitize_for_provider`.
 
     /// Soft nudge injected once the run crosses ~80% of the iteration
     /// budget. Asks the model to start converging so it ideally

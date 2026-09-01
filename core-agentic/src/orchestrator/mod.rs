@@ -2,13 +2,15 @@
 //! safety checks, and memory.
 //!
 //! Module layout:
-//! - [`messages`] — pure helpers for shaping the request slice
-//!   (`build_request_messages`, `truncate_tool_result`,
-//!   `sanitize_for_provider`, `CLEARED_TOOL_RESULT_PLACEHOLDER`).
 //! - [`tool_exec`] — `handle_tool_calls` and the parallel async variant.
 //! - [`compaction`] — `maybe_autocompact`, `summarize_via_provider`,
-//!   `build_messages`.
+//!   `build_messages` (delegates to [`crate::context::ContextEngine`]).
 //! - [`run`] — the top-level `run` and `run_stream` agent loops.
+//!
+//! Request-shaping helpers (`build_request_messages`,
+//! `truncate_tool_result`, `sanitize_for_provider`,
+//! `CLEARED_TOOL_RESULT_PLACEHOLDER`) now live in
+//! [`crate::context::builder`].
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -19,8 +21,8 @@ use crate::providers::LLMProvider;
 use crate::safety::{ConfirmationRequest, Safety};
 use crate::tool_registry::ToolRegistry;
 
+mod checkpoint;
 mod compaction;
-mod messages;
 mod progress;
 mod run;
 mod tool_exec;
@@ -100,12 +102,96 @@ fn truncate_args_preview(s: &str, max: usize) -> String {
     format!("{}…", &s[..end])
 }
 
+/// Coarse lifecycle state of the orchestrator (P1-2).
+///
+/// Flat machine: the active states (`WaitingForModel`, `ExecutingTools`,
+/// `WaitingForUser`, `Compacting`) ARE the running states — there is no
+/// separate `Running` parent, so every observable state is unique.
+/// Transitions are guarded by [`OrchestratorState::can_transition_to`]
+/// and observed via `Event::StateChanged` on every legal move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrchestratorState {
+    /// Constructed, never run.
+    Created,
+    /// Not inside a run (between REPL turns).
     Idle,
-    Planning,
-    Executing,
+    /// A provider request is being prepared or is in flight.
+    WaitingForModel,
+    /// One or more tool calls are being executed.
+    ExecutingTools,
+    /// Blocked on a user confirmation.
+    WaitingForUser,
+    /// Auto-compaction in progress.
+    Compacting,
+    /// Run finished successfully.
     Completed,
+    /// Run ended in an error.
+    Failed,
+    /// Run was cancelled by the user.
+    Cancelled,
+}
+
+impl OrchestratorState {
+    /// snake_case wire name, used by `Event::StateChanged` payloads.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OrchestratorState::Created => "created",
+            OrchestratorState::Idle => "idle",
+            OrchestratorState::WaitingForModel => "waiting_for_model",
+            OrchestratorState::ExecutingTools => "executing_tools",
+            OrchestratorState::WaitingForUser => "waiting_for_user",
+            OrchestratorState::Compacting => "compacting",
+            OrchestratorState::Completed => "completed",
+            OrchestratorState::Failed => "failed",
+            OrchestratorState::Cancelled => "cancelled",
+        }
+    }
+
+    /// Parse a wire name back into a state (inverse of [`as_str`]).
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "created" => Some(OrchestratorState::Created),
+            "idle" => Some(OrchestratorState::Idle),
+            "waiting_for_model" => Some(OrchestratorState::WaitingForModel),
+            "executing_tools" => Some(OrchestratorState::ExecutingTools),
+            "waiting_for_user" => Some(OrchestratorState::WaitingForUser),
+            "compacting" => Some(OrchestratorState::Compacting),
+            "completed" => Some(OrchestratorState::Completed),
+            "failed" => Some(OrchestratorState::Failed),
+            "cancelled" => Some(OrchestratorState::Cancelled),
+            _ => None,
+        }
+    }
+
+    /// Legal-transition guard (P1-2). `set_state` consults this before
+    /// applying a move; unit tests pin the matrix in both directions.
+    pub fn can_transition_to(&self, next: OrchestratorState) -> bool {
+        use OrchestratorState::*;
+        matches!(
+            (self, next),
+            // Fresh/between runs: prep the request or compact first.
+            (
+                Created | Idle | Completed | Failed | Cancelled,
+                WaitingForModel | Compacting
+            )
+            // Model turn: answer arrives → execute tools, finish, fail,
+            // cancel, or compact before the next request.
+            | (
+                WaitingForModel,
+                ExecutingTools | Compacting | Completed | Failed | Cancelled
+            )
+            // Tool turn: confirmations block, compaction may kick in,
+            // then the next model request (or a terminal state).
+            | (
+                ExecutingTools,
+                WaitingForUser | Compacting | WaitingForModel | Completed | Failed | Cancelled
+            )
+            // Confirmation resolved: continue executing, or bail out.
+            | (WaitingForUser, ExecutingTools | Failed | Cancelled)
+            // Compaction done: proceed to the request (or bail out).
+            | (Compacting, WaitingForModel | Failed | Cancelled)
+        )
+    }
 }
 
 /// Confirmation handler: a boxed closure deciding whether a risky
@@ -140,6 +226,17 @@ pub struct Orchestrator {
     /// batch boundary returns `AgenticError::Cancelled`. Shared via Arc so
     /// callers (CLI signal handlers) can flip it asynchronously.
     cancel: Arc<AtomicBool>,
+    /// Pause gate (P1-1): the loop parks at iteration boundaries while
+    /// set. Polled against `cancel` so cancellation breaks the park.
+    pause_gate: Mutex<bool>,
+    /// Wake source for [`Self::resume`].
+    pause_cv: std::sync::Condvar,
+    /// Optional session checkpoint store (P1-3). `None` = no
+    /// persistence; runs behave exactly as before.
+    session_store: Option<Mutex<crate::session::SessionStore>>,
+    /// Tracked session id. Minted per run when a store is attached,
+    /// adopted by [`Orchestrator::resume`].
+    session_id: Mutex<Option<String>>,
     /// When `true`, autocompact will ask the LLM to summarize older
     /// messages instead of using the heuristic string truncation.
     /// Falls back to the heuristic on provider error.
@@ -156,7 +253,7 @@ impl Orchestrator {
             tools,
             memory: Mutex::new(Memory::new(128000)),
             safety: Safety::new(),
-            state: Mutex::new(OrchestratorState::Idle),
+            state: Mutex::new(OrchestratorState::Created),
             events: Arc::new(EventEmitter::new()),
             confirmation_handler: Mutex::new(None),
             system_prompt: None,
@@ -167,6 +264,10 @@ impl Orchestrator {
             auto_compact: true,
             keep_recent_tool_results: DEFAULT_KEEP_RECENT_TOOL_RESULTS,
             cancel: Arc::new(AtomicBool::new(false)),
+            pause_gate: Mutex::new(false),
+            pause_cv: std::sync::Condvar::new(),
+            session_store: None,
+            session_id: Mutex::new(None),
             auto_compact_with_llm: false,
             summarizer_model: None,
         }
@@ -188,8 +289,26 @@ impl Orchestrator {
         self.events.clear();
     }
 
+    /// Share an external event emitter. Used by hosts (runtime daemon,
+    /// planner loop) that fan one event stream out to several
+    /// components — subscribers registered on either emitter see the
+    /// union of emissions. Must be called before any run starts.
+    pub fn set_event_emitter(&mut self, emitter: Arc<EventEmitter>) {
+        self.events = emitter;
+    }
+
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
+    }
+
+    /// Currently configured model name (for status/session metadata).
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Cap the conversation token budget (subagent policy, P2-3).
+    pub fn set_memory_token_budget(&mut self, max_tokens: u32) {
+        self.memory.lock().unwrap().max_tokens = max_tokens;
     }
 
     /// Override the maximum number of agent loop iterations.
@@ -338,6 +457,42 @@ impl Orchestrator {
             .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Request cancellation: the loop aborts at the next iteration /
+    /// tool boundary with `AgenticError::Cancelled` (P1-1).
+    pub fn cancel(&self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Park the loop at the next iteration boundary (P1-1). Blocking
+    /// tool calls finish first; [`Self::resume`] releases the park.
+    pub fn pause(&self) {
+        *self.pause_gate.lock().unwrap() = true;
+    }
+
+    /// Release a parked loop.
+    pub fn resume(&self) {
+        *self.pause_gate.lock().unwrap() = false;
+        self.pause_cv.notify_all();
+    }
+
+    /// Whether the loop is parked.
+    pub fn is_paused(&self) -> bool {
+        *self.pause_gate.lock().unwrap()
+    }
+
+    /// Block while parked. Wakes periodically so a concurrent
+    /// [`Self::cancel`] is honored even mid-park.
+    fn wait_if_paused(&self) {
+        let mut paused = self.pause_gate.lock().unwrap();
+        while *paused && !self.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            let (guard, _) = self
+                .pause_cv
+                .wait_timeout(paused, std::time::Duration::from_millis(100))
+                .unwrap();
+            paused = guard;
+        }
+    }
+
     pub fn set_confirmation_handler<F>(&mut self, handler: F)
     where
         F: Fn(ConfirmationRequest) -> bool + Send + Sync + 'static,
@@ -380,6 +535,48 @@ impl Orchestrator {
 
     pub fn get_state(&self) -> OrchestratorState {
         *self.state.lock().unwrap()
+    }
+
+    /// Transition the lifecycle state and observe the change via
+    /// `Event::StateChanged` (P0-3, guarded per P1-2). All state writes
+    /// go through here so the machine stays observable and legal.
+    /// Illegal transitions are logged and still applied — robustness
+    /// over wedging a live run — but `can_transition_to` is pinned by
+    /// unit tests so the matrix itself is enforced.
+    fn set_state(&self, next: OrchestratorState) {
+        {
+            let mut state = self.state.lock().unwrap();
+            if *state == next {
+                return;
+            }
+            if !state.can_transition_to(next) {
+                tracing::error!(
+                    from = state.as_str(),
+                    to = next.as_str(),
+                    "illegal orchestrator state transition"
+                );
+            }
+            *state = next;
+        }
+        self.events.emit(crate::events::Event::StateChanged {
+            state: next.as_str().to_string(),
+        });
+    }
+
+    /// Register a state-change handler (P1-2). Fired on every legal
+    /// transition with the new state — a typed convenience over
+    /// filtering `Event::StateChanged` from [`Self::on_event`].
+    pub fn on_state_change<F>(&self, handler: F)
+    where
+        F: Fn(OrchestratorState) + Send + Sync + 'static,
+    {
+        self.events.on(move |event| {
+            if let crate::events::Event::StateChanged { state } = event {
+                if let Some(s) = OrchestratorState::from_wire(&state) {
+                    handler(s);
+                }
+            }
+        });
     }
 
     pub fn clear_memory(&self) {

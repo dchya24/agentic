@@ -1,13 +1,16 @@
 //! Tool-call execution paths.
 //!
 //! Two flavors live here:
-//! - [`Orchestrator::handle_tool_calls`] — synchronous, sequential.
-//!   Used by [`Orchestrator::run`].
-//! - [`Orchestrator::handle_tool_calls_parallel`] — async, batches
-//!   consecutive read-only tools. Used by [`Orchestrator::run_stream`].
+//! - [`Orchestrator::handle_tool_calls`] — synchronous. Used by
+//!   [`Orchestrator::run`].
+//! - [`Orchestrator::handle_tool_calls_parallel`] — async. Used by
+//!   [`Orchestrator::run_stream`].
 //!
-//! Both go through the same safety + confirmation pre-pass before
-//! executing anything.
+//! Both share the same shape: a sequential safety + confirmation
+//! pre-pass produces a slot list, then `ToolRegistry::plan_batches`
+//! decides the schedule (consecutive parallel-safe calls run
+//! concurrently via `ToolRegistry::execute_batch`; everything else runs
+//! alone in original order).
 
 use crate::events::Event;
 use crate::memory::Message;
@@ -15,8 +18,9 @@ use crate::orchestrator::progress::DeltaThrottler;
 
 use std::sync::Arc;
 
-use super::messages::{build_tool_call_responses, truncate_tool_result};
-use super::Orchestrator;
+use super::{Orchestrator, OrchestratorState};
+use crate::context::builder::{build_tool_call_responses, truncate_tool_result};
+use crate::tool_registry::{BatchCall, ScheduleEntry};
 
 /// Hasil eksekusi satu tool + metadata untuk `Event::ToolOutput`.
 struct SlotOutcome {
@@ -104,10 +108,13 @@ impl Orchestrator {
                 content,
                 tool_call_responses,
             ));
+        // P1-2: the tool turn is observable — entry marks ExecutingTools;
+        // confirmations below temporarily move to WaitingForUser.
+        self.set_state(OrchestratorState::ExecutingTools);
 
         // Same Slot model as the async path: pre-pass for safety +
-        // confirmation in the original tool-call order, then execute
-        // consecutive read-only batches concurrently.
+        // confirmation in the original tool-call order, then batched
+        // execution planned by `ToolRegistry::plan_batches`.
         enum Slot {
             PreResolved {
                 name: String,
@@ -118,7 +125,6 @@ impl Orchestrator {
                 name: String,
                 id: String,
                 args: serde_json::Value,
-                read_only: bool,
             },
         }
 
@@ -134,16 +140,24 @@ impl Orchestrator {
                 arguments: args.clone(),
             });
 
+            // P2-1: one policy pipeline for builtin, MCP, and external
+            // tools — per-arg scoring + the tool's static risk floor.
+            let policy = self
+                .safety
+                .evaluate_tool(&crate::safety::PolicyRequest::new(
+                    tc_name.clone(),
+                    args.clone(),
+                    self.tools.metadata(tc_name).risk,
+                ));
             let target = Self::extract_target(&args);
-            let decision = self.safety.evaluate(tc_name, target);
 
-            if !decision.allowed {
-                let reason = if decision.reason.is_empty() {
-                    "Action denied by safety policy".to_string()
-                } else {
-                    decision.reason.clone()
-                };
-                println!("  -> [DENIED: {}]", reason);
+            if !policy.allowed {
+                let reason = policy
+                    .denial_reason
+                    .unwrap_or_else(|| "Action denied by safety policy".to_string());
+                self.events.emit(Event::System {
+                    message: format!("Tool {} denied: {}", tc_name, reason),
+                });
                 self.events.emit(Event::ToolOutput {
                     tool_name: tc_name.clone(),
                     output: serde_json::Value::String(format!("Blocked: {}", reason)),
@@ -161,11 +175,17 @@ impl Orchestrator {
                 continue;
             }
 
-            if decision.needs_confirmation {
+            if policy.confirmation_required {
                 let mut request = self.safety.create_request(tc_name, &format!("{:?}", args));
                 request.preview_diff = preview_diff_for_tool(tc_name, &args);
-                if !self.require_confirmation(request) {
-                    println!("  -> [SKIPPED - Confirmation denied]");
+                self.set_state(OrchestratorState::WaitingForUser);
+                self.events.emit(crate::events::Event::WaitingForUser);
+                let confirmed = self.require_confirmation(request);
+                self.set_state(OrchestratorState::ExecutingTools);
+                if !confirmed {
+                    self.events.emit(Event::System {
+                        message: format!("Tool {} skipped: confirmation denied", tc_name),
+                    });
                     self.events.emit(Event::ToolOutput {
                         tool_name: tc_name.clone(),
                         output: serde_json::Value::String(
@@ -185,186 +205,124 @@ impl Orchestrator {
                     continue;
                 }
                 self.safety
-                    .record_confirmation(tc_name, target, &decision.score, true);
+                    .record_confirmation(tc_name, target, &policy.score, true);
             }
 
-            let read_only = self.tools.is_read_only(tc_name);
             slots.push(Slot::Pending {
                 name: tc_name.clone(),
                 id: tc_id.clone(),
                 args,
-                read_only,
             });
         }
 
-        // Execution pass: walk slots batching consecutive read-only
-        // Pending entries. PreResolved slots and state-changing tools
-        // keep the original sequential semantics (a write is not
-        // batched with reads).
+        // Execution pass: the registry plans the batches — consecutive
+        // parallel-safe Pending entries run concurrently via
+        // `execute_batch`; everything else runs alone in original order.
+        let entries: Vec<crate::tool_registry::ScheduleEntry> = slots
+            .iter()
+            .map(|slot| match slot {
+                Slot::PreResolved { .. } => ScheduleEntry::PreResolved,
+                Slot::Pending { name, .. } => ScheduleEntry::Execute(name.clone()),
+            })
+            .collect();
+        let batches = self.tools.plan_batches(&entries);
+
         let mut results: Vec<Option<SlotOutcome>> = (0..slots.len()).map(|_| None).collect();
 
-        let mut i = 0;
-        while i < slots.len() {
-            match &slots[i] {
-                Slot::PreResolved { name, id, message } => {
-                    results[i] = Some(SlotOutcome {
-                        name: name.clone(),
-                        id: id.clone(),
-                        result: message.clone(),
-                        duration_ms: 0,
-                        success: false,
-                        truncated: false,
-                    });
-                    i += 1;
-                    continue;
-                }
-                Slot::Pending {
-                    read_only: false, ..
-                } => {
-                    // State-changing: run alone, sequentially, with live
-                    // deltas (run_command/run_script stream).
-                    if let Slot::Pending { name, id, args, .. } = &slots[i] {
-                        let outcome = self.execute_tool_live(id, name, args);
-                        results[i] = Some(outcome);
-                    }
-                    i += 1;
-                    continue;
-                }
-                Slot::Pending {
-                    read_only: true, ..
-                } => {}
-            }
+        for batch in batches {
+            let members: Vec<usize> = batch
+                .indices
+                .iter()
+                .copied()
+                .filter(|&i| matches!(slots[i], Slot::Pending { .. }))
+                .collect();
 
-            // Grow a run of consecutive read-only Pending slots.
-            let start = i;
-            let mut end = i + 1;
-            while end < slots.len() {
-                match &slots[end] {
-                    Slot::Pending {
-                        read_only: true, ..
-                    } => end += 1,
-                    _ => break,
-                }
-            }
-
-            // Single-element batch: cheaper to run inline than spawn.
-            if end - start == 1 {
-                if let Slot::Pending { name, id, args, .. } = &slots[start] {
-                    let outcome = self.execute_tool_live(id, name, args);
-                    results[start] = Some(outcome);
-                }
-                i = end;
-                continue;
-            }
-
-            // Multi-element batch: run threads in a scope so we can
-            // borrow `self` without 'static. Each thread drops its
-            // result into a slot keyed by index.
-            let max_chars = self.tool_result_max_chars;
-            let registry = self.tools.clone();
-            let mut batch_results: Vec<Option<SlotOutcome>> = (start..end).map(|_| None).collect();
-
-            // Emit ToolStart for every tool in the batch on the main
-            // thread (read-only tools don't stream, so no deltas follow).
-            for slot in slots.iter().skip(start).take(end - start) {
-                if let Slot::Pending { name, id, args, .. } = slot {
-                    self.events.emit(Event::ToolStart {
-                        tool_call_id: id.clone(),
-                        tool_name: name.clone(),
-                        arguments: args.clone(),
-                    });
-                }
-            }
-
-            std::thread::scope(|s| {
-                let mut handles = Vec::with_capacity(end - start);
-                for (local_idx, slot) in slots.iter().skip(start).take(end - start).enumerate() {
-                    if let Slot::Pending { name, id, args, .. } = slot {
-                        let registry = registry.clone();
-                        let name = name.clone();
-                        let id = id.clone();
-                        let args = args.clone();
-                        let handle = s.spawn(move || {
-                            let start = std::time::Instant::now();
-                            let raw = match registry.execute_by_name(&name, &args) {
-                                Ok(v) => serde_json::to_string_pretty(&v)
-                                    .unwrap_or_else(|_| v.to_string()),
-                                Err(e) => format!("Tool error: {}", e),
-                            };
-                            let duration_ms = start.elapsed().as_millis() as u64;
-                            let truncated = raw.len() > max_chars;
-                            let result = truncate_tool_result(&raw, max_chars);
-                            (local_idx, name, id, result, duration_ms, truncated)
+            if batch.parallel && members.len() > 1 {
+                // Emit ToolStart for every tool in the batch on the main
+                // thread (read-only tools don't stream, so no deltas
+                // follow).
+                for &i in &members {
+                    if let Slot::Pending { name, id, args } = &slots[i] {
+                        self.events.emit(Event::ToolStart {
+                            tool_call_id: id.clone(),
+                            tool_name: name.clone(),
+                            arguments: args.clone(),
                         });
-                        handles.push(handle);
                     }
                 }
-                for handle in handles {
-                    match handle.join() {
-                        Ok((local_idx, name, id, output, duration_ms, truncated)) => {
-                            let success = !output.starts_with("Tool error");
-                            batch_results[local_idx] = Some(SlotOutcome {
-                                name,
-                                id,
-                                result: output,
-                                duration_ms,
-                                success,
-                                truncated,
-                            });
-                        }
-                        Err(_) => {
-                            // A panic in a tool task: fill the matching
-                            // slot with a synthetic error result so the
-                            // model still gets a response.
-                            // We can't recover the slot identity from a
-                            // join error, so fill the next missing one.
-                            for (local_idx, item) in batch_results.iter_mut().enumerate() {
-                                if item.is_none() {
-                                    if let Slot::Pending { name, id, .. } =
-                                        &slots[start + local_idx]
-                                    {
-                                        *item = Some(SlotOutcome {
-                                            name: name.clone(),
-                                            id: id.clone(),
-                                            result: "Tool error: task panicked".to_string(),
-                                            duration_ms: 0,
-                                            success: false,
-                                            truncated: false,
-                                        });
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
 
-            for (local_idx, entry) in batch_results.into_iter().enumerate() {
-                results[start + local_idx] = entry;
-            }
-            i = end;
-        }
-
-        // Push results in original order. Emit ToolOutput events only
-        // for Pending slots (PreResolved already emitted theirs above).
-        let mut mem = self.memory.lock().unwrap();
-        for (idx, entry) in results.into_iter().enumerate() {
-            if let Some(outcome) = entry {
-                if matches!(slots[idx], Slot::Pending { .. }) {
-                    self.events.emit(Event::ToolOutput {
-                        tool_name: outcome.name.clone(),
-                        output: serde_json::Value::String(outcome.result.clone()),
-                        error: None,
-                        tool_call_id: outcome.id.clone(),
+                let calls: Vec<BatchCall> = members
+                    .iter()
+                    .filter_map(|&i| match &slots[i] {
+                        Slot::Pending { name, id, args } => Some(BatchCall {
+                            name: name.clone(),
+                            id: id.clone(),
+                            args: args.clone(),
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                let outcomes = self.tools.execute_batch(&calls, self.tool_result_max_chars);
+                for (&i, outcome) in members.iter().zip(outcomes) {
+                    results[i] = Some(SlotOutcome {
+                        name: outcome.name,
+                        id: outcome.id,
+                        result: outcome.output,
                         duration_ms: outcome.duration_ms,
                         success: outcome.success,
                         truncated: outcome.truncated,
                     });
                 }
-                mem.add_message(Message::tool(outcome.name, outcome.id, outcome.result));
+            } else {
+                for i in batch.indices {
+                    match &slots[i] {
+                        Slot::PreResolved { name, id, message } => {
+                            results[i] = Some(SlotOutcome {
+                                name: name.clone(),
+                                id: id.clone(),
+                                result: message.clone(),
+                                duration_ms: 0,
+                                success: false,
+                                truncated: false,
+                            });
+                        }
+                        Slot::Pending { name, id, args } => {
+                            // Exclusive / singleton: run alone,
+                            // sequentially, with live deltas
+                            // (run_command/run_script stream).
+                            results[i] = Some(self.execute_tool_live(id, name, args));
+                        }
+                    }
+                }
             }
         }
+
+        // Push results in original order. Emit ToolOutput events only
+        // for Pending slots (PreResolved already emitted theirs above).
+        {
+            let mut mem = self.memory.lock().unwrap();
+            for (idx, entry) in results.into_iter().enumerate() {
+                if let Some(outcome) = entry {
+                    if matches!(slots[idx], Slot::Pending { .. }) {
+                        self.events.emit(Event::ToolOutput {
+                            tool_name: outcome.name.clone(),
+                            output: serde_json::Value::String(outcome.result.clone()),
+                            error: None,
+                            tool_call_id: outcome.id.clone(),
+                            duration_ms: outcome.duration_ms,
+                            success: outcome.success,
+                            truncated: outcome.truncated,
+                        });
+                    }
+                    mem.add_message(Message::tool(outcome.name, outcome.id, outcome.result));
+                }
+            }
+        }
+
+        // P1-3: tool boundary — persist the turn before the next model
+        // request goes out. (Outside the memory lock: checkpointing
+        // re-locks memory.)
+        self.checkpoint();
     }
 
     /// Async variant of [`Self::handle_tool_calls`] that batches
@@ -392,6 +350,9 @@ impl Orchestrator {
                 content,
                 tool_call_responses,
             ));
+        // P1-2: the tool turn is observable — entry marks ExecutingTools;
+        // confirmations below temporarily move to WaitingForUser.
+        self.set_state(OrchestratorState::ExecutingTools);
 
         // Outcome of the safety+confirmation pre-pass for a single call.
         enum Slot {
@@ -402,13 +363,12 @@ impl Orchestrator {
                 id: String,
                 message: String,
             },
-            /// Needs to be executed. Carries the parsed args and a flag for
-            /// scheduling.
+            /// Needs to be executed. Carries the parsed args; batching
+            /// is decided by `ToolRegistry::plan_batches`.
             Pending {
                 name: String,
                 id: String,
                 args: serde_json::Value,
-                read_only: bool,
             },
         }
 
@@ -426,16 +386,24 @@ impl Orchestrator {
                 arguments: args.clone(),
             });
 
+            // P2-1: one policy pipeline for builtin, MCP, and external
+            // tools — per-arg scoring + the tool's static risk floor.
+            let policy = self
+                .safety
+                .evaluate_tool(&crate::safety::PolicyRequest::new(
+                    tc_name.clone(),
+                    args.clone(),
+                    self.tools.metadata(tc_name).risk,
+                ));
             let target = Self::extract_target(&args);
-            let decision = self.safety.evaluate(tc_name, target);
 
-            if !decision.allowed {
-                let reason = if decision.reason.is_empty() {
-                    "Action denied by safety policy".to_string()
-                } else {
-                    decision.reason.clone()
-                };
-                println!("  -> [DENIED: {}]", reason);
+            if !policy.allowed {
+                let reason = policy
+                    .denial_reason
+                    .unwrap_or_else(|| "Action denied by safety policy".to_string());
+                self.events.emit(Event::System {
+                    message: format!("Tool {} denied: {}", tc_name, reason),
+                });
                 self.events.emit(Event::ToolOutput {
                     tool_name: tc_name.clone(),
                     output: serde_json::Value::String(format!("Blocked: {}", reason)),
@@ -453,11 +421,17 @@ impl Orchestrator {
                 continue;
             }
 
-            if decision.needs_confirmation {
+            if policy.confirmation_required {
                 let mut request = self.safety.create_request(tc_name, &format!("{:?}", args));
                 request.preview_diff = preview_diff_for_tool(tc_name, &args);
-                if !self.require_confirmation(request) {
-                    println!("  -> [SKIPPED - Confirmation denied]");
+                self.set_state(OrchestratorState::WaitingForUser);
+                self.events.emit(crate::events::Event::WaitingForUser);
+                let confirmed = self.require_confirmation(request);
+                self.set_state(OrchestratorState::ExecutingTools);
+                if !confirmed {
+                    self.events.emit(Event::System {
+                        message: format!("Tool {} skipped: confirmation denied", tc_name),
+                    });
                     self.events.emit(Event::ToolOutput {
                         tool_name: tc_name.clone(),
                         output: serde_json::Value::String(
@@ -477,25 +451,104 @@ impl Orchestrator {
                     continue;
                 }
                 self.safety
-                    .record_confirmation(tc_name, target, &decision.score, true);
+                    .record_confirmation(tc_name, target, &policy.score, true);
             }
 
-            let read_only = self.tools.is_read_only(tc_name);
             slots.push(Slot::Pending {
                 name: tc_name.clone(),
                 id: tc_id.clone(),
                 args,
-                read_only,
             });
         }
 
-        // Execute slots in batches. Output is collected position-aligned to
-        // `slots` so we can push to memory in original order at the end.
+        // Execute slots in batches planned by the registry. Output is
+        // collected position-aligned to `slots` so we can push to memory
+        // in original order at the end.
+        let entries: Vec<ScheduleEntry> = slots
+            .iter()
+            .map(|slot| match slot {
+                Slot::PreResolved { .. } => ScheduleEntry::PreResolved,
+                Slot::Pending { name, .. } => ScheduleEntry::Execute(name.clone()),
+            })
+            .collect();
+        let batches = self.tools.plan_batches(&entries);
+
         let mut results: Vec<Option<SlotOutcome>> = (0..slots.len()).map(|_| None).collect();
 
-        let mut i = 0;
-        while i < slots.len() {
-            // PreResolved slots are written directly without execution.
+        for batch in batches {
+            let members: Vec<usize> = batch
+                .indices
+                .iter()
+                .copied()
+                .filter(|&i| matches!(slots[i], Slot::Pending { .. }))
+                .collect();
+
+            if batch.parallel && members.len() > 1 {
+                // Parallel-safe batch: one spawn_blocking running the
+                // registry's scoped-thread batch. These tools never
+                // stream, so no delta forwarder is needed.
+                for &i in &members {
+                    if let Slot::Pending { name, id, args } = &slots[i] {
+                        self.events.emit(Event::ToolStart {
+                            tool_call_id: id.clone(),
+                            tool_name: name.clone(),
+                            arguments: args.clone(),
+                        });
+                    }
+                }
+                let calls: Vec<BatchCall> = members
+                    .iter()
+                    .filter_map(|&i| match &slots[i] {
+                        Slot::Pending { name, id, args } => Some(BatchCall {
+                            name: name.clone(),
+                            id: id.clone(),
+                            args: args.clone(),
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                let registry = self.tools.clone();
+                let max_chars = self.tool_result_max_chars;
+                let joined =
+                    tokio::task::spawn_blocking(move || registry.execute_batch(&calls, max_chars))
+                        .await;
+                match joined {
+                    Ok(outcomes) => {
+                        for (&i, outcome) in members.iter().zip(outcomes) {
+                            results[i] = Some(SlotOutcome {
+                                name: outcome.name,
+                                id: outcome.id,
+                                result: outcome.output,
+                                duration_ms: outcome.duration_ms,
+                                success: outcome.success,
+                                truncated: outcome.truncated,
+                            });
+                        }
+                    }
+                    Err(join_err) => {
+                        // Whole batch task failed; synthetic error for
+                        // every member.
+                        for &i in &members {
+                            if let Slot::Pending { name, id, .. } = &slots[i] {
+                                results[i] = Some(SlotOutcome {
+                                    name: name.clone(),
+                                    id: id.clone(),
+                                    result: format!("Tool error: task panicked: {}", join_err),
+                                    duration_ms: 0,
+                                    success: false,
+                                    truncated: false,
+                                });
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Singleton batch: PreResolved is written directly; a Pending
+            // call runs alone with a delta forwarder so streaming tools
+            // (run_command/run_script) emit live output.
+            let i = batch.indices[0];
             if let Slot::PreResolved { name, id, message } = &slots[i] {
                 results[i] = Some(SlotOutcome {
                     name: name.clone(),
@@ -505,93 +558,59 @@ impl Orchestrator {
                     success: false,
                     truncated: false,
                 });
-                i += 1;
                 continue;
             }
 
-            // Determine batch bounds.
-            //   Pending + read_only     → grow batch while next is the same.
-            //   Pending + !read_only    → batch of one.
-            let start = i;
-            let mut end = i + 1;
-            if let Slot::Pending {
-                read_only: true, ..
-            } = &slots[i]
-            {
-                while end < slots.len() {
-                    match &slots[end] {
-                        Slot::Pending {
-                            read_only: true, ..
-                        } => end += 1,
-                        _ => break,
-                    }
-                }
-            }
-
-            // One progress channel per batch + a forwarder thread that
-            // converts deltas into ToolDelta events. Read-only tools never
-            // call on_progress (default `execute`), so the forwarder only
-            // ever sees deltas for streaming tools (run_command/run_script),
-            // which are always batch-of-one.
-            let (tx, rx) = std::sync::mpsc::channel::<(String, String, String)>();
-            let emitter = self.events.clone();
-            let throttler = Arc::new(DeltaThrottler::new(DELTA_BUDGET_CHARS));
-            let t2 = throttler.clone();
-            let fwd = std::thread::Builder::new()
-                .name("agentic-delta-fwd".into())
-                .spawn(move || {
-                    for (id, name, delta) in rx {
-                        if t2.accept(&delta) {
-                            emitter.emit(Event::ToolDelta {
-                                tool_call_id: id,
-                                tool_name: name,
-                                delta,
-                            });
-                        }
-                    }
-                })
-                .expect("spawn delta forwarder");
-
-            // Emit ToolStart + spawn one blocking task per call.
-            let mut handles = Vec::with_capacity(end - start);
-            for (slot_idx, slot) in slots.iter().enumerate().skip(start).take(end - start) {
-                if let Slot::Pending { name, id, args, .. } = slot {
-                    self.events.emit(Event::ToolStart {
-                        tool_call_id: id.clone(),
-                        tool_name: name.clone(),
-                        arguments: args.clone(),
-                    });
-
-                    let registry = self.tools.clone();
-                    let max_chars = self.tool_result_max_chars;
-                    let name = name.clone();
-                    let id = id.clone();
-                    let args = args.clone();
-                    let tx = tx.clone();
-                    let handle = tokio::task::spawn_blocking(move || {
-                        let start = std::time::Instant::now();
-                        let raw = match registry.execute_streaming_by_name(&name, &args, &|delta| {
-                            let _ = tx.send((id.clone(), name.clone(), delta.to_string()));
-                        }) {
-                            Ok(v) => {
-                                serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
+            if let Slot::Pending { name, id, args } = &slots[i] {
+                let (tx, rx) = std::sync::mpsc::channel::<(String, String, String)>();
+                let emitter = self.events.clone();
+                let throttler = Arc::new(DeltaThrottler::new(DELTA_BUDGET_CHARS));
+                let t2 = throttler.clone();
+                let fwd = std::thread::Builder::new()
+                    .name("agentic-delta-fwd".into())
+                    .spawn(move || {
+                        for (id, name, delta) in rx {
+                            if t2.accept(&delta) {
+                                emitter.emit(Event::ToolDelta {
+                                    tool_call_id: id,
+                                    tool_name: name,
+                                    delta,
+                                });
                             }
-                            Err(e) => format!("Tool error: {}", e),
-                        };
-                        let duration_ms = start.elapsed().as_millis() as u64;
-                        let truncated = raw.len() > max_chars;
-                        let result = truncate_tool_result(&raw, max_chars);
-                        (name, id, result, duration_ms, truncated)
-                    });
-                    handles.push((slot_idx, handle));
-                }
-            }
+                        }
+                    })
+                    .expect("spawn delta forwarder");
 
-            for (slot_idx, handle) in handles {
+                self.events.emit(Event::ToolStart {
+                    tool_call_id: id.clone(),
+                    tool_name: name.clone(),
+                    arguments: args.clone(),
+                });
+
+                let registry = self.tools.clone();
+                let max_chars = self.tool_result_max_chars;
+                let name = name.clone();
+                let id = id.clone();
+                let args = args.clone();
+                let tx2 = tx.clone();
+                let handle = tokio::task::spawn_blocking(move || {
+                    let start = std::time::Instant::now();
+                    let raw = match registry.execute_streaming_by_name(&name, &args, &|delta| {
+                        let _ = tx2.send((id.clone(), name.clone(), delta.to_string()));
+                    }) {
+                        Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()),
+                        Err(e) => format!("Tool error: {}", e),
+                    };
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    let truncated = raw.len() > max_chars;
+                    let result = truncate_tool_result(&raw, max_chars);
+                    (name, id, result, duration_ms, truncated)
+                });
+
                 match handle.await {
                     Ok((name, id, output, duration_ms, truncated)) => {
                         let success = !output.starts_with("Tool error");
-                        results[slot_idx] = Some(SlotOutcome {
+                        results[i] = Some(SlotOutcome {
                             name,
                             id,
                             result: output,
@@ -602,8 +621,8 @@ impl Orchestrator {
                     }
                     Err(join_err) => {
                         // Recover slot identity for the error message.
-                        if let Slot::Pending { name, id, .. } = &slots[slot_idx] {
-                            results[slot_idx] = Some(SlotOutcome {
+                        if let Slot::Pending { name, id, .. } = &slots[i] {
+                            results[i] = Some(SlotOutcome {
                                 name: name.clone(),
                                 id: id.clone(),
                                 result: format!("Tool error: task panicked: {}", join_err),
@@ -614,39 +633,44 @@ impl Orchestrator {
                         }
                     }
                 }
+
+                // Drop our Sender + drain the forwarder so every delta is
+                // emitted BEFORE the final ToolOutput for this batch.
+                drop(tx);
+                fwd.join().expect("delta forwarder panicked");
             }
-
-            // Drop our Sender + drain the forwarder so every delta is
-            // emitted BEFORE the final ToolOutput for this batch.
-            drop(tx);
-            fwd.join().expect("delta forwarder panicked");
-
-            i = end;
         }
 
         // Push results in the original order so the model sees a coherent
         // tool/assistant/tool/assistant interleaving. Also emit ToolOutput
         // events for any executed (Pending) slots; PreResolved slots
         // already emitted their outcome above.
-        let mut mem = self.memory.lock().unwrap();
-        for (idx, entry) in results.into_iter().enumerate() {
-            if let Some(outcome) = entry {
-                // Only Pending slots produce real tool output; PreResolved
-                // already emitted theirs.
-                if matches!(slots[idx], Slot::Pending { .. }) {
-                    self.events.emit(Event::ToolOutput {
-                        tool_name: outcome.name.clone(),
-                        output: serde_json::Value::String(outcome.result.clone()),
-                        error: None,
-                        tool_call_id: outcome.id.clone(),
-                        duration_ms: outcome.duration_ms,
-                        success: outcome.success,
-                        truncated: outcome.truncated,
-                    });
+        {
+            let mut mem = self.memory.lock().unwrap();
+            for (idx, entry) in results.into_iter().enumerate() {
+                if let Some(outcome) = entry {
+                    // Only Pending slots produce real tool output; PreResolved
+                    // already emitted theirs.
+                    if matches!(slots[idx], Slot::Pending { .. }) {
+                        self.events.emit(Event::ToolOutput {
+                            tool_name: outcome.name.clone(),
+                            output: serde_json::Value::String(outcome.result.clone()),
+                            error: None,
+                            tool_call_id: outcome.id.clone(),
+                            duration_ms: outcome.duration_ms,
+                            success: outcome.success,
+                            truncated: outcome.truncated,
+                        });
+                    }
+                    mem.add_message(Message::tool(outcome.name, outcome.id, outcome.result));
                 }
-                mem.add_message(Message::tool(outcome.name, outcome.id, outcome.result));
             }
         }
+
+        // P1-3: tool boundary — persist the turn before the next model
+        // request goes out. (Outside the memory lock: checkpointing
+        // re-locks memory.)
+        self.checkpoint();
     }
 }
 

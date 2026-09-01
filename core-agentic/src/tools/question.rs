@@ -16,11 +16,14 @@
 //! a fallback response so the agent doesn't stall.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult,
+    ToolSchema,
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,20 +81,76 @@ pub trait QuestionHandler: Send + Sync {
 }
 
 /// A thread-safe holder for the question handler. `None` means no UI
-/// is connected and the tool returns a fallback response.
-pub(crate) static QUESTION_HANDLER: std::sync::LazyLock<Mutex<Option<Box<dyn QuestionHandler>>>> =
+/// is connected and the tool returns a fallback response. Stores an
+/// `Arc` so the (deprecated) global slot can be shared read-only.
+pub(crate) static QUESTION_HANDLER: std::sync::LazyLock<Mutex<Option<Arc<dyn QuestionHandler>>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
-/// Register a question handler globally. Called once by the CLI at startup.
+/// Helper trait object alias used by the deprecated global slot.
+trait QuestionHandlerShared {
+    fn clone_handler(&self) -> Arc<dyn QuestionHandler>;
+}
+
+impl QuestionHandlerShared for Arc<dyn QuestionHandler> {
+    fn clone_handler(&self) -> Arc<dyn QuestionHandler> {
+        self.clone()
+    }
+}
+
+/// Register a question handler globally.
+///
+/// Deprecated (P2-4): attach handlers per-instance instead —
+/// `QuestionTool::with_handler` or
+/// [`crate::tools::install_question_handler`]. The global slot remains
+/// functional for hosts that have not migrated yet.
+#[deprecated(
+    since = "0.4.3",
+    note = "attach the handler per-instance: QuestionTool::with_handler or install_question_handler"
+)]
 pub fn set_question_handler(handler: Box<dyn QuestionHandler>) {
     let mut slot = QUESTION_HANDLER.lock().unwrap();
-    *slot = Some(handler);
+    // Global slot stores Arc; adapt the boxed handler for sharing.
+    *slot = Some(Arc::from(handler));
 }
 
 /// Clear the registered handler (e.g. on shutdown).
+#[deprecated(
+    since = "0.4.3",
+    note = "the per-instance handler lifecycle replaces the global slot"
+)]
 pub fn clear_question_handler() {
     let mut slot = QUESTION_HANDLER.lock().unwrap();
     *slot = None;
+}
+
+/// Wire a per-instance question handler into a registry (P2-4):
+/// replaces the registered `question` tool with one that routes to
+/// `handler`. `None` installs the skip-all fallback — right for
+/// non-interactive runs.
+pub fn install_question_handler(
+    tools: &crate::tool_registry::ToolRegistry,
+    handler: Option<Arc<dyn QuestionHandler>>,
+) {
+    tools.unregister("question");
+    let tool = match handler {
+        Some(h) => QuestionTool::new().with_handler(h),
+        None => QuestionTool::new(),
+    };
+    tools.register(Box::new(tool));
+}
+
+/// Internal (non-deprecated) read of the global slot for the fallback
+/// resolution path.
+pub(crate) fn global_question_handler() -> Option<Arc<dyn QuestionHandler>> {
+    // The static holds Box<dyn QuestionHandler>; we cannot clone it out.
+    // Instead, expose a snapshot through the same Mutex — but because
+    // Box is not shareable, the global slot stores an Arc under the hood
+    // (see QUESTION_HANDLER definition).
+    QUESTION_HANDLER
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|h| h.clone_handler())
 }
 
 // ---------------------------------------------------------------------------
@@ -115,11 +174,23 @@ fn fallback_answers(questions: &[QuestionPrompt]) -> Vec<QuestionAnswer> {
 // Tool implementation
 // ---------------------------------------------------------------------------
 
-pub struct QuestionTool;
+pub struct QuestionTool {
+    /// Per-instance handler (P2-4): each registry/orchestrator wires
+    /// its own UI. `None` falls back to the deprecated process-global,
+    /// then to the skip-all fallback.
+    handler: Option<Arc<dyn QuestionHandler>>,
+}
 
 impl QuestionTool {
     pub fn new() -> Self {
-        Self
+        Self { handler: None }
+    }
+
+    /// Attach this instance's UI handler — the per-session path that
+    /// replaces the process-global registration.
+    pub fn with_handler(mut self, handler: Arc<dyn QuestionHandler>) -> Self {
+        self.handler = Some(handler);
+        self
     }
 }
 
@@ -195,10 +266,12 @@ impl Tool for QuestionTool {
             }
         }
 
-        // Try the registered handler; fall back to skip-all.
-        let answers = {
-            let handler = QUESTION_HANDLER.lock().unwrap();
-            match handler.as_ref() {
+        // Resolution order (P2-4): per-instance handler → deprecated
+        // process-global → skip-all fallback.
+        let answers = if let Some(h) = &self.handler {
+            h.handle(&questions)
+        } else {
+            match global_question_handler() {
                 Some(h) => h.handle(&questions),
                 None => {
                     tracing::warn!(
@@ -228,11 +301,20 @@ impl Tool for QuestionTool {
         }))
     }
 
-    /// `question` is read-only — it doesn't modify any files or run
-    /// commands. But it's interactive (blocks on user input), so it
-    /// should not be parallelized with other tools.
+    /// `question` doesn't modify state — but it's interactive (blocks on
+    /// user input), so it must be scheduled exclusively, never batched.
     fn is_read_only(&self) -> bool {
         true
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            mutability: Mutability::ReadOnly,
+            concurrency: Concurrency::Exclusive,
+            idempotent: false,
+            risk: 0,
+            side_effects: SideEffects::UserFacing,
+        }
     }
 }
 
@@ -263,6 +345,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn returns_skip_all_when_no_handler() {
         // Make sure no handler is registered.
         clear_question_handler();
@@ -287,6 +370,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn invokes_registered_handler() {
         struct TestHandler;
         impl QuestionHandler for TestHandler {
@@ -356,5 +440,80 @@ mod tests {
         assert!(qp.options.is_empty());
         assert!(!qp.custom);
         assert!(!qp.multiple);
+    }
+}
+
+// -----------------------------------------------------------------
+// P2-4: per-instance handler wiring
+// -----------------------------------------------------------------
+
+#[cfg(test)]
+mod per_instance_tests {
+    use super::*;
+    use crate::ToolRegistry;
+
+    struct EchoHandler;
+    impl QuestionHandler for EchoHandler {
+        fn handle(&self, questions: &[QuestionPrompt]) -> Vec<QuestionAnswer> {
+            questions
+                .iter()
+                .map(|q| QuestionAnswer {
+                    question: q.question.clone(),
+                    answer: vec!["echoed".to_string()],
+                    skipped: false,
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn instance_handler_answers_without_global_slot() {
+        // Global slot must be empty for this test to prove the
+        // per-instance path; the skip-all test clears it, but be
+        // defensive about ordering.
+        #[allow(deprecated)]
+        clear_question_handler();
+
+        let tool = QuestionTool::new().with_handler(Arc::new(EchoHandler));
+        let result = tool
+            .execute(serde_json::json!({
+                "questions": [{"question": "Depth?"}]
+            }))
+            .unwrap();
+        assert_eq!(result["answers"][0]["answer"][0], "echoed");
+        assert_eq!(result["skipped"], 0);
+    }
+
+    #[test]
+    fn install_question_handler_swaps_registry_tool() {
+        let tools = ToolRegistry::new();
+        tools.register(Box::new(QuestionTool::new()));
+        assert!(tools.has_tool("question"));
+
+        // Interactive path: install the handler.
+        core_tools_install(&tools, Some(Arc::new(EchoHandler)));
+        let out = tools
+            .execute(crate::tool::ToolCall::new(
+                "question",
+                serde_json::json!({"questions": [{"question": "Pick one"}]}),
+            ))
+            .unwrap();
+        let out = out.output;
+        assert_eq!(out["answered"], 1);
+        assert_eq!(out["answers"][0]["answer"][0], "echoed");
+
+        // Non-interactive path: None restores the skip-all tool.
+        core_tools_install(&tools, None);
+        let out = tools
+            .execute(crate::tool::ToolCall::new(
+                "question",
+                serde_json::json!({"questions": [{"question": "Pick one"}]}),
+            ))
+            .unwrap();
+        assert_eq!(out.output["skipped"], 1);
+    }
+
+    fn core_tools_install(tools: &ToolRegistry, handler: Option<Arc<dyn QuestionHandler>>) {
+        crate::tools::question::install_question_handler(tools, handler);
     }
 }

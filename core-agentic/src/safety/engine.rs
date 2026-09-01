@@ -27,6 +27,59 @@ pub struct Safety {
     mode: Mutex<PermissionMode>,
 }
 
+// ---------------------------------------------------------------------------
+// Policy pipeline types (P2-1)
+// ---------------------------------------------------------------------------
+
+/// Input to the unified policy pipeline ([`Safety::evaluate_tool`]).
+#[derive(Debug, Clone)]
+pub struct PolicyRequest {
+    /// Tool name (e.g. `run_command`, an MCP tool id).
+    pub tool: String,
+    /// Requested arguments (JSON as produced by the model).
+    pub args: serde_json::Value,
+    /// Static tool-level risk floor (0-100) from `ToolMetadata::risk`.
+    /// `0` for unknown tools — never assume safety.
+    pub risk_floor: u8,
+}
+
+impl PolicyRequest {
+    pub fn new(tool: impl Into<String>, args: serde_json::Value, risk_floor: u8) -> Self {
+        Self {
+            tool: tool.into(),
+            args,
+            risk_floor,
+        }
+    }
+
+    /// Extract the audit/sandbox target from the arguments — the same
+    /// convention the orchestrator uses (`command` > `path` >
+    /// `file_path`, first string wins).
+    pub fn target(&self) -> Option<&str> {
+        self.args
+            .get("command")
+            .or_else(|| self.args.get("path"))
+            .or_else(|| self.args.get("file_path"))
+            .and_then(|v| v.as_str())
+    }
+}
+
+/// Output of the unified policy pipeline.
+#[derive(Debug, Clone)]
+pub struct PolicyDecision {
+    /// Whether the call may proceed at all.
+    pub allowed: bool,
+    /// Why the call was denied (set iff `!allowed`).
+    pub denial_reason: Option<String>,
+    /// Whether a user confirmation is required before execution.
+    pub confirmation_required: bool,
+    /// Effective risk: max(per-argument score, tool risk floor).
+    pub score: RiskScore,
+    /// Post-decision notes (floor adjustments, sanitization hints) for
+    /// audit trails and UIs.
+    pub notes: Vec<String>,
+}
+
 impl Default for Safety {
     fn default() -> Self {
         Self::new()
@@ -316,8 +369,74 @@ impl Safety {
         }
     }
 
-    /// Full safety evaluation: returns a decision without blocking.
-    /// This is the primary entry point for the orchestrator.
+    // -----------------------------------------------------------------------
+    // Unified tool-request policy pipeline (P2-1)
+    // -----------------------------------------------------------------------
+
+    /// Evaluate a tool request through the ONE policy pipeline used for
+    /// builtin, MCP, and external tools alike.
+    ///
+    /// Combines the safety engine's per-argument scoring (blocklist,
+    /// sandbox, rate limit, plan mode — see [`Self::evaluate`]) with the
+    /// tool's static capability metadata: the tool-level risk floor
+    /// (`ToolMetadata::risk`, 0-100) raises the *effective* risk used
+    /// for the confirmation gate, so a low-argument call to an
+    /// inherently risky tool class still surfaces for review.
+    ///
+    /// Denial and sandbox decisions always come from the per-argument
+    /// evaluation — a capability floor never *grants* permission.
+    pub fn evaluate_tool(&self, request: &PolicyRequest) -> PolicyDecision {
+        let decision = self.evaluate(&request.tool, request.target());
+
+        let floor = f64::from(request.risk_floor) / 100.0;
+        let mut notes: Vec<String> = Vec::new();
+
+        if !decision.allowed {
+            return PolicyDecision {
+                allowed: false,
+                denial_reason: Some(if decision.reason.is_empty() {
+                    "Action denied by safety policy".to_string()
+                } else {
+                    decision.reason.clone()
+                }),
+                confirmation_required: false,
+                score: decision.score,
+                notes,
+            };
+        }
+
+        let effective = decision.score.value.max(floor);
+        if floor > decision.score.value {
+            notes.push(format!(
+                "tool risk floor {} raised effective risk {:.2} → {:.2}",
+                request.risk_floor, decision.score.value, effective
+            ));
+        }
+
+        // The floor may only *raise* the confirmation bar in modes where
+        // confirmations exist at all. Yolo auto-approves (except hard
+        // blocks) and Plan decides by allow/deny — never prompt.
+        let confirmation_required = match *self.mode.lock().unwrap() {
+            PermissionMode::Yolo | PermissionMode::Plan => decision.needs_confirmation,
+            PermissionMode::Default => {
+                decision.needs_confirmation
+                    || (self.config.require_confirmation
+                        && effective > self.config.auto_approve_threshold)
+            }
+        };
+
+        PolicyDecision {
+            allowed: true,
+            denial_reason: None,
+            confirmation_required,
+            score: crate::safety::risk::RiskScore::new(
+                effective,
+                crate::safety::risk::RiskLevel::from_score(effective),
+            ),
+            notes,
+        }
+    }
+
     pub fn evaluate(&self, action: &str, target: Option<&str>) -> SafetyDecision {
         let mode = *self.mode.lock().unwrap();
 

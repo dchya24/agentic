@@ -3,7 +3,7 @@ use std::path::Path;
 
 use regex::Regex;
 
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{Tool, ToolError, ToolMetadata, ToolParam, ToolResult, ToolSchema};
 
 pub struct GrepTool;
 
@@ -26,6 +26,10 @@ impl Tool for GrepTool {
 
     fn is_read_only(&self) -> bool {
         true
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::read_only()
     }
 
     fn description(&self) -> &str {

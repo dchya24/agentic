@@ -417,6 +417,11 @@ impl PlannerAgent {
                 goal
             ),
         });
+        // P0-3 lifecycle signal: frontends key plan-UI visibility off
+        // this event, the System message stays for text-based logs.
+        self.events.emit(crate::events::Event::PlanCreated {
+            steps_total: plan.steps.len(),
+        });
 
         Ok(plan)
     }
@@ -431,6 +436,10 @@ impl PlannerAgent {
         } else {
             PlanStatus::Draft
         };
+        // P0-3 lifecycle signal — same emission as the LLM path.
+        self.events.emit(crate::events::Event::PlanCreated {
+            steps_total: plan.steps.len(),
+        });
         plan
     }
 
@@ -632,6 +641,20 @@ impl PlannerAgent {
             }
             plan.touch();
 
+            // P0-3 step lifecycle: index is the step's position in the
+            // declared plan order, not the execution order (dependencies
+            // may reorder execution).
+            let step_index = plan
+                .steps
+                .iter()
+                .position(|s| s.id == step_id)
+                .unwrap_or_default();
+            self.events.emit(crate::events::Event::StepStarted {
+                index: step_index,
+                total: plan.steps.len(),
+                description: step_desc.clone(),
+            });
+
             self.emit_plan_progress(plan, &step_id, &step_desc, "in_progress");
 
             self.events.emit(crate::events::Event::ToolCall {
@@ -689,6 +712,12 @@ impl PlannerAgent {
                 s.result = result_text.clone();
             }
             plan.touch();
+
+            self.events.emit(crate::events::Event::StepCompleted {
+                index: step_index,
+                total: plan.steps.len(),
+                status: new_status.to_string(),
+            });
 
             self.events.emit(crate::events::Event::ToolOutput {
                 tool_name: step_tool.unwrap_or_else(|| "none".to_string()),
@@ -1651,5 +1680,136 @@ mod tests {
         } else {
             panic!("Expected PlanReplanned event");
         }
+    }
+
+    // ---- P0-3 lifecycle emissions ----
+
+    fn planner() -> PlannerAgent {
+        let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
+        ));
+        PlannerAgent::new(provider).with_config(PlannerConfig {
+            require_approval: false,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn create_plan_manual_emits_plan_created() {
+        let planner = planner();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let seen = seen.clone();
+            planner.on(move |e| seen.lock().unwrap().push(e));
+        }
+
+        let plan = planner.create_plan_manual("Goal", vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(plan.steps.len(), 2);
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        match &seen[0] {
+            crate::events::Event::PlanCreated { steps_total } => assert_eq!(*steps_total, 2),
+            other => panic!("expected PlanCreated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn execute_plan_emits_step_started_and_completed_in_order() {
+        let planner = planner();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let seen = seen.clone();
+            planner.on(move |e| seen.lock().unwrap().push(e));
+        }
+
+        let tools = ToolRegistry::new();
+        let plan = Plan::new("Goal").with_steps(vec![Step::new("Step A"), Step::new("Step B")]);
+        let mut plan = plan;
+        plan.status = PlanStatus::Draft;
+
+        let result = planner.execute_plan(&mut plan, &tools).unwrap();
+        assert_eq!(result.status, PlanStatus::Completed);
+
+        // Both no-tool steps complete without touching the provider.
+        let seen = seen.lock().unwrap();
+        let starts: Vec<(usize, usize, &str)> = seen
+            .iter()
+            .filter_map(|e| match e {
+                crate::events::Event::StepStarted {
+                    index,
+                    total,
+                    description,
+                } => Some((*index, *total, description.as_str())),
+                _ => None,
+            })
+            .collect();
+        let completions: Vec<(usize, usize, &str)> = seen
+            .iter()
+            .filter_map(|e| match e {
+                crate::events::Event::StepCompleted {
+                    index,
+                    total,
+                    status,
+                } => Some((*index, *total, status.as_str())),
+                _ => None,
+            })
+            .collect();
+
+        // Step lifecycle pairs fire in declared order: started→completed.
+        assert_eq!(starts, vec![(0, 2, "Step A"), (1, 2, "Step B")]);
+        assert_eq!(completions, vec![(0, 2, "completed"), (1, 2, "completed")]);
+        // Interleaving: each step's Started precedes its Completed.
+        for (i, (s_idx, _, _)) in starts.iter().enumerate() {
+            let (c_idx, _, _) = completions[i];
+            assert_eq!(s_idx, &c_idx);
+        }
+    }
+
+    #[test]
+    fn execute_plan_step_failure_emits_completed_with_failed_status() {
+        let provider = std::sync::Arc::new(crate::providers::openai::OpenAIProvider::new(
+            crate::providers::openai::OpenAIProviderConfig::new(
+                "test",
+                "http://localhost:1",
+                "key",
+                "model",
+            ),
+        ));
+        // No replan: the failure path would otherwise call the LLM.
+        let planner = PlannerAgent::new(provider).with_config(PlannerConfig {
+            require_approval: false,
+            max_replan_attempts: 0,
+            ..Default::default()
+        });
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let seen = seen.clone();
+            planner.on(move |e| seen.lock().unwrap().push(e));
+        }
+
+        let tools = ToolRegistry::new(); // no tools registered → tool step fails
+        let plan = Plan::new("Goal").with_steps(vec![
+            Step::new("Do work").with_tool("nonexistent_tool", serde_json::json!({}))
+        ]);
+        let mut plan = plan;
+        plan.status = PlanStatus::Draft;
+
+        let result = planner.execute_plan(&mut plan, &tools).unwrap();
+        assert_eq!(result.steps_failed, 1);
+
+        let seen = seen.lock().unwrap();
+        let has_failed_completion = seen.iter().any(|e| {
+            matches!(
+                e,
+                crate::events::Event::StepCompleted { status, .. } if status == "failed"
+            )
+        });
+        assert!(has_failed_completion);
     }
 }

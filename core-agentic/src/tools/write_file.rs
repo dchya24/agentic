@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult,
+    ToolSchema,
+};
 
 pub struct WriteFileTool;
 
@@ -101,5 +104,15 @@ impl Tool for WriteFileTool {
             "lines_added": stats.added,
             "lines_removed": stats.removed,
         }))
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            mutability: Mutability::Mutating,
+            concurrency: Concurrency::Exclusive,
+            idempotent: true,
+            risk: 25,
+            side_effects: SideEffects::FsWrite,
+        }
     }
 }

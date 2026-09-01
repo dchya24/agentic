@@ -1,14 +1,15 @@
 //! Memory and context management for agentic AI sessions.
 //!
-//! Provides sliding-window context management, message pinning,
-//! session-based isolation, disk persistence, and smart summarization.
+//! Pure storage: message CRUD, pinning, session-based isolation, disk
+//! persistence, and summarization. Window selection and token-budget
+//! policy live in [`crate::context`].
 //!
 //! Module layout:
 //! - [`types`] — `Message`, `MessageRole`, `SessionInfo`, `MemoryConfig`,
 //!   `ContextWindow`, `SummarizedContext`, plus the `estimate_tokens`
 //!   helper. Pure data, no behavior beyond constructors.
-//! - [`store`] — the `Memory` struct itself: CRUD, context-window
-//!   building, pinning, search, and session lifecycle.
+//! - [`store`] — the `Memory` struct itself: CRUD, pinning, search, and
+//!   session lifecycle.
 //! - [`compaction`] — heuristic and LLM-driven compaction methods on
 //!   `Memory`.
 //! - [`persist`] — disk persistence (`persist`, `load`,
@@ -140,18 +141,16 @@ mod tests {
     }
 
     #[test]
-    fn test_get_context_limit() {
+    fn test_messages_keep_insertion_order() {
         let mut m = memory();
         for i in 0..10 {
             m.add_message(Message::user(format!("msg {}", i)));
         }
 
-        let ctx = m.get_context(3);
-        assert_eq!(ctx.len(), 3);
-        // Should be the last 3
-        assert!(ctx[0].content.contains("msg 7"));
-        assert!(ctx[1].content.contains("msg 8"));
-        assert!(ctx[2].content.contains("msg 9"));
+        let msgs = m.get_messages();
+        assert_eq!(msgs.len(), 10);
+        assert!(msgs[0].content.contains("msg 0"));
+        assert!(msgs[9].content.contains("msg 9"));
     }
 
     #[test]
@@ -217,49 +216,6 @@ mod tests {
         // Pinned message should be kept
         assert!(result.kept_ids.contains(&pinned_id));
         assert!(m.get_messages().iter().any(|msg| msg.id == pinned_id));
-    }
-
-    // --- Context Window ---
-
-    #[test]
-    fn test_context_window_within_budget() {
-        let mut m = memory();
-        for i in 0..5 {
-            m.add_message(Message::user(format!("short {}", i)));
-        }
-        let ctx = m.get_context_window();
-        assert_eq!(ctx.messages.len(), 5);
-        assert!(!ctx.was_compacted);
-    }
-
-    #[test]
-    fn test_context_window_respects_limit() {
-        let mut config = MemoryConfig::default();
-        config.context_message_limit = 3;
-        let mut m = Memory::with_config(config);
-
-        for i in 0..10 {
-            m.add_message(Message::user(format!("msg {}", i)));
-        }
-
-        let ctx = m.get_context_window();
-        assert!(ctx.messages.len() <= 3);
-    }
-
-    #[test]
-    fn test_context_window_with_summary() {
-        let mut m = memory_small();
-        for i in 0..20 {
-            m.add_message(Message::user(format!(
-                "padding message {} with enough text to fill budget",
-                i
-            )));
-        }
-        m.compact();
-
-        let ctx = m.get_context_window();
-        assert!(ctx.was_compacted);
-        assert!(ctx.removed_count > 0 || ctx.messages.len() < 20);
     }
 
     // --- Compaction ---
@@ -747,262 +703,5 @@ mod tests {
         m.add_message(Message::user(&long));
         assert_eq!(m.get_messages().len(), 1);
         assert!(m.token_count() > 0);
-    }
-
-    // ---- get_context_with_user_anchor ----
-
-    #[test]
-    fn anchor_extends_to_include_user_when_window_too_small() {
-        // Simulate an agent run with one user message followed by a long
-        // chain of assistant + tool turns. A naive last-N slice would
-        // contain no user message, which providers reject.
-        let mut m = memory();
-        m.add_message(Message::user("original prompt"));
-        for i in 0..30 {
-            m.add_message(Message::assistant(format!("thinking {}", i)));
-            m.add_message(Message::tool("read_file", format!("call-{}", i), "result"));
-        }
-
-        let ctx = m.get_context_with_user_anchor(20, None);
-        assert!(
-            ctx.iter().any(|msg| matches!(msg.role, MessageRole::User)),
-            "slice must contain at least one user message"
-        );
-        // First message of the slice should be the user prompt.
-        assert!(matches!(ctx[0].role, MessageRole::User));
-        assert_eq!(ctx[0].content, "original prompt");
-    }
-
-    #[test]
-    fn anchor_keeps_short_slice_when_window_already_has_user() {
-        // The anchor only extends; if the window already contains a
-        // user, leave it alone.
-        let mut m = memory();
-        for i in 0..5 {
-            m.add_message(Message::user(format!("q{}", i)));
-            m.add_message(Message::assistant(format!("a{}", i)));
-        }
-        let ctx = m.get_context_with_user_anchor(4, None);
-        assert_eq!(ctx.len(), 4);
-        // Last 4 of 10: q3, a3, q4, a4.
-        assert_eq!(ctx[0].content, "q3");
-    }
-
-    #[test]
-    fn anchor_respects_hard_cap() {
-        // Even if the user message is far back, hard_cap caps the slice.
-        let mut m = memory();
-        m.add_message(Message::user("way back"));
-        for _ in 0..50 {
-            m.add_message(Message::assistant("more"));
-        }
-        let ctx = m.get_context_with_user_anchor(5, Some(10));
-        assert!(ctx.len() <= 10);
-        // The user message is older than the hard cap, so it WON'T be
-        // included — sanitize_for_provider in the orchestrator will then
-        // strip leading non-user messages and drop everything. That's
-        // acceptable: the alternative is sending an unbounded payload.
-    }
-
-    #[test]
-    fn anchor_handles_empty_memory() {
-        let m = memory();
-        let ctx = m.get_context_with_user_anchor(20, None);
-        assert!(ctx.is_empty());
-    }
-
-    #[test]
-    fn anchor_picks_most_recent_user_when_multiple_exist() {
-        // Multi-turn conversation. Latest user turn becomes the anchor,
-        // not the first one ever.
-        let mut m = memory();
-        m.add_message(Message::user("first prompt"));
-        m.add_message(Message::assistant("first answer"));
-        m.add_message(Message::user("second prompt"));
-        for i in 0..30 {
-            m.add_message(Message::assistant(format!("thinking {}", i)));
-        }
-        let ctx = m.get_context_with_user_anchor(5, None);
-        // The slice must start at the second user prompt, not the first.
-        assert!(matches!(ctx[0].role, MessageRole::User));
-        assert_eq!(ctx[0].content, "second prompt");
-    }
-
-    // ---- get_context_for_request (production turn-aware builder) ----
-
-    #[test]
-    fn turn_builder_starts_with_user_message() {
-        let mut m = memory();
-        m.add_message(Message::user("first"));
-        m.add_message(Message::assistant("a"));
-        m.add_message(Message::user("second"));
-        for i in 0..50 {
-            m.add_message(Message::assistant(format!("t{}", i)));
-            m.add_message(Message::tool("read_file", format!("c-{}", i), "r"));
-        }
-
-        let ctx = m.get_context_for_request(100_000);
-        assert!(matches!(ctx[0].role, MessageRole::User));
-    }
-
-    #[test]
-    fn turn_builder_keeps_complete_turns_under_budget() {
-        // Three small turns. With a generous budget all should fit.
-        let mut m = memory();
-        m.add_message(Message::user("q1"));
-        m.add_message(Message::assistant("a1"));
-        m.add_message(Message::user("q2"));
-        m.add_message(Message::assistant("a2"));
-        m.add_message(Message::user("q3"));
-        m.add_message(Message::assistant("a3"));
-
-        let ctx = m.get_context_for_request(100_000);
-        assert_eq!(ctx.len(), 6);
-        assert_eq!(ctx[0].content, "q1");
-        assert_eq!(ctx[5].content, "a3");
-    }
-
-    #[test]
-    fn turn_builder_drops_older_turns_when_budget_tight() {
-        // Three turns with ~heavy content. Budget admits only the
-        // newest few. The oldest must be dropped at the turn boundary,
-        // not mid-turn.
-        //
-        // We make the per-turn content large enough that the heuristic
-        // and a real BPE tokenizer both flag eviction — specifically
-        // we use natural-language repetition, not a single repeated
-        // character (BPE would compress "x".repeat(N) much harder than
-        // the heuristic does).
-        let mut m = memory();
-        let big: String = (0..400)
-            .map(|i| format!("sentence number {} with some words. ", i))
-            .collect();
-        m.add_message(Message::user(format!("q1 {}", big)));
-        m.add_message(Message::assistant(format!("a1 {}", big)));
-        m.add_message(Message::user(format!("q2 {}", big)));
-        m.add_message(Message::assistant(format!("a2 {}", big)));
-        m.add_message(Message::user(format!("q3 {}", big)));
-        m.add_message(Message::assistant(format!("a3 {}", big)));
-
-        // Tight budget: each turn is ~3.5k tokens (heuristic) or
-        // ~2.5k (tiktoken). Either way, 3000 tokens fits at most one
-        // full turn.
-        let ctx = m.get_context_for_request(3_000);
-        assert!(
-            ctx.len() <= 4,
-            "should drop at least one full turn; got {}",
-            ctx.len()
-        );
-        // Whatever survives must start with a user message.
-        assert!(matches!(ctx[0].role, MessageRole::User));
-    }
-
-    #[test]
-    fn turn_builder_never_splits_tool_pair() {
-        // Build a turn that has assistant+tool_call+tool_result.
-        // Even if the budget is tight, the splitter must keep them
-        // together (or drop them together), never one without the other.
-        use crate::providers::{ToolCallFunction, ToolCallResponse};
-
-        let mut m = memory();
-        m.add_message(Message::user("please look"));
-        m.add_message(Message::assistant_with_tool_calls(
-            "",
-            vec![ToolCallResponse {
-                id: "call-1".into(),
-                call_type: "function".into(),
-                function: ToolCallFunction {
-                    name: "read_file".into(),
-                    arguments: "{}".into(),
-                },
-            }],
-        ));
-        m.add_message(Message::tool("read_file", "call-1", "result"));
-        m.add_message(Message::assistant("final answer"));
-
-        let ctx = m.get_context_for_request(100_000);
-        // Find the assistant_with_tool_calls and verify the matching
-        // tool message is also present.
-        let assistant_idx = ctx
-            .iter()
-            .position(|m| !m.metadata.tool_calls.is_empty())
-            .expect("assistant tool_call should be in context");
-        let tool_id = &ctx[assistant_idx].metadata.tool_calls[0].id;
-        let tool_present = ctx.iter().any(|m| {
-            matches!(
-                &m.role,
-                MessageRole::Tool { tool_call_id, .. } if tool_call_id == tool_id
-            )
-        });
-        assert!(tool_present, "tool result must accompany tool_call");
-    }
-
-    #[test]
-    fn turn_builder_always_includes_most_recent_turn() {
-        // Even if the most recent turn alone exceeds budget, include it.
-        // The model will surface the truncation; sending nothing would
-        // be worse.
-        let mut m = memory();
-        let huge = "x".repeat(40_000); // ~10k tokens
-        m.add_message(Message::user(huge.clone()));
-
-        let ctx = m.get_context_for_request(1_000);
-        assert_eq!(ctx.len(), 1);
-        assert!(matches!(ctx[0].role, MessageRole::User));
-    }
-
-    #[test]
-    fn turn_builder_prepends_summary_when_present() {
-        let mut m = memory();
-        // Need enough messages for compact_with_summary to actually run
-        // (default keep_recent=4 — anything beyond that gets summarized).
-        for i in 0..6 {
-            m.add_message(Message::user(format!("q{}", i)));
-            m.add_message(Message::assistant(format!("a{}", i)));
-        }
-        m.compact_with_summary("Earlier we discussed X and Y.");
-
-        let ctx = m.get_context_for_request(100_000);
-        assert!(matches!(ctx[0].role, MessageRole::System));
-        assert!(ctx[0].content.contains("discussed X and Y"));
-        // A user/assistant follows.
-        assert!(ctx.len() > 1);
-        assert!(matches!(ctx[1].role, MessageRole::User));
-    }
-
-    // ---- request_budget / context_budget_ratio ----
-
-    #[test]
-    fn request_budget_applies_ratio() {
-        let mut config = MemoryConfig::default();
-        config.max_tokens = 100_000;
-        config.context_budget_ratio = 0.5;
-        let m = Memory::with_config(config);
-        assert_eq!(m.request_budget(), 50_000);
-    }
-
-    #[test]
-    fn request_budget_clamps_extreme_ratios() {
-        // Out-of-range ratios get clamped to a sensible band so a
-        // user typo doesn't accidentally send 0 or 99% of the window.
-        let mut config = MemoryConfig::default();
-        config.max_tokens = 100_000;
-
-        config.context_budget_ratio = 0.0;
-        let m = Memory::with_config(config.clone());
-        assert_eq!(m.request_budget(), 10_000); // clamped to 0.1
-
-        config.context_budget_ratio = 5.0;
-        let m = Memory::with_config(config);
-        assert_eq!(m.request_budget(), 95_000); // clamped to 0.95
-    }
-
-    #[test]
-    fn request_budget_default_is_seventy_percent() {
-        // Tracks the documented contract: default context_budget_ratio = 0.7.
-        let mut config = MemoryConfig::default();
-        config.max_tokens = 100_000;
-        let m = Memory::with_config(config);
-        assert_eq!(m.request_budget(), 70_000);
     }
 }

@@ -31,7 +31,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::file_tracker::FileTracker;
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolParam, ToolResult,
+    ToolSchema,
+};
 
 /// Sentinel filename used in unified diffs for "no file on this side".
 const DEV_NULL: &str = "/dev/null";
@@ -217,8 +220,14 @@ impl Tool for ApplyPatchTool {
         }))
     }
 
-    fn is_read_only(&self) -> bool {
-        false
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            mutability: Mutability::Mutating,
+            concurrency: Concurrency::Exclusive,
+            idempotent: false,
+            risk: 35,
+            side_effects: SideEffects::FsWrite,
+        }
     }
 }
 

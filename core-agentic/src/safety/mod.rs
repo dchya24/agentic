@@ -19,7 +19,7 @@ mod risk;
 
 pub use audit::{AuditDecision, AuditEntry, RateLimit};
 pub use config::{RiskPattern, SafetyConfig};
-pub use engine::{Safety, SafetyDecision};
+pub use engine::{PolicyDecision, PolicyRequest, Safety, SafetyDecision};
 pub use injection::{scan as scan_injection, InjectionMatch, InjectionScan};
 pub use risk::{ConfirmationRequest, PermissionMode, RiskLevel, RiskScore};
 

@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
+use crate::events::{Event, EventEmitter};
 use crate::skills::{SkillIndex, SkillLoader};
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{Tool, ToolError, ToolMetadata, ToolParam, ToolResult, ToolSchema};
 use std::collections::HashMap;
 
 /// Tool name exposed to the model.
@@ -24,6 +25,10 @@ pub struct SkillTool {
     index: Option<Arc<std::sync::RwLock<SkillIndex>>>,
     /// The global skill loader for activation.
     loader: Option<Box<dyn SkillLoader>>,
+    /// Optional shared event emitter. When present, a successful
+    /// activation emits `Event::SkillActivated` so frontends can
+    /// observe which skill is live for the session (P0-3).
+    events: Option<Arc<EventEmitter>>,
 }
 
 impl SkillTool {
@@ -35,6 +40,7 @@ impl SkillTool {
         Self {
             index: Some(index),
             loader: None,
+            events: None,
         }
     }
 
@@ -44,12 +50,20 @@ impl SkillTool {
         Self {
             index: None,
             loader: None,
+            events: None,
         }
     }
 
     /// Attach a custom [`SkillLoader`] to this tool.
     pub fn with_skill_loader(mut self, loader: Box<dyn SkillLoader>) -> Self {
         self.loader = Some(loader);
+        self
+    }
+
+    /// Share the host's event emitter so successful activations are
+    /// visible on the session event stream.
+    pub fn with_events(mut self, events: Arc<EventEmitter>) -> Self {
+        self.events = Some(events);
         self
     }
 }
@@ -138,7 +152,7 @@ impl Tool for SkillTool {
             })
         } else {
             // Fallback: resolve through the global loader
-            crate::skills::resolve_skill(name)
+            crate::skills::resolve_skill_global(name)
         };
 
         match result {
@@ -156,7 +170,7 @@ impl Tool for SkillTool {
                     let activation_result = if let Some(loader) = &self.loader {
                         loader.activate(name)
                     } else {
-                        crate::skills::activate_skill(name)
+                        crate::skills::activate_skill_global(name)
                     };
                     activated = activation_result.is_ok();
                     if let Err(ref e) = activation_result {
@@ -165,6 +179,13 @@ impl Tool for SkillTool {
                             error = %e,
                             "Skill found but activation failed (best-effort)"
                         );
+                    }
+                    if activated {
+                        if let Some(events) = &self.events {
+                            events.emit(Event::SkillActivated {
+                                name: name.to_string(),
+                            });
+                        }
                     }
                 }
 
@@ -186,6 +207,10 @@ impl Tool for SkillTool {
     fn is_read_only(&self) -> bool {
         true
     }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::read_only()
+    }
 }
 
 #[cfg(test)]
@@ -199,6 +224,99 @@ mod tests {
             index.insert(skill);
         }
         Arc::new(std::sync::RwLock::new(index))
+    }
+
+    fn make_skill(name: &str, dir: &std::path::Path) -> Skill {
+        Skill {
+            metadata: SkillMetadata {
+                name: name.to_string(),
+                description: "A test skill".to_string(),
+                ..Default::default()
+            },
+            dir: dir.to_path_buf(),
+            content: "---\n---\n# Body".to_string(),
+            frontmatter: String::new(),
+            body: "# Body".to_string(),
+        }
+    }
+
+    #[test]
+    fn skill_tool_emits_skill_activated_on_successful_activation() {
+        // P0-3: activation through a shared emitter surfaces
+        // Event::SkillActivated on the session event stream.
+        use std::sync::Mutex;
+
+        let dir = std::env::temp_dir().join("skill_tool_emit_test");
+        let _ = std::fs::create_dir_all(&dir);
+
+        // A loader whose activate() always succeeds.
+        struct OkLoader;
+        impl SkillLoader for OkLoader {
+            fn resolve(&self, name: &str) -> Option<String> {
+                Some(format!("content of {}", name))
+            }
+            fn list(&self) -> Vec<(String, String)> {
+                vec![]
+            }
+            fn activate(&self, _name: &str) -> Result<String, String> {
+                Ok("activated".to_string())
+            }
+            fn deactivate(&self) {}
+            fn active_skill(&self) -> Option<String> {
+                None
+            }
+        }
+
+        let events = Arc::new(EventEmitter::new());
+        let seen: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let seen = seen.clone();
+            events.on(move |e| seen.lock().unwrap().push(e));
+        }
+
+        // Loader-backed tool: resolve + activate both go through OkLoader.
+        let tool = SkillTool::with_loader()
+            .with_skill_loader(Box::new(OkLoader))
+            .with_events(events);
+
+        let result = tool.execute(serde_json::json!({"name": "postgres"}));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap()["activated"], true);
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        match &seen[0] {
+            Event::SkillActivated { name } => assert_eq!(name, "postgres"),
+            other => panic!("expected SkillActivated, got {:?}", other),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skill_tool_no_event_when_not_activated() {
+        // `activate: false` must not emit SkillActivated.
+        use std::sync::Mutex;
+
+        let dir = std::env::temp_dir().join("skill_tool_noemit_test");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let events = Arc::new(EventEmitter::new());
+        let seen: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let seen = seen.clone();
+            events.on(move |e| seen.lock().unwrap().push(e));
+        }
+
+        let index = make_index_with_skills(vec![make_skill("quiet", &dir)]);
+        let tool = SkillTool::new(index).with_events(events);
+
+        let result = tool.execute(serde_json::json!({"name": "quiet", "activate": false}));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap()["activated"], false);
+        assert!(seen.lock().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -219,6 +337,7 @@ mod tests {
             metadata: SkillMetadata {
                 name: "test-skill".to_string(),
                 description: "A test".to_string(),
+                ..Default::default()
             },
             dir: dir.clone(),
             content: "---\nname: test-skill\ndescription: A test\n---\n# Test\nDo stuff."
@@ -276,6 +395,7 @@ mod tests {
             metadata: SkillMetadata {
                 name: "refs-skill".to_string(),
                 description: "Skill with refs".to_string(),
+                ..Default::default()
             },
             dir: dir.clone(),
             content: "---\n...\n---\n# Main\nInstructions.".to_string(),

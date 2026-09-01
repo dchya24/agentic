@@ -54,11 +54,126 @@ pub struct ToolResultValue {
     pub error: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Capability model
+// ---------------------------------------------------------------------------
+// A tool is not just a function: it is a *capability* with metadata the
+// scheduler uses to decide how (and whether) calls may run. This is the
+// seam P0-2 of the hardening plan builds on — `ToolRegistry::execute_batch`
+// and the orchestrator's capability analysis consume these.
+
+/// Mutability of a tool: does it change observable state?
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Mutability {
+    /// Reads state only; safe to run concurrently with other read-only
+    /// tools. Maps to the old `is_read_only() == true`.
+    #[default]
+    ReadOnly,
+    /// Changes state (filesystem, shell, network, memory). Runs alone,
+    /// sequentially, never batched with other calls.
+    Mutating,
+}
+
+/// Concurrency policy for execution scheduling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Concurrency {
+    /// May run in parallel with other `ParallelSafe` tools.
+    #[default]
+    ParallelSafe,
+    /// Must not share an execution batch with any other tool.
+    Exclusive,
+}
+
+/// Side effects a tool can have, used for risk/UX classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SideEffects {
+    #[default]
+    None,
+    /// Reads from the filesystem (never writes).
+    FsRead,
+    /// Writes to the filesystem.
+    FsWrite,
+    /// Executes shell commands / subprocesses.
+    Shell,
+    /// Performs network I/O.
+    Network,
+    /// Interacts with the user (questions, confirmation).
+    UserFacing,
+}
+
+/// Static metadata describing a tool's execution contract.
+///
+/// The scheduler uses this instead of name-based hardcoding: a tool
+/// declares its own mutability, concurrency class, idempotency, risk
+/// level, and side effects. Registry-level analysis (parallel vs
+/// sequential vs confirmation vs denied) reads from here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ToolMetadata {
+    pub mutability: Mutability,
+    pub concurrency: Concurrency,
+    pub idempotent: bool,
+    /// Static risk floor contributed by this tool class (0–100).
+    /// The safety engine still scores per-call args; this is the
+    /// tool-level baseline.
+    pub risk: u8,
+    pub side_effects: SideEffects,
+}
+
+impl Default for ToolMetadata {
+    /// Conservative default: mutating, exclusive, not idempotent, zero
+    /// risk floor, no side effects. Used for unknown tools and for
+    /// `unwrap_or_default()` at lookup sites — never assume a tool is
+    /// safe to parallelize.
+    fn default() -> Self {
+        Self {
+            mutability: Mutability::Mutating,
+            concurrency: Concurrency::Exclusive,
+            idempotent: false,
+            risk: 0,
+            side_effects: SideEffects::None,
+        }
+    }
+}
+
+impl ToolMetadata {
+    /// Metadata for a read-only, parallel-safe tool. The common case
+    /// for file/state inspection tools.
+    pub const fn read_only() -> Self {
+        Self {
+            mutability: Mutability::ReadOnly,
+            concurrency: Concurrency::ParallelSafe,
+            idempotent: true,
+            risk: 0,
+            side_effects: SideEffects::FsRead,
+        }
+    }
+}
+
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn schema(&self) -> ToolSchema;
     fn execute(&self, args: serde_json::Value) -> ToolResult<serde_json::Value>;
+
+    /// Static capability metadata. The scheduler consumes this for
+    /// batching, risk floors, and side-effect classification.
+    ///
+    /// Defaults derive from [`Self::is_read_only`] for backward
+    /// compatibility: read-only tools get `ReadOnly + ParallelSafe`,
+    /// everything else `Mutating + Exclusive`. Tools that want richer
+    /// signal (side effects, risk floor, exclusive-but-read-only like
+    /// `question`) override this directly — and should also override
+    /// [`Self::is_read_only`] to stay consistent.
+    fn metadata(&self) -> ToolMetadata {
+        if self.is_read_only() {
+            ToolMetadata::read_only()
+        } else {
+            ToolMetadata::default()
+        }
+    }
 
     /// Whether this tool only reads state (no filesystem writes, no shell
     /// commands, no network mutations). Read-only tools may be executed

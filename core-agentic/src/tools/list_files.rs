@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::tool::{Tool, ToolError, ToolParam, ToolResult, ToolSchema};
+use crate::tool::{Tool, ToolError, ToolMetadata, ToolParam, ToolResult, ToolSchema};
 
 pub struct ListFilesTool;
 
@@ -26,6 +26,10 @@ impl Tool for ListFilesTool {
 
     fn is_read_only(&self) -> bool {
         true
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::read_only()
     }
 
     fn description(&self) -> &str {

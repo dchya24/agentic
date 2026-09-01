@@ -85,6 +85,78 @@ pub enum Event {
         steps_carried_over: usize,
         steps_total: usize,
     },
+
+    // ------------------------------------------------------------------
+    // Session lifecycle (P0-3). UI-agnostic signals for frontends that
+    // observe a run rather than drive it.
+    // ------------------------------------------------------------------
+    /// Emitted once at the start of every `run` / `run_stream`.
+    #[serde(rename = "session_started")]
+    SessionStarted,
+
+    /// Emitted before each provider request.
+    #[serde(rename = "model_request")]
+    #[serde(rename_all = "camelCase")]
+    ModelRequest { model: String, message_count: usize },
+
+    /// Live text chunk from a streaming provider response.
+    #[serde(rename = "model_chunk")]
+    #[serde(rename_all = "camelCase")]
+    ModelChunk { delta: String },
+
+    /// Emitted when a skill becomes active for the session.
+    #[serde(rename = "skill_activated")]
+    #[serde(rename_all = "camelCase")]
+    SkillActivated { name: String },
+
+    /// Emitted when the planner produces a plan.
+    #[serde(rename = "plan_created")]
+    #[serde(rename_all = "camelCase")]
+    PlanCreated { steps_total: usize },
+
+    /// Emitted when a plan step begins executing.
+    #[serde(rename = "step_started")]
+    #[serde(rename_all = "camelCase")]
+    StepStarted {
+        index: usize,
+        total: usize,
+        description: String,
+    },
+
+    /// Emitted when a plan step finishes.
+    #[serde(rename = "step_completed")]
+    #[serde(rename_all = "camelCase")]
+    StepCompleted {
+        index: usize,
+        total: usize,
+        status: String,
+    },
+
+    /// Emitted when auto-compaction kicks in.
+    #[serde(rename = "compaction_started")]
+    CompactionStarted,
+
+    /// Emitted right before the run blocks on a user confirmation.
+    #[serde(rename = "waiting_for_user")]
+    WaitingForUser,
+
+    /// Emitted once when a run ends successfully. Carries the final
+    /// assistant text so event-stream-only frontends (headless runtime,
+    /// kanban) never need to reassemble it from `model_chunk` deltas.
+    #[serde(rename = "session_completed")]
+    #[serde(rename_all = "camelCase")]
+    SessionCompleted { result: String },
+
+    /// Emitted whenever the orchestrator's coarse lifecycle state
+    /// changes (`idle` → `planning` → `completed`). The payload is the
+    /// snake_case state name; P1-2 formalizes the machine behind it.
+    #[serde(rename = "state_changed")]
+    StateChanged { state: String },
+
+    /// Emitted when a run ends in an error.
+    #[serde(rename = "session_failed")]
+    #[serde(rename_all = "camelCase")]
+    SessionFailed { message: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +172,18 @@ pub enum EventType {
     System,
     PlanProgress,
     PlanReplanned,
+    SessionStarted,
+    ModelRequest,
+    ModelChunk,
+    SkillActivated,
+    PlanCreated,
+    StepStarted,
+    StepCompleted,
+    CompactionStarted,
+    WaitingForUser,
+    SessionCompleted,
+    StateChanged,
+    SessionFailed,
 }
 
 impl Event {
@@ -116,6 +200,18 @@ impl Event {
             Event::System { .. } => EventType::System,
             Event::PlanProgress { .. } => EventType::PlanProgress,
             Event::PlanReplanned { .. } => EventType::PlanReplanned,
+            Event::SessionStarted => EventType::SessionStarted,
+            Event::ModelRequest { .. } => EventType::ModelRequest,
+            Event::ModelChunk { .. } => EventType::ModelChunk,
+            Event::SkillActivated { .. } => EventType::SkillActivated,
+            Event::PlanCreated { .. } => EventType::PlanCreated,
+            Event::StepStarted { .. } => EventType::StepStarted,
+            Event::StepCompleted { .. } => EventType::StepCompleted,
+            Event::CompactionStarted => EventType::CompactionStarted,
+            Event::WaitingForUser => EventType::WaitingForUser,
+            Event::SessionCompleted { .. } => EventType::SessionCompleted,
+            Event::StateChanged { .. } => EventType::StateChanged,
+            Event::SessionFailed { .. } => EventType::SessionFailed,
         }
     }
 }
@@ -211,5 +307,82 @@ mod tests {
         let json = serde_json::to_value(&delta).unwrap();
         assert_eq!(json["type"], "tool_delta");
         assert_eq!(json["toolName"], "run_command");
+    }
+
+    #[test]
+    fn session_lifecycle_variants_serialize() {
+        // Every P0-3 variant must round-trip with its wire tag so
+        // non-Rust frontends (TUI/kanban) can consume the stream.
+        let cases: Vec<(Event, &str)> = vec![
+            (Event::SessionStarted, "session_started"),
+            (
+                Event::ModelRequest {
+                    model: "gpt-4o".into(),
+                    message_count: 3,
+                },
+                "model_request",
+            ),
+            (Event::ModelChunk { delta: "hi".into() }, "model_chunk"),
+            (
+                Event::SkillActivated {
+                    name: "postgres".into(),
+                },
+                "skill_activated",
+            ),
+            (Event::PlanCreated { steps_total: 4 }, "plan_created"),
+            (
+                Event::StepStarted {
+                    index: 1,
+                    total: 4,
+                    description: "write tests".into(),
+                },
+                "step_started",
+            ),
+            (
+                Event::StepCompleted {
+                    index: 1,
+                    total: 4,
+                    status: "completed".into(),
+                },
+                "step_completed",
+            ),
+            (Event::CompactionStarted, "compaction_started"),
+            (Event::WaitingForUser, "waiting_for_user"),
+            (
+                Event::SessionCompleted {
+                    result: "done".into(),
+                },
+                "session_completed",
+            ),
+            (
+                Event::StateChanged {
+                    state: "planning".into(),
+                },
+                "state_changed",
+            ),
+            (
+                Event::SessionFailed {
+                    message: "provider down".into(),
+                },
+                "session_failed",
+            ),
+        ];
+        for (event, tag) in cases {
+            let json = serde_json::to_value(&event).unwrap();
+            assert_eq!(json["type"], tag, "wrong tag for {event:?}");
+            let parsed: Event = serde_json::from_value(json).unwrap();
+            assert_eq!(parsed.event_type(), event.event_type());
+        }
+    }
+
+    #[test]
+    fn model_request_uses_camel_case_fields() {
+        let event = Event::ModelRequest {
+            model: "claude-3".into(),
+            message_count: 7,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["model"], "claude-3");
+        assert_eq!(json["messageCount"], 7);
     }
 }

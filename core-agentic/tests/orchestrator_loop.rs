@@ -755,3 +755,238 @@ async fn tool_lifecycle_events_stream_path() {
     assert!(output.unwrap() > 0);
     assert!(!chunks.lock().unwrap().is_empty());
 }
+
+/// P0-3 session lifecycle: a successful run emits the full sequence
+/// SessionStarted → StateChanged(planning) → StateChanged(completed) →
+/// SessionCompleted (plus per-turn ModelRequest events).
+#[test]
+fn session_lifecycle_events_fire_in_order() {
+    let provider: Arc<dyn LLMProvider> =
+        Arc::new(ScriptedProvider::new(vec![support::text_response(
+            "the final answer",
+        )]));
+
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+
+    let mut orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+
+    let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    orch.on_event(move |e| sink.lock().unwrap().push(e));
+
+    let answer = orch.run("go").unwrap();
+    assert_eq!(answer, "the final answer");
+
+    let seen = events.lock().unwrap();
+    // Project onto (variant, payload) pairs to assert relative order.
+    // P1-2 states: request loop opens in waiting_for_model; the final
+    // answer lands completed without another tool turn.
+    let lifecycle: Vec<String> = seen
+        .iter()
+        .filter_map(|e| match e {
+            Event::SessionStarted => Some("started".to_string()),
+            Event::StateChanged { state } => Some(format!("state:{}", state)),
+            Event::SessionCompleted { .. } => Some("completed".to_string()),
+            Event::SessionFailed { .. } => Some("failed".to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        lifecycle,
+        vec![
+            "started",
+            "state:waiting_for_model",
+            "state:completed",
+            "completed"
+        ],
+        "full lifecycle in order, got {:?}",
+        lifecycle
+    );
+
+    // The completed event carries the final answer for stream-only
+    // frontends.
+    let final_result = seen.iter().find_map(|e| match e {
+        Event::SessionCompleted { result } => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(final_result.as_deref(), Some("the final answer"));
+
+    // Every provider turn is observable.
+    let request_count = seen
+        .iter()
+        .filter(|e| matches!(e, Event::ModelRequest { .. }))
+        .count();
+    assert_eq!(request_count, 1);
+}
+
+/// The failure path emits SessionStarted → … → SessionFailed (never
+/// SessionCompleted).
+#[test]
+fn session_failed_event_fires_on_provider_error() {
+    use core_agentic::providers::ProviderError;
+
+    struct ExplodingProvider;
+    impl LLMProvider for ExplodingProvider {
+        fn provider_type(&self) -> &str {
+            "exploding"
+        }
+        fn provider_id(&self) -> &str {
+            "exploding"
+        }
+        fn chat(&self, _req: ChatRequest) -> ProviderResult<ChatResponse> {
+            Err(ProviderError::new("connection refused"))
+        }
+        fn chat_stream(&self, _req: ChatRequest) -> StreamResult<ChatChunk, ProviderError> {
+            Err(ProviderError::new("connection refused"))
+        }
+    }
+
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+
+    let mut orch = Orchestrator::new(Arc::new(ExplodingProvider), tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+
+    let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    orch.on_event(move |e| sink.lock().unwrap().push(e));
+
+    let result = orch.run("go");
+    assert!(result.is_err(), "provider error must surface to caller");
+
+    let seen = events.lock().unwrap();
+    assert!(
+        matches!(seen.last(), Some(Event::SessionFailed { .. })),
+        "expected SessionFailed last, got {:?}",
+        seen.last()
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|e| matches!(e, Event::SessionCompleted { .. })),
+        "no SessionCompleted on the failure path"
+    );
+}
+
+/// P1-3 crash→resume: run A (with a tool turn) checkpoints per tool
+/// boundary; a fresh orchestrator resumes the session and the provider
+/// sees the restored history.
+#[test]
+fn checkpoint_and_resume_restores_conversation() {
+    use core_agentic::{AgentSession, SessionStore};
+
+    let dir = support::tempdir();
+    let path = dir.join("resume-me.txt");
+    std::fs::write(&path, "carried state\n").unwrap();
+
+    let store = SessionStore::new(dir.join("sessions"));
+
+    // Run A: tool turn + final answer, with a checkpoint store attached.
+    let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
+        support::tool_call_response(
+            "call-a",
+            "write_file",
+            &serde_json::json!({"path": path.to_string_lossy(), "content": "persisted\n"}),
+        ),
+        support::text_response("run A done"),
+    ]));
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+    let mut orch_a = Orchestrator::new(provider, tools);
+    orch_a.set_permission_mode(PermissionMode::Yolo);
+    orch_a.set_session_store(store.clone());
+
+    let answer_a = orch_a.run("write the file").unwrap();
+    assert_eq!(answer_a, "run A done");
+    let session_id = orch_a.session_id().expect("session id tracked");
+
+    // The store now holds the terminal checkpoint.
+    let saved = store.load(&session_id).unwrap();
+    assert_eq!(saved.state, "completed");
+    // user + assistant(tool_calls) + tool + assistant(final) = 4 messages
+    assert_eq!(saved.messages.len(), 4);
+    let checkpoints = saved.checkpoint_count;
+
+    // "Crash": build a fresh orchestrator with NO history and resume.
+    let provider_b: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![
+        support::tool_call_response(
+            "call-b",
+            "read_file",
+            &serde_json::json!({"path": path.to_string_lossy()}),
+        ),
+        support::text_response("run B done"),
+    ]));
+    let tools_b = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools_b.register(t);
+    }
+    let mut orch_b = Orchestrator::new(provider_b, tools_b);
+    orch_b.set_permission_mode(PermissionMode::Yolo);
+    assert!(orch_b.session_id().is_none());
+
+    orch_b.resume_session(store.clone(), &session_id).unwrap();
+    assert_eq!(orch_b.session_id().as_deref(), Some(session_id.as_str()));
+
+    // Resumed run sees the carried history: provider request includes
+    // run A's messages, and the loop continues from there.
+    let answer_b = orch_b.run("now read it back").unwrap();
+    assert_eq!(answer_b, "run B done");
+
+    // Same session document, checkpointed further (resume adopted the
+    // id; run B appended its turns and bumped the counter).
+    let after = store.load(&session_id).unwrap();
+    assert_eq!(after.state, "completed");
+    assert!(after.checkpoint_count > checkpoints);
+    assert!(after.messages.len() > 4);
+}
+
+/// A failing run still checkpoints the failure state (post-mortem).
+#[test]
+fn failed_run_checkpoints_failed_state() {
+    use core_agentic::SessionStore;
+
+    let dir = support::tempdir();
+    let store = SessionStore::new(dir.join("sessions"));
+
+    let provider: Arc<dyn LLMProvider> = Arc::new(ScriptedProvider::new(vec![]));
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+    let mut orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+    orch.set_session_store(store.clone());
+
+    assert!(orch.run("go").is_err()); // no scripted responses left
+    let id = orch.session_id().unwrap();
+    let saved = store.load(&id).unwrap();
+    assert_eq!(saved.state, "failed");
+    assert!(matches!(
+        orch.get_state(),
+        core_agentic::orchestrator::OrchestratorState::Failed
+    ));
+}
+
+/// Without a store attached, nothing persists and ids stay untracked.
+#[test]
+fn runs_without_store_are_untracked() {
+    let provider: Arc<dyn LLMProvider> =
+        Arc::new(ScriptedProvider::new(vec![support::text_response("ok")]));
+    let tools = ToolRegistry::new();
+    for t in builtin_tools_with_tracker(Arc::new(FileTracker::new())) {
+        tools.register(t);
+    }
+    let mut orch = Orchestrator::new(provider, tools);
+    orch.set_permission_mode(PermissionMode::Yolo);
+    let answer = orch.run("go").unwrap();
+    assert_eq!(answer, "ok");
+    assert!(orch.session_id().is_none());
+}

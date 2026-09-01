@@ -10,6 +10,7 @@ pub mod agent;
 pub mod attachments;
 pub mod capabilities;
 pub mod config;
+pub mod context;
 pub mod diff_util;
 pub mod events;
 pub mod file_tracker;
@@ -20,7 +21,9 @@ pub mod orchestrator;
 pub mod planner;
 pub mod prompts;
 pub mod providers;
+pub mod runtime;
 pub mod safety;
+pub mod session;
 pub mod skills;
 pub mod tool;
 pub mod tool_registry;
@@ -37,6 +40,7 @@ pub use config::{
     AgentLoopConfig, BreakpointStrategy, CacheConfig, Config, ModelConfig, ModelOutput,
     OutputConfig, PlannerLoopConfig, ProviderConfig, SafetyConfig, SkillsConfig,
 };
+pub use context::{BuildOptions, ContextBudget, ContextEngine};
 pub use events::{Event, EventType};
 pub use file_tracker::{FileTracker, Freshness};
 pub use mcp::{
@@ -51,21 +55,27 @@ pub use memory_file::{
     append_project_memory, append_user_memory, assemble_memory_section, find_project_memory,
     load_project_memory, load_user_memory, user_memory_path, PROJECT_MEMORY_FILE,
 };
-pub use orchestrator::Orchestrator;
+pub use orchestrator::{Orchestrator, OrchestratorState};
 pub use planner::{Plan, PlanResult, PlanStatus, PlannerAgent, PlannerConfig, Step, StepStatus};
 pub use prompts::{
     assemble_system_prompt, find_project_instructions, load_project_instructions,
     skills_system_section, DEFAULT_SYSTEM_PROMPT, PROJECT_INSTRUCTION_FILES,
 };
 pub use providers::LLMProvider;
+pub use runtime::{AgentLoop, AgentRuntime, RuntimeStatus, StandardLoop};
 pub use safety::{
     AuditDecision, AuditEntry, ConfirmationRequest, PermissionMode, RateLimit, RiskLevel,
     RiskScore, SafetyDecision, UrlPolicy,
 };
-pub use tool::{Tool, ToolCall, ToolError, ToolResult, ToolResultValue, ToolSchema};
-pub use tool_registry::ToolRegistry;
+pub use session::{AgentSession, SessionStore, SessionSummary, SESSION_FORMAT_VERSION};
+pub use tool::{
+    Concurrency, Mutability, SideEffects, Tool, ToolCall, ToolError, ToolMetadata, ToolResult,
+    ToolResultValue, ToolSchema,
+};
+pub use tool_registry::{CapabilityAnalysis, ToolRegistry};
 
 // Re-export skill system types
+#[allow(deprecated)]
 pub use skills::{
     activate_skill, active_skill, clear_skill_loader, deactivate_skill, discover_skills,
     list_skills, resolve_skill, set_skill_loader, DiscoveryConfig, Skill, SkillIndex, SkillLoader,
@@ -73,6 +83,7 @@ pub use skills::{
 };
 
 // Re-export tool implementations
+#[allow(deprecated)]
 pub use tools::{
     clear_question_handler,
     clear_todo_change_handler,
