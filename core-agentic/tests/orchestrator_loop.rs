@@ -636,7 +636,8 @@ fn sync_run_executes_read_only_batch_concurrently() {
 }
 
 /// Tool lifecycle events: run_command must emit ToolStart then an
-/// enriched ToolOutput (duration_ms > 0) via the sync path, and the
+/// enriched ToolOutput (with a duration_ms, 0 valid for fast runs) via the
+/// sync path, and the
 /// deltas between them must carry the streamed output.
 #[test]
 fn tool_lifecycle_events_emitted_in_order() {
@@ -684,7 +685,9 @@ fn tool_lifecycle_events_emitted_in_order() {
     );
     assert!(outputs >= 1, "expected at least one ToolOutput");
 
-    // Enriched ToolOutput for run_command must carry a real duration.
+    // Enriched ToolOutput for run_command must carry a duration. It is
+    // truncated to whole milliseconds, so a sub-millisecond tool run on a
+    // fast runner legitimately reports 0 — only presence is asserted.
     let run_cmd_output = events.iter().find_map(|e| match e {
         Event::ToolOutput {
             tool_name,
@@ -694,12 +697,7 @@ fn tool_lifecycle_events_emitted_in_order() {
         } if tool_name == "run_command" => Some((*duration_ms, *success)),
         _ => None,
     });
-    let (duration_ms, success) = run_cmd_output.expect("run_command ToolOutput");
-    assert!(
-        duration_ms > 0,
-        "duration_ms should be > 0, got {}",
-        duration_ms
-    );
+    let (_duration_ms, success) = run_cmd_output.expect("run_command ToolOutput");
     assert!(success, "run_command should report success");
 }
 
