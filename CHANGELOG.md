@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-03
+
+Patch release: inline REPL completion-dropdown fixes and a daemon-binary
+lookup fix.
+
+### Fixed
+- CLI: the skill / model completion dropdown now disappears immediately when
+  an item is accepted, and the render cycle that follows no longer erases
+  the command output printed below it (e.g. the skill "📖 Preview" section
+  after activation)
+- CLI: `runtime_binary()` no longer mistakes the `agentic-runtime/` source
+  directory at the workspace root for the daemon binary, which made the
+  spawn fail with a cryptic "Permission denied"
+
 ## [0.5.0] — 2026-09-01
 
 Major release: core-agentic hardening (P0–P2 + Fase D), runtime-CLI decoupling
