@@ -415,7 +415,13 @@ async fn repl_loop(
                         (KeyModifiers::NONE, KeyCode::Tab)
                         | (KeyModifiers::NONE, KeyCode::Enter) => {
                             if let Some(_auto_cmd) = accept_dropdown(buffer, dropdown) {
-                                // Auto-submit: skill / model selected, execute immediately
+                                // Auto-submit: skill / model selected, execute immediately.
+                                // Clear the rendered prompt + dropdown first so the
+                                // dropdown disappears the moment the item is accepted;
+                                // reset() also prevents the next cycle's MoveUp from
+                                // erasing the command output printed below.
+                                render.clear_input_area(&mut stdout)?;
+                                render.reset();
                                 let input = buffer.submit();
                                 let dir_name = std::env::current_dir()
                                     .unwrap_or_default()
