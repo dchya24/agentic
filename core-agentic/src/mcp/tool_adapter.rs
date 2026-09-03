@@ -11,7 +11,6 @@ use crate::tool::{
     Concurrency, Mutability, SideEffects, Tool, ToolError, ToolMetadata, ToolResult, ToolSchema,
 };
 
-
 // ---------------------------------------------------------------------------
 // Sync adapter (original)
 // ---------------------------------------------------------------------------

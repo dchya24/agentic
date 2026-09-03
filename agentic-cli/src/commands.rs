@@ -3310,13 +3310,13 @@ mod search_snippet_tests {
 
 #[cfg(test)]
 mod e2e_tests {
-    use std::sync::Arc;
     use super::*;
     use core_agentic::providers::{
         ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, LLMProvider, ProviderError,
         ProviderResult, StreamResult, ToolCallDelta, ToolCallFunction, ToolCallResponse,
     };
     use futures::stream;
+    use std::sync::Arc;
     use std::sync::Mutex;
 
     /// Provider returning scripted responses in order.
