@@ -754,7 +754,9 @@ async fn tool_lifecycle_events_stream_path() {
         _ => None,
     });
     assert!(output.is_some(), "expected run_command ToolOutput");
-    assert!(output.unwrap() > 0);
+    // duration_ms is truncated to whole milliseconds — a sub-millisecond
+    // tool run (e.g. printf on a fast runner) legitimately reports 0.
+    let _ = output.unwrap();
     assert!(!chunks.lock().unwrap().is_empty());
 }
 
