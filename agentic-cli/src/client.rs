@@ -139,7 +139,10 @@ pub fn runtime_binary() -> Result<PathBuf> {
     } else {
         "agentic-runtime"
     });
-    if sibling.exists() {
+    // is_file(), not exists(): during development the ancestor scan walks up
+    // to the workspace root where `agentic-runtime/` is the *source crate
+    // directory* — spawning it fails with a cryptic "Permission denied".
+    if sibling.is_file() {
         return Ok(sibling);
     }
     for ancestor in current.ancestors() {
@@ -148,7 +151,7 @@ pub fn runtime_binary() -> Result<PathBuf> {
         } else {
             "agentic-runtime"
         });
-        if candidate.exists() {
+        if candidate.is_file() {
             return Ok(candidate);
         }
     }
