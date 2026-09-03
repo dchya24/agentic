@@ -486,10 +486,6 @@ pub struct Commands {
     /// Skill currently active for THIS session (per-instance state
     /// replacing the removed process-global, Fase D).
     active_skill: Option<String>,
-    /// Mock provider for testing. When set, `ensure_orchestrator` uses
-    /// this instead of constructing a real provider from config.
-    /// Only settable via `with_mock_provider` (gated to `#[cfg(test)]`).
-    mock_provider: Option<std::sync::Arc<dyn core_agentic::LLMProvider>>,
 }
 
 impl Default for Commands {
@@ -515,7 +511,6 @@ impl Commands {
             interactive_mode: false,
             skill_index: None,
             active_skill: None,
-            mock_provider: None,
         }
     }
 
@@ -551,17 +546,6 @@ impl Commands {
 
     pub fn with_interactive_mode(mut self, enabled: bool) -> Self {
         self.interactive_mode = enabled;
-        self
-    }
-
-    /// Inject a mock provider for end-to-end testing. Only available
-    /// in test builds.
-    #[cfg(test)]
-    pub(crate) fn with_mock_provider(
-        mut self,
-        provider: std::sync::Arc<dyn core_agentic::LLMProvider>,
-    ) -> Self {
-        self.mock_provider = Some(provider);
         self
     }
 
@@ -3311,210 +3295,91 @@ mod search_snippet_tests {
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
-    use core_agentic::providers::{
-        ChatChunk, ChatMessageResponse, ChatRequest, ChatResponse, LLMProvider, ProviderError,
-        ProviderResult, StreamResult, ToolCallDelta, ToolCallFunction, ToolCallResponse,
-    };
-    use futures::stream;
-    use std::sync::Arc;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
-    /// Provider returning scripted responses in order.
-    struct ScriptedProvider {
-        responses: Mutex<Vec<ChatResponse>>,
+    /// Write a minimal config file pinning the spawned `agentic-runtime`
+    /// daemon to a provider endpoint that can never connect.
+    ///
+    /// The daemon loads its own config (`RuntimeEngine::initialize`), so a
+    /// test must pin it explicitly — otherwise it reads the ambient
+    /// `~/.config/agentic/config.json` and these tests would call a real
+    /// LLM provider with the developer's credentials (and fail on CI, where
+    /// no config exists). `http://127.0.0.1:9` (discard port) fails fast
+    /// with a connection error and never leaves the machine, keeping the
+    /// tests hermetic.
+    fn hermetic_runtime_config() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "agentic-e2e-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            r#"{
+  "providers": [
+    {
+      "name": "hermetic-test",
+      "type": "openai-compatible",
+      "api_base": "http://127.0.0.1:9",
+      "api_key": "unused",
+      "models": [
+        { "model": "hermetic-model", "temperature": 0.0, "max_tokens": 64 }
+      ]
+    }
+  ]
+}"#,
+        )
+        .expect("write hermetic runtime config");
+        path
     }
 
-    impl ScriptedProvider {
-        fn new(responses: Vec<ChatResponse>) -> Self {
-            Self {
-                responses: Mutex::new(responses),
-            }
-        }
-
-        /// Convert a `ChatResponse` into a list of streaming `ChatChunk`s.
-        fn response_to_chunks(response: ChatResponse) -> Vec<Result<ChatChunk, ProviderError>> {
-            let mut chunks: Vec<Result<ChatChunk, ProviderError>> = Vec::new();
-            let id = response.id.clone();
-
-            // Text deltas (one chunk per response).
-            if let Some(content) = &response.message.content {
-                chunks.push(Ok(ChatChunk {
-                    id: id.clone(),
-                    delta: content.clone(),
-                    finish_reason: None,
-                    tool_calls: vec![],
-                    usage: None,
-                }));
-            }
-
-            // Tool-call deltas.
-            for tc in &response.message.tool_calls {
-                chunks.push(Ok(ChatChunk {
-                    id: id.clone(),
-                    delta: String::new(),
-                    finish_reason: None,
-                    tool_calls: vec![ToolCallDelta {
-                        index: 0,
-                        id: Some(tc.id.clone()),
-                        function_name: Some(tc.function.name.clone()),
-                        function_arguments: Some(tc.function.arguments.clone()),
-                    }],
-                    usage: None,
-                }));
-            }
-
-            // Final chunk with finish_reason.
-            chunks.push(Ok(ChatChunk {
-                id: id.clone(),
-                delta: String::new(),
-                finish_reason: response.finish_reason.clone(),
-                tool_calls: vec![],
-                usage: None,
-            }));
-
-            chunks
-        }
-    }
-
-    impl LLMProvider for ScriptedProvider {
-        fn provider_type(&self) -> &str {
-            "test"
-        }
-        fn provider_id(&self) -> &str {
-            "test"
-        }
-        fn chat(&self, _req: ChatRequest) -> ProviderResult<ChatResponse> {
-            let mut q = self.responses.lock().unwrap();
-            if q.is_empty() {
-                return Err(ProviderError::new("ScriptedProvider: no more responses"));
-            }
-            Ok(q.remove(0))
-        }
-        fn chat_stream(&self, _req: ChatRequest) -> StreamResult<ChatChunk, ProviderError> {
-            let mut q = self.responses.lock().unwrap();
-            if q.is_empty() {
-                return Err(ProviderError::new("ScriptedProvider: no more responses"));
-            }
-            let response = q.remove(0);
-            let chunks = Self::response_to_chunks(response);
-            Ok(Box::pin(stream::iter(chunks)))
-        }
-    }
-
+    /// `run_with_callbacks` must stream the daemon's session lifecycle
+    /// events through to the caller's callback. The real `agentic-runtime`
+    /// subprocess is spawned and driven over the wire protocol; the pinned
+    /// unreachable provider makes the session fail deterministically.
+    ///
+    /// Tool-call / model-response semantics are covered by
+    /// `core-agentic/tests/runtime_engine.rs` (in-process engine tests).
     #[tokio::test]
-    #[ignore = "mock-provider path removed in Phase 4 (full daemon); covered by runtime_engine tests"]
-    async fn smoke_run_executes_tool_and_returns_final_answer() {
-        // ── Provider: tool call → final text ──────────────
-        let provider = Arc::new(ScriptedProvider::new(vec![
-            ChatResponse {
-                id: "resp-1".into(),
-                model: "test".into(),
-                message: ChatMessageResponse {
-                    role: "assistant".into(),
-                    content: None,
-                    tool_calls: vec![ToolCallResponse {
-                        id: "call-1".into(),
-                        call_type: "function".into(),
-                        function: ToolCallFunction {
-                            name: "list_files".into(),
-                            arguments: r#"{"path": "."}"#.into(),
-                        },
-                    }],
-                },
-                finish_reason: Some("tool_calls".into()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "resp-2".into(),
-                model: "test".into(),
-                message: ChatMessageResponse {
-                    role: "assistant".into(),
-                    content: Some("Here are the files I found.".into()),
-                    tool_calls: vec![],
-                },
-                finish_reason: Some("stop".into()),
-                usage: None,
-            },
-        ]));
+    async fn smoke_run_with_callbacks_streams_daemon_lifecycle_events() {
+        let fixture = hermetic_runtime_config();
 
-        let config = Config::fallback();
-        let mut commands = Commands::new(config)
-            .with_mock_provider(provider)
+        let mut commands = Commands::new(Config::fallback())
+            .with_runtime_config_path(Some(fixture.to_string_lossy().into_owned()))
             .with_permission_mode(core_agentic::PermissionMode::Yolo);
 
-        let result = commands
-            .run_with_callbacks("list current directory", |_| {}, |_| {})
-            .await
-            .expect("run_with_callbacks should succeed");
-
-        assert!(
-            result.contains("Here are the files"),
-            "Expected final answer in output, got: {result}"
-        );
-    }
-
-    #[tokio::test]
-    async fn smoke_run_emits_events_for_tool_calls() {
-        // ── Provider: one tool call → final text ──────────
-        let provider = Arc::new(ScriptedProvider::new(vec![
-            ChatResponse {
-                id: "resp-1".into(),
-                model: "test".into(),
-                message: ChatMessageResponse {
-                    role: "assistant".into(),
-                    content: None,
-                    tool_calls: vec![ToolCallResponse {
-                        id: "call-1".into(),
-                        call_type: "function".into(),
-                        function: ToolCallFunction {
-                            name: "list_files".into(),
-                            arguments: r#"{"path": "."}"#.into(),
-                        },
-                    }],
-                },
-                finish_reason: Some("tool_calls".into()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "resp-2".into(),
-                model: "test".into(),
-                message: ChatMessageResponse {
-                    role: "assistant".into(),
-                    content: Some("Done.".into()),
-                    tool_calls: vec![],
-                },
-                finish_reason: Some("stop".into()),
-                usage: None,
-            },
-        ]));
-
-        let config = Config::fallback();
-        let mut commands = Commands::new(config)
-            .with_mock_provider(provider)
-            .with_permission_mode(core_agentic::PermissionMode::Yolo);
-
-        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();
 
-        let _ = commands
-            .run_with_callbacks(
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            commands.run_with_callbacks(
                 "list files",
                 |_| {},
                 move |evt| {
                     captured.lock().unwrap().push(format!("{evt:?}"));
                 },
-            )
-            .await;
+            ),
+        )
+        .await
+        .expect("run_with_callbacks hung: no terminal event within 60s");
+        let _ = std::fs::remove_file(&fixture);
 
+        // The terminal value depends on how the engine ends a failed
+        // session (Done or Error) — only the streamed lifecycle is asserted.
+        let _ = result;
         let logged = events.lock().unwrap();
         let all: String = logged.join(" ");
         assert!(
-            all.contains("ToolCall") || all.contains("list_files"),
-            "Expected tool-call events, got: {all}"
+            all.contains("SessionStarted"),
+            "Expected SessionStarted lifecycle event, got: {all}"
         );
         assert!(
-            all.contains("ToolOutput"),
-            "Expected tool-output events, got: {all}"
+            all.contains("SessionFailed"),
+            "Expected SessionFailed after provider failure, got: {all}"
         );
     }
 
@@ -3525,35 +3390,29 @@ mod e2e_tests {
     /// *every* `Sender` is dropped — so it never exited and the spinner
     /// stayed on screen forever.
     ///
+    /// Driven through the real daemon with an unreachable provider so the
+    /// renderer must still join cleanly on the session-failure path.
     /// Multi-thread runtime + timeout: without the fix this test fails with
     /// a timeout instead of hanging the whole test binary.
     #[tokio::test(flavor = "multi_thread")]
-    async fn smoke_run_plain_text_response_does_not_deadlock() {
-        let provider = Arc::new(ScriptedProvider::new(vec![ChatResponse {
-            id: "resp-1".into(),
-            model: "test".into(),
-            message: ChatMessageResponse {
-                role: "assistant".into(),
-                content: Some("Hello! I am agentic.".into()),
-                tool_calls: vec![],
-            },
-            finish_reason: Some("stop".into()),
-            usage: None,
-        }]));
+    async fn smoke_run_through_daemon_does_not_deadlock() {
+        let fixture = hermetic_runtime_config();
 
-        let config = Config::fallback();
-        let mut commands = Commands::new(config)
-            .with_mock_provider(provider)
+        let mut commands = Commands::new(Config::fallback())
+            .with_runtime_config_path(Some(fixture.to_string_lossy().into_owned()))
             .with_permission_mode(core_agentic::PermissionMode::Yolo);
 
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(60),
             commands.run("who are you?"),
         )
         .await
         .expect("Commands::run deadlocked: renderer.join() never returned");
+        let _ = std::fs::remove_file(&fixture);
 
-        assert!(result.is_ok(), "run should succeed: {:?}", result.err());
+        // `run` renders session failures as an error badge and returns Ok —
+        // the regression here is returning at all, not the outcome.
+        assert!(result.is_ok(), "run should complete: {:?}", result.err());
     }
 }
 

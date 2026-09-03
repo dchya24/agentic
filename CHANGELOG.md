@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Tests: the two CLI e2e smoke tests now spawn the real `agentic-runtime`
+  daemon against a pinned unreachable provider endpoint, making them
+  hermetic — they no longer read the ambient `~/.config/agentic/config.json`
+  or call a real LLM provider (which broke CI and risked using the
+  developer's credentials). Tool-call / response semantics stay covered by
+  the in-process `core-agentic/tests/runtime_engine.rs` suite, and the dead
+  mock-provider plumbing (`Commands::with_mock_provider`, `ScriptedProvider`)
+  was removed.
+
 ## [0.5.1] — 2026-09-03
 
 Patch release: inline REPL completion-dropdown fixes and a daemon-binary
