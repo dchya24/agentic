@@ -36,7 +36,12 @@ function Invoke-WebRequest {
 }
 
 function Write-Checksums([string]$Hash) {
+    # The installer verifies the agentic-runtime daemon against the same
+    # checksum file, so the fixture always ships a matching runtime entry.
+    $Runtime = Join-Path $FixtureDir 'agentic-runtime-windows-x86_64.exe'
+    $RuntimeHash = (Get-FileHash -LiteralPath $Runtime -Algorithm SHA256).Hash
     "$Hash  agentic-windows-x86_64.zip" | Set-Content -LiteralPath (Join-Path $FixtureDir 'checksums-windows.txt') -Encoding ascii
+    "$RuntimeHash  agentic-runtime-windows-x86_64.exe" | Add-Content -LiteralPath (Join-Path $FixtureDir 'checksums-windows.txt') -Encoding ascii
 }
 
 function Invoke-InstallerCase {
@@ -118,6 +123,8 @@ public static class FixtureAgentic {
     Build-FixtureExe -SourceFile $FixtureSourcePath -Output (Join-Path $BuildDir 'agentic-windows-x86_64.exe')
     $Archive = Join-Path $FixtureDir 'agentic-windows-x86_64.zip'
     Compress-Archive -LiteralPath (Join-Path $BuildDir 'agentic-windows-x86_64.exe') -DestinationPath $Archive -Force
+    $RuntimeFixture = Join-Path $FixtureDir 'agentic-runtime-windows-x86_64.exe'
+    'runtime daemon fixture' | Set-Content -LiteralPath $RuntimeFixture -Encoding ascii
     $GoodHash = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash
     Write-Checksums $GoodHash
 

@@ -44,16 +44,28 @@ fi
 EOF
   chmod +x "$fixture_dir/build/agentic"
 
+  # The installer also fetches the agentic-runtime daemon (a bare binary
+  # asset per platform) and verifies it against the same checksum file —
+  # ship fixture runtime binaries and their hashes alongside the CLI.
+  cat > "$fixture_dir/build/agentic-runtime" <<EOF
+#!/bin/sh
+printf '%s\n' '$marker-runtime'
+EOF
+  chmod +x "$fixture_dir/build/agentic-runtime"
+
   for asset in agentic-linux-x86_64.tar.gz agentic-macos-x86_64.tar.gz agentic-macos-aarch64.tar.gz; do
     tar -czf "$fixture_dir/$asset" -C "$fixture_dir/build" agentic
+  done
+  for runtime in agentic-runtime-linux-x86_64 agentic-runtime-macos-x86_64 agentic-runtime-macos-aarch64; do
+    cp "$fixture_dir/build/agentic-runtime" "$fixture_dir/$runtime"
   done
 
   : > "$fixture_dir/checksums-linux.txt"
   : > "$fixture_dir/checksums-macos.txt"
-  for asset in agentic-linux-x86_64.tar.gz; do
+  for asset in agentic-linux-x86_64.tar.gz agentic-runtime-linux-x86_64; do
     printf '%s  %s\n' "$(sha256_file "$fixture_dir/$asset")" "$asset" >> "$fixture_dir/checksums-linux.txt"
   done
-  for asset in agentic-macos-x86_64.tar.gz agentic-macos-aarch64.tar.gz; do
+  for asset in agentic-macos-x86_64.tar.gz agentic-macos-aarch64.tar.gz agentic-runtime-macos-x86_64 agentic-runtime-macos-aarch64; do
     printf '%s  %s\n' "$(sha256_file "$fixture_dir/$asset")" "$asset" >> "$fixture_dir/checksums-macos.txt"
   done
 }
